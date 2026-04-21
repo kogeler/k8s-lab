@@ -1,0 +1,90 @@
+---
+# Input validation for lxd_host (plan §2.6.2). Runs before any mutating
+# task. Keep declarative — use ansible.builtin.assert only.
+
+- name: "lxd-host | preflight | gather facts"
+  # Scenarios may disable gather_facts; we rely on min to detect distro
+  # and to know whether systemd is reachable.
+  ansible.builtin.setup:
+    gather_subset:
+      - "!all"
+      - "!any"
+      - min
+  when: ansible_facts['os_family'] is not defined
+
+- name: "lxd-host | preflight | target OS is Debian 13+"
+  ansible.builtin.assert:
+    that:
+      - ansible_facts['os_family'] == 'Debian'
+      - ansible_facts['distribution'] == 'Debian'
+      - (ansible_facts['distribution_major_version'] | int) >= 13
+    fail_msg: >-
+      lxd_host only targets Debian 13 Trixie or newer; detected
+      {{ ansible_facts['distribution'] | default('?') }}
+      {{ ansible_facts['distribution_version'] | default('?') }}.
+
+- name: "lxd-host | preflight | validate snap contract"
+  ansible.builtin.assert:
+    that:
+      - lxd_host_snap_name is string
+      - lxd_host_snap_name | length > 0
+      - lxd_host_snap_channel is string
+      - lxd_host_snap_channel is match('^[A-Za-z0-9._+/-]+$')
+      - lxd_host_snap_classic is boolean
+      - lxd_host_snap_seed_wait_timeout | int > 0
+    fail_msg: >-
+      lxd_host: invalid snap inputs — name and channel must be non-empty
+      strings, channel limited to track/risk-style characters, classic
+      boolean, seed_wait_timeout a positive integer.
+
+- name: "lxd-host | preflight | validate refresh policy"
+  ansible.builtin.assert:
+    that:
+      - lxd_host_snap_refresh_mode in ["hold", "timer"]
+      - lxd_host_snap_refresh_hold_value | length > 0
+      - lxd_host_snap_refresh_timer_value | length > 0
+    fail_msg: >-
+      lxd_host: refresh_mode must be "hold" or "timer"; hold and timer
+      values must both be non-empty (the one NOT selected by mode is
+      still validated so flipping mode later is always consistent).
+
+- name: "lxd-host | preflight | validate waitready"
+  ansible.builtin.assert:
+    that:
+      - lxd_host_wait_ready is boolean
+      - lxd_host_wait_ready_timeout | int > 0
+    fail_msg: "lxd_host: waitready inputs are malformed."
+
+- name: "lxd-host | preflight | validate bridge contract"
+  ansible.builtin.assert:
+    that:
+      - lxd_host_ext_bridge_enabled is boolean
+      - lxd_host_ext_bridge_name is string
+      - lxd_host_ext_bridge_name | length > 0
+      - lxd_host_ext_bridge_name | length <= 15
+      - lxd_host_ext_bridge_mtu | int >= 68
+      - lxd_host_ext_bridge_forward_delay | int >= 0
+      - lxd_host_ext_bridge_stp is boolean
+      - lxd_host_ext_bridge_link_local in ["yes", "no", "ipv4", "ipv6", "fallback"]
+      - lxd_host_ext_bridge_accept_ra in ["yes", "no"]
+      - lxd_host_networkd_dir is string
+      - lxd_host_networkd_dir is match('^/')
+      - lxd_host_networkd_file_priority | int >= 0
+      - lxd_host_networkd_file_priority | int <= 99
+    fail_msg: >-
+      lxd_host: external bridge inputs are malformed. Notably bridge name
+      must be <=15 chars (Linux IFNAMSIZ) and networkd_file_priority is
+      the two-digit numeric prefix used in the filename.
+
+- name: "lxd-host | preflight | uplink is set when bridge is enabled"
+  ansible.builtin.assert:
+    that:
+      - lxd_host_ext_bridge_uplink is string
+      - lxd_host_ext_bridge_uplink | length > 0
+      - lxd_host_ext_bridge_uplink != lxd_host_ext_bridge_name
+    fail_msg: >-
+      lxd_host: when lxd_host_ext_bridge_enabled=true the caller MUST set
+      lxd_host_ext_bridge_uplink to a real host interface (e.g. "eth1").
+      The default is intentionally empty to prevent accidental bridging of
+      the management NIC.
+  when: lxd_host_ext_bridge_enabled

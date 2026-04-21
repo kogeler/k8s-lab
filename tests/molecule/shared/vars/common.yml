@@ -12,10 +12,10 @@
 opt_root:     "/opt/capi-lab"
 project_name: "capi-lab"
 
-# --- Host policy ---
-lxd_snap_channel:       "6/stable"
-lxd_snap_refresh_mode:  "hold"
-lxd_snap_refresh_timer: "fri,03:00-04:00"
+# --- Host policy (consumed by role lxd_host — plan §8.3) ---
+lxd_host_snap_channel:       "6/stable"
+lxd_host_snap_refresh_mode:  "hold"
+lxd_host_snap_refresh_timer: "fri,03:00-04:00"
 
 # --- Networking (match libvirt-networks/ext6-mock.xml) ---
 uplink_interface:         "eth1"

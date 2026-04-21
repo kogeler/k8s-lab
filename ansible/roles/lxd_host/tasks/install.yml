@@ -1,0 +1,34 @@
+---
+# LXD snap install. snapd itself is installed by base_system; here we
+# wait for snapd seeding to complete and then manage the LXD snap through
+# the community.general.snap module (native-first, plan §2.6.1).
+
+- name: "lxd-host | install | ensure snapd service is running"
+  ansible.builtin.systemd:
+    name: snapd.socket
+    state: started
+    enabled: true
+
+- name: "lxd-host | install | wait for snapd seeding (snapd.seeded.service exited)"
+  # snapd's first-boot seed phase is modelled as a systemd one-shot unit
+  # that transitions to ActiveState=active / SubState=exited when done.
+  # Polling the unit with `ansible.builtin.systemd` is a native module
+  # call; equivalent to `snap wait system seed.loaded` but without shell.
+  # No `state:` arg — we only observe, never try to start/stop it.
+  ansible.builtin.systemd:
+    name: snapd.seeded.service
+  register: _lxd_host_snap_seed_register
+  until:
+    - (_lxd_host_snap_seed_register.status.ActiveState | default('')) == 'active'
+    - (_lxd_host_snap_seed_register.status.SubState    | default('')) == 'exited'
+  retries: "{{ (lxd_host_snap_seed_wait_timeout | int) // 5 }}"
+  delay: 5
+  changed_when: false
+
+- name: "lxd-host | install | lxd snap present with channel"
+  community.general.snap:
+    name: "{{ lxd_host_snap_name }}"
+    state: present
+    channel: "{{ lxd_host_snap_channel }}"
+    classic: "{{ lxd_host_snap_classic }}"
+  register: _lxd_host_snap_install_register

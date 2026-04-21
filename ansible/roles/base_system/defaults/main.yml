@@ -5,7 +5,7 @@
 #
 # Purpose: minimal Debian 13 host preparation for the k8s-lab stack. Only
 # packages explicitly allowed by plan §2.2 are installed here; every other
-# tool is expected to be delivered by `binary_fetch` or `lxd_snap`.
+# tool is expected to be delivered by `binary_fetch` or `lxd_host`.
 #
 # Public contract (plan §2.6.2): variables exposed to callers are prefixed
 # `base_system_*`. Helper / computed facts use the `_base_system_*` prefix
@@ -78,7 +78,7 @@ base_system_sysctl_values:
 # -- Kernel modules --------------------------------------------------------
 
 # Modules we need loaded on the host. LXD + kubeadm path in CAPN documents
-# `br_netfilter`, `overlay`, `nf_conntrack` as required (plan §8.8 refs).
+# `br_netfilter`, `overlay`, `nf_conntrack` as required (plan §8.7 refs).
 base_system_kernel_modules:
   - overlay
   - br_netfilter

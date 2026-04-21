@@ -28,16 +28,48 @@ Vagrant.configure("2") do |config|
                                            ".vagrant/", ".terraform/",
                                            ".molecule/", "**/.molecule/"]
 
+  # vCPU count — reused for libvirt.cpus and per-NIC virtio multiqueue.
+  vcpus = Integer(ENV.fetch("K8SLAB_VCPUS", "8"))
+
   config.vm.provider :libvirt do |libvirt|
-    libvirt.driver        = "kvm"
-    libvirt.memory        = Integer(ENV.fetch("K8SLAB_MEM_MB", "6144"))
-    libvirt.cpus          = Integer(ENV.fetch("K8SLAB_VCPUS", "4"))
-    libvirt.nested        = true
-    libvirt.cpu_mode      = "host-passthrough"
-    libvirt.machine_type  = "q35"
-    libvirt.disk_bus      = "virtio"
+    libvirt.driver         = "kvm"
+    libvirt.memory         = Integer(ENV.fetch("K8SLAB_MEM_MB", "6144"))
+    libvirt.cpus           = vcpus
+    libvirt.nested         = true
+    libvirt.cpu_mode       = "host-passthrough"
+    libvirt.machine_type   = "q35"
+    libvirt.disk_bus       = "virtio"
     libvirt.nic_model_type = "virtio"
     libvirt.default_prefix = "k8slab_"
+
+    # Virtio memballoon — host reclaims idle guest RAM when needed.
+    libvirt.memballoon_enabled = true
+    libvirt.memballoon_model   = "virtio"
+
+    # Do NOT set `libvirt.graphics_type = "none"` — it drops the video
+    # device and Debian 13 Trixie hangs in early boot (NICs never come
+    # up, domifstat tx_bytes stays 0).
+
+    # Virtio-RNG with /dev/urandom backing — avoids entropy starvation
+    # during snap install, apt key verification, TLS handshakes.
+    libvirt.random model: "random"
+
+    # Host-side qemu-guest-agent channel. Debian 13 box ships the guest
+    # side; this adds the virtio-serial unix socket so libvirt can drive
+    # fsfreeze / graceful shutdown / in-guest IP reporting.
+    libvirt.channel type: "unix",
+                    target_name: "org.qemu.guest_agent.0",
+                    target_type: "virtio"
+
+    # Disk IO tuning. cache=unsafe ignores guest fsyncs — huge speedup
+    # for apt/snap/mkfs (many small sync writes). Trade: host crash can
+    # leave qcow2 inconsistent; throw-away VM, just re-run `make destroy
+    # && make up`. io=threads compatible with any cache mode.
+    # discard+detect_zeroes keep qcow2 sparse as guest TRIMs.
+    libvirt.disk_driver cache: "unsafe",
+                        io: "threads",
+                        discard: "unmap",
+                        detect_zeroes: "unmap"
 
     # Dedicated data disk backing the LXD Btrfs storage pool. The serial
     # is what pins the device path inside the guest:
@@ -49,6 +81,10 @@ Vagrant.configure("2") do |config|
                     size: ENV.fetch("K8SLAB_LXD_POOL_GB", "40") + "G",
                     type: "qcow2",
                     bus: "virtio",
+                    cache: "unsafe",
+                    io: "threads",
+                    discard: "unmap",
+                    detect_zeroes: "unmap",
                     serial: "k8slab-lxdpool"
   end
 
@@ -60,6 +96,7 @@ Vagrant.configure("2") do |config|
                     libvirt__network_name: "k8slab-mgmt-nat",
                     libvirt__dhcp_enabled: true,
                     libvirt__forward_mode: "nat",
+                    libvirt__driver_queues: vcpus,
                     autostart: true
 
     # IPv6-only external segment. `type: "dhcp"` is the documented
@@ -74,6 +111,7 @@ Vagrant.configure("2") do |config|
                     libvirt__dhcp_enabled: true,
                     libvirt__forward_mode: "none",
                     libvirt__guest_ipv6: true,
+                    libvirt__driver_queues: vcpus,
                     autostart: true
   end
 

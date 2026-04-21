@@ -1,0 +1,107 @@
+---
+# Host-side external Linux bridge, managed via systemd-networkd drop-ins.
+# Declarative end-to-end — the role only writes files and reloads the
+# network configuration; no imperative `ip link add` / `brctl` calls.
+#
+# Why systemd-networkd and not ifupdown: drop-in files are purely
+# declarative, picked up by `networkctl reload` without a service
+# restart, and scope is explicit (a .network file only matches the
+# interface named in [Match]). That makes coexistence with Debian's
+# default networking.service safe as long as we never match mgmt NICs.
+
+# ---------------------------------------------------------------------------
+# Directories and package prerequisites.
+# ---------------------------------------------------------------------------
+
+- name: "lxd-host | bridge | ensure systemd-networkd drop-in dir"
+  ansible.builtin.file:
+    path: "{{ lxd_host_networkd_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+# ---------------------------------------------------------------------------
+# Drop-in files. Priority prefix (default 30) keeps this role's files out
+# of the way of distro-bundled defaults (which usually sit at 99).
+# ---------------------------------------------------------------------------
+
+- name: "lxd-host | bridge | define bridge netdev"
+  ansible.builtin.copy:
+    dest: "{{ lxd_host_networkd_dir }}/{{ lxd_host_networkd_file_priority }}-{{ lxd_host_ext_bridge_name }}.netdev"
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      # Managed by Ansible role lxd_host (plan §8.3). Do not edit by hand.
+      [NetDev]
+      Name={{ lxd_host_ext_bridge_name }}
+      Kind=bridge
+      MTUBytes={{ lxd_host_ext_bridge_mtu }}
+
+      [Bridge]
+      STP={{ 'true' if lxd_host_ext_bridge_stp else 'false' }}
+      ForwardDelaySec={{ lxd_host_ext_bridge_forward_delay }}
+  notify: "lxd-host | handlers | reload systemd-networkd"
+
+- name: "lxd-host | bridge | define bridge .network (L2 stub)"
+  ansible.builtin.copy:
+    dest: "{{ lxd_host_networkd_dir }}/{{ lxd_host_networkd_file_priority }}-{{ lxd_host_ext_bridge_name }}.network"
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      # Managed by Ansible role lxd_host (plan §8.3). Do not edit by hand.
+      # The host intentionally holds no IP on this bridge — external IPv6
+      # addressing belongs to containers attached via the bridge (plan §5).
+      [Match]
+      Name={{ lxd_host_ext_bridge_name }}
+
+      [Network]
+      LinkLocalAddressing={{ lxd_host_ext_bridge_link_local }}
+      IPv6AcceptRA={{ lxd_host_ext_bridge_accept_ra }}
+      ConfigureWithoutCarrier=yes
+  notify: "lxd-host | handlers | reload systemd-networkd"
+
+- name: "lxd-host | bridge | attach uplink .network"
+  ansible.builtin.copy:
+    dest: "{{ lxd_host_networkd_dir }}/{{ lxd_host_networkd_file_priority + 1 }}-{{ lxd_host_ext_bridge_name }}-uplink.network"
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      # Managed by Ansible role lxd_host (plan §8.3). Do not edit by hand.
+      # Uplink = {{ lxd_host_ext_bridge_uplink }}. Matching on explicit
+      # Name= keeps systemd-networkd from touching unrelated interfaces.
+      [Match]
+      Name={{ lxd_host_ext_bridge_uplink }}
+
+      [Network]
+      Bridge={{ lxd_host_ext_bridge_name }}
+      LinkLocalAddressing=no
+      IPv6AcceptRA=no
+  notify: "lxd-host | handlers | reload systemd-networkd"
+
+# ---------------------------------------------------------------------------
+# Service enablement. systemd-networkd must be enabled + started for the
+# drop-ins to take effect; the handler reloads the config when files
+# change. We do NOT disable Debian's networking.service — other NICs
+# (notably mgmt) may still be ifupdown-managed.
+# ---------------------------------------------------------------------------
+
+- name: "lxd-host | bridge | ensure systemd-networkd is enabled + running"
+  ansible.builtin.systemd:
+    name: systemd-networkd.service
+    state: started
+    enabled: true
+
+# If the uplink interface was previously owned by ifupdown (auto eth1 /
+# iface eth1 inet dhcp), the kernel still has its ifupdown-assigned state
+# when systemd-networkd claims it. A bounce via `ip link set dev ... down`
+# + networkctl reload is the supported trigger. Rely on the handler to
+# reload; explicit state-reset happens below only when files just changed.
+#
+# Flush pending handlers now so the rest of the role (including
+# healthchecks) runs against the reloaded network state.
+- name: "lxd-host | bridge | flush reload handlers"
+  ansible.builtin.meta: flush_handlers

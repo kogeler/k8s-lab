@@ -6,7 +6,7 @@ galaxy_info:
   description: >-
     Minimal Debian 13 host preparation for the k8s-lab stack — packages,
     kernel modules and sysctl baseline only. Does NOT install LXD (see
-    lxd_snap) or non-system binaries (see binary_fetch).
+    lxd_host) or non-system binaries (see binary_fetch).
   license: MIT
   min_ansible_version: "2.16"
   platforms:

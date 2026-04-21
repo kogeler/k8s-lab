@@ -18,7 +18,7 @@ assumes — and nothing beyond it. It:
 * creates the deterministic `/opt/capi-lab` tree (`bin/`, `etc/`) that
   later roles populate with binaries and configuration artefacts.
 
-This role does **not** install LXD (see `lxd_snap`), does **not** fetch
+This role does **not** install LXD (see `lxd_host`), does **not** fetch
 non-system binaries (see `binary_fetch`), and does **not** touch user
 accounts, time sync or SSH — those are environment concerns handled by
 the consumer repository.

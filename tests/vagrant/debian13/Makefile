@@ -27,6 +27,13 @@ ifeq ($(K8SLAB_PROBE),1)
 NETS += k8slab-probe-ext6
 endif
 
+# Libvirt-side artifacts this Vagrantfile produces. Kept as a single
+# variable so `destroy` / `wipe` stay symmetric with `up`.
+LIBVIRT_DOMAINS := k8slab_host k8slab_probe
+LIBVIRT_VOLUMES := k8slab_host.img k8slab_host-vdb.qcow2 \
+                   k8slab_probe.img k8slab_probe-vdb.qcow2
+LIBVIRT_POOL    ?= default
+
 .PHONY: up
 up: networks
 	cd $(HERE) && $(VAGRANT) up --provider=libvirt host
@@ -43,6 +50,40 @@ up: networks
 .PHONY: destroy
 destroy:
 	-cd $(HERE) && $(VAGRANT) destroy -f
+	@# Safety net for the case where vagrant was killed mid-flight (SIGKILL
+	@# on `vagrant up`, OOM, session drop). `vagrant destroy` can no longer
+	@# clean up orphan libvirt domains + volumes if its own state tracker
+	@# is gone, and the next `vagrant up` then fails instantly with
+	@# "Volume for domain is already created". Belt-and-braces: force-remove
+	@# any domain and volume this Vagrantfile is known to allocate.
+	@for d in $(LIBVIRT_DOMAINS); do \
+		if $(VIRSH) dominfo $$d >/dev/null 2>&1 ; then \
+			echo "== cleanup: virsh destroy $$d" ; \
+			$(VIRSH) destroy  $$d >/dev/null 2>&1 || true ; \
+			$(VIRSH) undefine --nvram $$d >/dev/null 2>&1 || \
+				$(VIRSH) undefine        $$d >/dev/null 2>&1 || true ; \
+		fi ; \
+	done
+	@for v in $(LIBVIRT_VOLUMES); do \
+		if $(VIRSH) vol-info --pool $(LIBVIRT_POOL) $$v >/dev/null 2>&1 ; then \
+			echo "== cleanup: virsh vol-delete $$v" ; \
+			$(VIRSH) vol-delete --pool $(LIBVIRT_POOL) $$v >/dev/null 2>&1 || true ; \
+		fi ; \
+	done
+	@# Drop the local vagrant state directory when it has drifted from
+	@# libvirt reality — a leftover .vagrant/machines/*/libvirt/id pointing
+	@# at a no-longer-existing UUID causes `vagrant status` to report
+	@# "inaccessible" and `vagrant destroy` to no-op.
+	@for m in $(HERE)/.vagrant/machines/*/libvirt ; do \
+		[ -d "$$m" ] || continue ; \
+		if [ -f "$$m/id" ]; then \
+			uuid=$$(cat "$$m/id") ; \
+			if ! $(VIRSH) dominfo $$uuid >/dev/null 2>&1 ; then \
+				echo "== cleanup: removing stale vagrant state at $$m" ; \
+				rm -rf "$$m" ; \
+			fi ; \
+		fi ; \
+	done
 
 .PHONY: wipe
 wipe: destroy

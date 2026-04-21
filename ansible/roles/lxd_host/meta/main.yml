@@ -1,0 +1,29 @@
+---
+galaxy_info:
+  role_name: lxd_host
+  namespace: k8slab
+  author: k8s-lab contributors
+  description: >-
+    Host-side LXD preparation for the k8s-lab stack: installs LXD via
+    snap, pins channel, applies refresh policy, and creates the host-side
+    Linux bridge used as the parent of LXD external nic devices.
+    Does NOT manage LXD entities (projects, storage pools, managed
+    networks, profiles, instances) — those are owned by dedicated roles.
+  license: MIT
+  min_ansible_version: "2.16"
+  platforms:
+    - name: Debian
+      versions:
+        - trixie
+  galaxy_tags:
+    - kubernetes
+    - lxd
+    - bootstrap
+
+dependencies:
+  # base_system owns snapd/kernel-modules/sysctl/opt-root contract that
+  # lxd_host's snap install and bridge tasks depend on. Expressing the
+  # dep here means any caller (roles/meta, playbook `roles:` list,
+  # Molecule converge via include_role) pulls base_system in
+  # automatically — no hidden ordering rule in consumer code.
+  - role: base_system

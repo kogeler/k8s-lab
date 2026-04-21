@@ -1,0 +1,105 @@
+---
+# ==========================================================================
+# lxd_host — role defaults
+# ==========================================================================
+#
+# Purpose (plan §8.3): owns everything host-side that prepares the Debian
+# machine to run LXD. That means two things the previous draft separated:
+#
+#   1. install LXD via snap, pin channel, control auto-refresh policy;
+#   2. create the host-side Linux bridge `br-ext6` that will later be used
+#      as the `parent` for LXD's external `nic` device — this is a plain
+#      Linux bridge on the host, NOT an LXD-managed network.
+#
+# Anything that lives *inside* LXD — projects, storage pools, managed
+# networks, profiles, instances — is owned by a dedicated entity role.
+#
+# Public contract (plan §2.6.2): every variable exposed to callers is
+# prefixed `lxd_host_*`. Internal / derived facts use the `_lxd_host_*`
+# prefix and must stay inside the role.
+
+# -- General ---------------------------------------------------------------
+
+# Whole-role toggle. When false, preflight still runs (so misconfigured
+# inputs get caught early) but no mutating task is applied.
+lxd_host_enabled: true
+
+# -- Snap install ----------------------------------------------------------
+
+# Snap pinning per plan §2.11 — track current upstream stable. Feature-
+# stable track is used (not 5.21 LTS) as a deliberate deviation already
+# recorded in PLAN-stage1-progress.md.
+lxd_host_snap_name:      "lxd"
+lxd_host_snap_channel:   "6/stable"
+
+# LXD snap is strictly confined from 4.0+; `classic` would be a category
+# error and is kept explicit to guard against accidental flips.
+lxd_host_snap_classic:   false
+
+# How long to wait for snapd's initial seeding phase to finish before we
+# try the install. `snap install` silently hangs if invoked during seed.
+lxd_host_snap_seed_wait_timeout: 180
+
+# -- Snap refresh policy ---------------------------------------------------
+#
+# Plan §8.3 allows two shapes: indefinite hold, OR explicit refresh window.
+# Both are implemented system-wide via `snap set system refresh.*` because
+# on this host LXD is the only meaningful snap — a per-snap hold adds
+# complexity without a real benefit here.
+
+# hold | timer
+lxd_host_snap_refresh_mode:        "hold"
+
+# When mode=hold: value of `refresh.hold`. "forever" holds indefinitely;
+# an RFC3339 timestamp holds until that moment.
+lxd_host_snap_refresh_hold_value:  "forever"
+
+# When mode=timer: systemd-calendar-ish expression set via
+# `snap set system refresh.timer=...`. Keep weekly-off-hours to avoid
+# surprising the cluster.
+lxd_host_snap_refresh_timer_value: "fri,03:00-04:00"
+
+# -- LXD daemon readiness --------------------------------------------------
+
+# After install / refresh, block until `lxd waitready` returns. This
+# matters because downstream roles immediately try to talk to the daemon.
+lxd_host_wait_ready:         true
+lxd_host_wait_ready_timeout: 300
+
+# -- Host-side external bridge --------------------------------------------
+#
+# Plain host Linux bridge for external IPv6 L2 ingress (plan §4.2, §5.3).
+# LXD profiles later reference this bridge via `nictype: bridged` /
+# `parent: {{ lxd_host_ext_bridge_name }}`. The role implements it through
+# systemd-networkd drop-in files so no imperative shell is needed.
+
+lxd_host_ext_bridge_enabled:   true
+lxd_host_ext_bridge_name:      "br-ext6"
+
+# REQUIRED when ext_bridge_enabled=true. Intentionally empty in defaults —
+# preflight asserts callers have set it, to avoid accidentally bridging the
+# mgmt NIC.
+lxd_host_ext_bridge_uplink:    ""
+
+lxd_host_ext_bridge_stp:           false
+lxd_host_ext_bridge_mtu:           1500
+lxd_host_ext_bridge_forward_delay: 0
+
+# Keep the bridge itself as a pure L2 stub: no link-local addressing, no RA
+# acceptance on the host side. External IPv6 addressing belongs to
+# containers attached via the bridge, not to the host.
+lxd_host_ext_bridge_link_local:    "no"
+lxd_host_ext_bridge_accept_ra:     "no"
+
+# Where systemd-networkd drop-ins live, and the numeric prefix used for
+# this role's files. Prefix >= 30 stays out of the way of distro defaults.
+lxd_host_networkd_dir:           "/etc/systemd/network"
+lxd_host_networkd_file_priority: 30
+
+# -- Flow control (plan §2.6.3) -------------------------------------------
+#
+# Coarse-grained section gates only. No per-task switches — those make the
+# contract fuzzy and complicate testing.
+lxd_host_flow_control_snap:    true
+lxd_host_flow_control_refresh: true
+lxd_host_flow_control_bridge:  true

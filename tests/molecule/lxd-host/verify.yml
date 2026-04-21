@@ -1,0 +1,121 @@
+---
+# lxd_host verify — real runtime checks (plan §11.4, §2.6.5).
+# Not just "role converged" — we exercise the actual state on the host.
+
+- name: "Verify | lxd_host"
+  hosts: all
+  gather_facts: true
+  become: true
+  vars_files:
+    - "../shared/vars/common.yml"
+  vars:
+    # Pull the expected values from the same inventory host_vars the role
+    # consumed; avoids drift between what the role configured and what
+    # verify asserts. Defaults match the role's own defaults.
+    _expected_channel: "{{ lxd_host_snap_channel | default('6/stable') }}"
+    _expected_bridge:  "{{ lxd_host_ext_bridge_name | default('br-ext6') }}"
+    _expected_uplink:  "{{ lxd_host_ext_bridge_uplink }}"
+  tasks:
+    # ---- Snap --------------------------------------------------------
+    - name: "Verify | lxd_host | snap list lxd"
+      ansible.builtin.command:
+        cmd: "snap list lxd --color=never"
+      register: _verify_snaplist_register
+      changed_when: false
+
+    - name: "Verify | lxd_host | assert lxd snap present on expected channel"
+      ansible.builtin.assert:
+        that:
+          - _verify_snaplist_register.stdout_lines | length >= 2
+          - ((_verify_snaplist_register.stdout_lines[1].split() | list)[3]) == _expected_channel
+        fail_msg: >-
+          `snap list lxd` does not report channel {{ _expected_channel }};
+          full output:
+          {{ _verify_snaplist_register.stdout }}
+
+    # ---- Refresh policy ---------------------------------------------
+    - name: "Verify | lxd_host | snap get system refresh.hold"
+      ansible.builtin.command:
+        cmd: "snap get system refresh.hold"
+      register: _verify_refreshhold_register
+      changed_when: false
+      failed_when: false
+
+    - name: "Verify | lxd_host | assert refresh.hold=forever"
+      ansible.builtin.assert:
+        that:
+          - _verify_refreshhold_register.rc == 0
+          - (_verify_refreshhold_register.stdout | trim) == "forever"
+        fail_msg: >-
+          expected snap system option refresh.hold=forever after role
+          run (mode=hold). Got rc={{ _verify_refreshhold_register.rc }}
+          stdout="{{ _verify_refreshhold_register.stdout | default('') }}"
+          stderr="{{ _verify_refreshhold_register.stderr | default('') }}".
+
+    # ---- Daemon -----------------------------------------------------
+    - name: "Verify | lxd_host | lxd waitready responds quickly"
+      # Absolute path: /snap/bin is not in the non-interactive SSH PATH.
+      ansible.builtin.command:
+        cmd: "/snap/bin/lxd waitready --timeout=10"
+      changed_when: false
+
+    # ---- Bridge -----------------------------------------------------
+    - name: "Verify | lxd_host | bridge exists as an interface"
+      ansible.builtin.stat:
+        path: "/sys/class/net/{{ _expected_bridge }}"
+      register: _verify_bridge_register
+
+    - name: "Verify | lxd_host | assert bridge directory is present"
+      ansible.builtin.assert:
+        that:
+          - _verify_bridge_register.stat.exists
+        fail_msg: "bridge {{ _expected_bridge }} missing from /sys/class/net"
+
+    - name: "Verify | lxd_host | bridge type is 'bridge'"
+      ansible.builtin.slurp:
+        src: "/sys/class/net/{{ _expected_bridge }}/uevent"
+      register: _verify_bridge_uevent_register
+
+    - name: "Verify | lxd_host | assert bridge devtype"
+      ansible.builtin.assert:
+        that:
+          - "'DEVTYPE=bridge' in (_verify_bridge_uevent_register.content | b64decode)"
+        fail_msg: >-
+          {{ _expected_bridge }} exists but is not of type bridge. uevent:
+          {{ _verify_bridge_uevent_register.content | b64decode }}
+
+    - name: "Verify | lxd_host | list bridge members from /sys"
+      ansible.builtin.find:
+        paths: "/sys/class/net/{{ _expected_bridge }}/brif"
+        file_type: any
+      register: _verify_brmembers_register
+
+    - name: "Verify | lxd_host | assert uplink is a bridge member"
+      ansible.builtin.assert:
+        that:
+          - _expected_uplink in (
+              (_verify_brmembers_register.files | default([]))
+              | map(attribute='path') | map('basename') | list
+            )
+        fail_msg: >-
+          expected {{ _expected_uplink }} to be a member of bridge
+          {{ _expected_bridge }}; /sys/class/net/{{ _expected_bridge }}/brif
+          currently lists:
+          {{ (_verify_brmembers_register.files | default([]))
+             | map(attribute='path') | map('basename') | list }}.
+
+    # ---- systemd-networkd state -------------------------------------
+    - name: "Verify | lxd_host | systemd-networkd is enabled + active"
+      ansible.builtin.systemd:
+        name: systemd-networkd.service
+      register: _verify_networkd_register
+
+    - name: "Verify | lxd_host | assert systemd-networkd running"
+      ansible.builtin.assert:
+        that:
+          - _verify_networkd_register.status.ActiveState == "active"
+          - _verify_networkd_register.status.UnitFileState in ["enabled", "enabled-runtime"]
+        fail_msg: >-
+          systemd-networkd must be enabled and active after role run.
+          ActiveState={{ _verify_networkd_register.status.ActiveState }},
+          UnitFileState={{ _verify_networkd_register.status.UnitFileState }}.

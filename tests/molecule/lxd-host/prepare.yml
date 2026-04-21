@@ -1,0 +1,24 @@
+---
+# lxd_host scenario prepare.
+#
+# Only the test-harness bootstrap (apt cache / test deps / opt-root
+# skeleton) lives here. base_system itself is NOT applied explicitly —
+# it is declared as a meta dependency of lxd_host (ansible/roles/
+# lxd_host/meta/main.yml), so converge's `include_role: lxd_host` pulls
+# it in automatically. Keeping role wiring inside role metadata, not
+# inside scenario glue, matches the plan §2.6.5 role dependencies
+# contract (deps declared in the role's own meta/main.yml, never in
+# prepare glue or consumer playbooks).
+
+- name: "Prepare | lxd_host"
+  hosts: all
+  gather_facts: true
+  become: true
+  vars:
+    _molecule_project_dir: "{{ lookup('ansible.builtin.env', 'MOLECULE_PROJECT_DIRECTORY') }}"
+  vars_files:
+    - "../shared/vars/common.yml"
+  tasks:
+    - name: "Prepare | lxd_host | shared base"
+      ansible.builtin.include_tasks:
+        file: "{{ _molecule_project_dir }}/shared/tasks/prepare.yml"

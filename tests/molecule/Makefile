@@ -50,10 +50,9 @@ endif
 SCENARIOS := \
 	base-system \
 	binary-fetch \
-	lxd-snap \
+	lxd-host \
 	lxd-project \
 	lxd-storage-pools \
-	lxd-network-ext-bridge \
 	lxd-network-int-managed \
 	lxd-profiles \
 	lxd-bootstrap-instance \

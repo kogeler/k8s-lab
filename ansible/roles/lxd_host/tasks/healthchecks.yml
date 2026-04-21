@@ -1,0 +1,78 @@
+---
+# Role-internal healthchecks — catch a broken baseline at converge time
+# rather than letting it surface inside a downstream LXD-entity role.
+# Scenario-level verify.yml remains the canonical acceptance surface.
+
+# ---- LXD daemon / snap ---------------------------------------------------
+
+- name: "lxd-host | healthchecks | read current lxd snap state"
+  ansible.builtin.command:
+    cmd: "snap list {{ lxd_host_snap_name }} --color=never"
+  register: _lxd_host_health_snaplist_register
+  changed_when: false
+
+- name: "lxd-host | healthchecks | assert lxd snap is installed on expected channel"
+  # `snap list lxd` output format (header + single data row):
+  #   Name  Version  Rev  Tracking    Publisher  Notes
+  #   lxd   6.5      38   6/stable    canonical  -
+  # The fourth column is the tracking channel we pinned via community.general.snap.
+  ansible.builtin.assert:
+    that:
+      - _lxd_host_health_snaplist_register.stdout_lines | length >= 2
+      - ((_lxd_host_health_snaplist_register.stdout_lines[1].split() | list)[3]) == lxd_host_snap_channel
+    fail_msg: >-
+      lxd snap is not installed on expected channel
+      "{{ lxd_host_snap_channel }}". `snap list` reports:
+      {{ _lxd_host_health_snaplist_register.stdout }}
+
+- name: "lxd-host | healthchecks | lxd daemon responds"
+  # Absolute path: /snap/bin is not in Ansible's non-interactive SSH PATH.
+  ansible.builtin.command:
+    cmd: "/snap/bin/lxd waitready --timeout=10"
+  changed_when: false
+
+# ---- External bridge -----------------------------------------------------
+
+- name: "lxd-host | healthchecks | refresh network facts"
+  ansible.builtin.setup:
+    gather_subset:
+      - "!all"
+      - "!any"
+      - network
+  when: lxd_host_ext_bridge_enabled
+
+- name: "lxd-host | healthchecks | assert bridge exists as an interface"
+  ansible.builtin.assert:
+    that:
+      - lxd_host_ext_bridge_name in (ansible_facts['interfaces'] | default([]))
+    fail_msg: >-
+      expected bridge "{{ lxd_host_ext_bridge_name }}" to be a host
+      interface after role run.
+  when: lxd_host_ext_bridge_enabled
+
+# The uplink is expected to be a member of the bridge. Facts put the
+# interface-specific dict at `ansible_<ifname>` (dots replaced by
+# underscores), and bridge members list who is a slave via `slave` key
+# on the member or `interfaces` key on the bridge. Rather than relying on
+# the exact fact shape, read /sys — it is stable, kernel-level truth.
+- name: "lxd-host | healthchecks | read bridge members from /sys"
+  ansible.builtin.find:
+    paths: "/sys/class/net/{{ lxd_host_ext_bridge_name }}/brif"
+    file_type: any
+  register: _lxd_host_health_brmembers_register
+  when: lxd_host_ext_bridge_enabled
+
+- name: "lxd-host | healthchecks | assert uplink is a bridge member"
+  ansible.builtin.assert:
+    that:
+      - lxd_host_ext_bridge_uplink in (
+          (_lxd_host_health_brmembers_register.files | default([]))
+          | map(attribute='path') | map('basename') | list
+        )
+    fail_msg: >-
+      expected {{ lxd_host_ext_bridge_uplink }} to be a member of bridge
+      {{ lxd_host_ext_bridge_name }} after role run. /sys/class/net/.../brif
+      currently lists:
+      {{ (_lxd_host_health_brmembers_register.files | default([]))
+         | map(attribute='path') | map('basename') | list }}.
+  when: lxd_host_ext_bridge_enabled

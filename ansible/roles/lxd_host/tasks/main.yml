@@ -1,0 +1,59 @@
+---
+# Dispatcher-only (plan §2.6.2). Keep this file ordered and lean; every
+# thematic block goes into its own task file.
+
+- name: "lxd-host | preflight"
+  ansible.builtin.include_tasks:
+    file: preflight.yml
+    apply:
+      tags: [lxd_host, lxd-host, lxd_host_preflight]
+  tags: [lxd_host, lxd-host, lxd_host_preflight]
+
+- name: "lxd-host | install | snap"
+  ansible.builtin.include_tasks:
+    file: install.yml
+    apply:
+      tags: [lxd_host, lxd-host, lxd_host_install]
+  when:
+    - lxd_host_enabled
+    - lxd_host_flow_control_snap
+  tags: [lxd_host, lxd-host, lxd_host_install]
+
+- name: "lxd-host | config | refresh policy"
+  ansible.builtin.include_tasks:
+    file: refresh.yml
+    apply:
+      tags: [lxd_host, lxd-host, lxd_host_refresh]
+  when:
+    - lxd_host_enabled
+    - lxd_host_flow_control_refresh
+  tags: [lxd_host, lxd-host, lxd_host_refresh]
+
+- name: "lxd-host | config | daemon waitready"
+  ansible.builtin.include_tasks:
+    file: waitready.yml
+    apply:
+      tags: [lxd_host, lxd-host, lxd_host_waitready]
+  when:
+    - lxd_host_enabled
+    - lxd_host_wait_ready
+  tags: [lxd_host, lxd-host, lxd_host_waitready]
+
+- name: "lxd-host | config | external bridge"
+  ansible.builtin.include_tasks:
+    file: bridge.yml
+    apply:
+      tags: [lxd_host, lxd-host, lxd_host_bridge]
+  when:
+    - lxd_host_enabled
+    - lxd_host_flow_control_bridge
+    - lxd_host_ext_bridge_enabled
+  tags: [lxd_host, lxd-host, lxd_host_bridge]
+
+- name: "lxd-host | healthchecks"
+  ansible.builtin.include_tasks:
+    file: healthchecks.yml
+    apply:
+      tags: [lxd_host, lxd-host, lxd_host_healthchecks]
+  when: lxd_host_enabled
+  tags: [lxd_host, lxd-host, lxd_host_healthchecks]

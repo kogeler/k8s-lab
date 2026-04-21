@@ -21,6 +21,17 @@ skip_list:
   # specifies kebab-case only for task `display name`, not for directory
   # naming (plan §2.6.3). Disable the lint that flags role dir names.
   - role-name
+  # Plan §2.6.3 mandates task names of the form `<role> | <section> | <action>`
+  # — lowercase role prefix first. This conflicts with ansible-lint's
+  # default expectation that every task title start with a capital letter.
+  # The repo convention wins (it encodes traceability across roles); the
+  # lint is noise against that convention.
+  - name[casing]
+  # `.yamllint` is the repo-level source of truth for YAML style — it
+  # deliberately permits column-aligned values (max-spaces-after: -1) for
+  # readability of defaults files. ansible-lint re-applies stricter default
+  # yamllint rules here, which conflict with the convention.
+  - yaml[colons]
   # Inventories and group_vars are a consumer-repo concern; absence here is
   # not a lint failure.
   - yaml[line-length]

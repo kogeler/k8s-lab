@@ -1,0 +1,16 @@
+---
+# Block until the LXD daemon reports ready. Downstream roles immediately
+# talk to the LXD unix socket or REST API — calling them before the
+# daemon is up produces flaky first-run failures.
+
+- name: "lxd-host | waitready | block on daemon readiness"
+  # Absolute path: the `lxd` binary ships as part of the lxd snap and
+  # lives under /snap/bin, which is not in Ansible's non-interactive
+  # SSH `$PATH` on Debian. Using the full path avoids a shim around
+  # `/etc/profile.d/apps-bin-path.sh`, which is only sourced for login
+  # shells.
+  ansible.builtin.command:
+    cmd: "/snap/bin/lxd waitready --timeout={{ lxd_host_wait_ready_timeout }}"
+  # `lxd waitready` returns 0 when the daemon is ready; it's inherently
+  # side-effect-free, so never report changed.
+  changed_when: false

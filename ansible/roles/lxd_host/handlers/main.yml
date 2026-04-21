@@ -1,0 +1,13 @@
+---
+# Handlers contract (plan §2.6.4): reactive only, module-first.
+#
+# systemctl reload systemd-networkd is the same operation as
+# `networkctl reload` (SIGHUP to the daemon), re-read drop-ins without
+# disrupting running interfaces. Using the native module avoids the
+# command fallback. bridge.yml ensures the service is already active
+# by the time any handler fires.
+
+- name: "lxd-host | handlers | reload systemd-networkd"
+  ansible.builtin.systemd:
+    name: systemd-networkd.service
+    state: reloaded

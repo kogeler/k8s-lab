@@ -1,0 +1,82 @@
+---
+# Apply the snap refresh policy. snapd exposes the policy through
+# `snap set system refresh.*`; there is no Ansible module for it, so this
+# is a documented shell fallback (plan §2.6.1). Idempotency is preserved
+# by reading the current value first and only writing when it differs.
+
+# ---------------------------------------------------------------------------
+# Step 1: read current state so downstream tasks can compare and set
+# changed_when correctly.
+# ---------------------------------------------------------------------------
+
+- name: "lxd-host | refresh | read current refresh.hold"
+  ansible.builtin.command:
+    cmd: "snap get system refresh.hold"
+  register: _lxd_host_refresh_hold_register
+  changed_when: false
+  # `snap get system refresh.hold` on an unset key exits non-zero with
+  # "has no \"refresh.hold\"" — we treat that as "empty string" below.
+  failed_when: false
+
+- name: "lxd-host | refresh | read current refresh.timer"
+  ansible.builtin.command:
+    cmd: "snap get system refresh.timer"
+  register: _lxd_host_refresh_timer_register
+  changed_when: false
+  failed_when: false
+
+- name: "lxd-host | refresh | derive normalised current values"
+  # Non-zero rc or error stderr means "unset"; a successful read's stdout
+  # is the current value. Trim + default keep both branches string-typed.
+  ansible.builtin.set_fact:
+    _lxd_host_refresh_hold_current: >-
+      {{
+        (_lxd_host_refresh_hold_register.stdout | default('')) | trim
+        if (_lxd_host_refresh_hold_register.rc | default(1)) == 0
+        else ''
+      }}
+    _lxd_host_refresh_timer_current: >-
+      {{
+        (_lxd_host_refresh_timer_register.stdout | default('')) | trim
+        if (_lxd_host_refresh_timer_register.rc | default(1)) == 0
+        else ''
+      }}
+
+# ---------------------------------------------------------------------------
+# Step 2: apply desired state.
+# For `hold` mode we set refresh.hold=<value> and clear refresh.timer.
+# For `timer` mode we set refresh.timer=<value> and clear refresh.hold.
+# snapd accepts the literal value "null!" to unset a system option.
+# ---------------------------------------------------------------------------
+
+- name: "lxd-host | refresh | apply hold"
+  ansible.builtin.command:
+    cmd: "snap set system refresh.hold={{ lxd_host_snap_refresh_hold_value }}"
+  when:
+    - lxd_host_snap_refresh_mode == "hold"
+    - _lxd_host_refresh_hold_current != lxd_host_snap_refresh_hold_value
+  changed_when: true
+
+- name: "lxd-host | refresh | clear timer when holding"
+  ansible.builtin.command:
+    cmd: "snap set system refresh.timer=null!"
+  when:
+    - lxd_host_snap_refresh_mode == "hold"
+    - _lxd_host_refresh_timer_current | length > 0
+  changed_when: true
+
+- name: "lxd-host | refresh | apply timer"
+  ansible.builtin.command:
+    cmd: "snap set system refresh.timer={{ lxd_host_snap_refresh_timer_value }}"
+  when:
+    - lxd_host_snap_refresh_mode == "timer"
+    - _lxd_host_refresh_timer_current != lxd_host_snap_refresh_timer_value
+  changed_when: true
+
+- name: "lxd-host | refresh | clear hold when on timer"
+  ansible.builtin.command:
+    cmd: "snap set system refresh.hold=null!"
+  when:
+    - lxd_host_snap_refresh_mode == "timer"
+    - _lxd_host_refresh_hold_current | length > 0
+  changed_when: true
