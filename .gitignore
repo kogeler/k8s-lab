@@ -1,0 +1,51 @@
+# Artifacts directory: runtime kubeconfigs, generated tfvars, ephemeral trust material.
+# Contract (plan §14.1): file mode 0600, owner = runner user, not committed.
+.artifacts/*
+!.artifacts/.gitkeep
+
+# Molecule runtime state
+.molecule/
+**/molecule/*/.molecule/
+
+# Vagrant runtime state
+.vagrant/
+**/.vagrant/
+
+# Terraform state (plan §14.3: local state only for test fixtures, not SoT)
+**/.terraform/
+**/.terraform.lock.hcl
+**/terraform.tfstate
+**/terraform.tfstate.backup
+**/terraform.tfstate.d/
+**/crash.log
+**/*.tfvars
+**/*.tfvars.json
+!tests/fixtures/**/example.tfvars.json
+
+# Ansible
+*.retry
+ansible/.vault_password
+ansible/collections/
+**/roles/*/tests/
+
+# Helm
+charts/**/charts/
+charts/**/Chart.lock
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# Editor / OS
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# Local env overrides
+.env
+.env.local

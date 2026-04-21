@@ -1,0 +1,27 @@
+---
+# /opt/capi-lab tree setup — owned by this role because every other role
+# assumes it already exists with deterministic ownership.
+
+- name: "base-system | config | ensure opt root"
+  ansible.builtin.file:
+    path: "{{ base_system_opt_root }}"
+    state: directory
+    owner: "{{ base_system_opt_owner }}"
+    group: "{{ base_system_opt_group }}"
+    mode:  "{{ base_system_opt_mode }}"
+
+- name: "base-system | config | ensure opt/bin"
+  ansible.builtin.file:
+    path: "{{ base_system_opt_root }}/bin"
+    state: directory
+    owner: "{{ base_system_opt_owner }}"
+    group: "{{ base_system_opt_group }}"
+    mode:  "{{ base_system_opt_mode }}"
+
+- name: "base-system | config | ensure opt/etc"
+  ansible.builtin.file:
+    path: "{{ base_system_opt_root }}/etc"
+    state: directory
+    owner: "{{ base_system_opt_owner }}"
+    group: "{{ base_system_opt_group }}"
+    mode:  "{{ base_system_opt_mode }}"

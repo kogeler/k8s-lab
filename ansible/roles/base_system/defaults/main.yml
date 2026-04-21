@@ -1,0 +1,110 @@
+---
+# ==========================================================================
+# base_system — role defaults
+# ==========================================================================
+#
+# Purpose: minimal Debian 13 host preparation for the k8s-lab stack. Only
+# packages explicitly allowed by plan §2.2 are installed here; every other
+# tool is expected to be delivered by `binary_fetch` or `lxd_snap`.
+#
+# Public contract (plan §2.6.2): variables exposed to callers are prefixed
+# `base_system_*`. Helper / computed facts use the `_base_system_*` prefix
+# and must stay internal.
+
+# -- General ---------------------------------------------------------------
+
+# Toggle the whole role. When false, preflight still runs (to assert inputs
+# are coherent) but no mutating task is applied. Matches the flow-control
+# naming rule from plan §2.6.3.
+base_system_enabled: true
+
+# Role-wide filesystem root. Kept in sync with `opt_root` across roles so
+# that every artefact lands under `/opt/capi-lab/` (plan §2.2).
+base_system_opt_root: "/opt/capi-lab"
+
+# Owner/group/mode for the opt root. Deterministic per plan §8.2.
+base_system_opt_owner: "root"
+base_system_opt_group: "root"
+base_system_opt_mode:  "0755"
+
+# -- Packages --------------------------------------------------------------
+
+# APT packages allowed by plan §8.1. The list is intentionally small —
+# anything outside this set is a bootstrap signal that the role scope is
+# being stretched and needs re-design.
+base_system_packages_required:
+  - snapd
+  - python3
+  - python3-apt
+  - ca-certificates
+  - curl
+  - tar
+  - gzip
+  - xz-utils
+
+# Optional extras, gated per capability. We do not add helpers "just in
+# case" — each flag below is consumed by a later phase.
+#
+# btrfs-progs: required whenever `storage.driver == "btrfs"` (plan §8.5);
+# toggled explicitly rather than installed unconditionally so the role
+# stays lean on hosts that use ZFS/dir-backed pools.
+base_system_btrfs_enabled: true
+base_system_btrfs_packages:
+  - btrfs-progs
+
+# APT cache freshness window (seconds). Keeps converge/idempotence fast
+# while not being so stale that newly added packages fail to resolve.
+base_system_apt_cache_valid_time: 3600
+
+# -- Kernel / sysctl -------------------------------------------------------
+
+# Node containers require several kernel knobs; these are applied to the
+# host so that LXD instances inherit sane defaults via nesting. The values
+# track Kubernetes upstream recommendations.
+base_system_sysctl_apply: true
+base_system_sysctl_values:
+  # inotify limits are the most common reason container init systems fail
+  # silently on larger nested setups (kubelet, containerd, CNI agents).
+  fs.inotify.max_user_instances: 1024
+  fs.inotify.max_user_watches:   1048576
+  # Plenty of fd headroom — containerd + kubelet can burn through the
+  # default 8192 quickly on Kubernetes nodes.
+  fs.file-max:                   2097152
+  # Make sure IPv6 forwarding is up even when `net.ipv6.conf.default`
+  # would otherwise default to 0 on Debian minimal installs.
+  net.ipv6.conf.all.forwarding:  1
+  net.ipv4.ip_forward:           1
+
+# -- Kernel modules --------------------------------------------------------
+
+# Modules we need loaded on the host. LXD + kubeadm path in CAPN documents
+# `br_netfilter`, `overlay`, `nf_conntrack` as required (plan §8.8 refs).
+base_system_kernel_modules:
+  - overlay
+  - br_netfilter
+  - nf_conntrack
+
+# -- Flow control ---------------------------------------------------------
+
+# Fine-grained feature toggles are coarse by design (plan §2.6.3): role-
+# level and major-section only. No per-task switches.
+base_system_flow_control_packages: true
+base_system_flow_control_sysctl:   true
+base_system_flow_control_modules:  true
+
+# -- LXD Btrfs pool contract ----------------------------------------------
+#
+# base_system does NOT format or mount the pool disk — host storage
+# provisioning is a responsibility of whoever prepares the machine
+# (Molecule shared prepare in tests; the operator / an installer image in
+# production). What base_system owns is the **contract**: when pool is
+# required, assert that the expected mountpoint exists and really is a
+# btrfs filesystem. This keeps downstream roles (lxd_storage_pools) from
+# happily pointing LXD at a path that silently falls back to the OS disk.
+#
+# This is a deliberate, documented deviation from plan §8.1 (which scoped
+# base_system to packages only); see PLAN-stage1-progress.md.
+base_system_btrfs_pool_required:   false
+base_system_btrfs_pool_mountpoint: "/var/lib/k8slab/lxd-pool"
+base_system_btrfs_pool_fstype:     "btrfs"
+base_system_btrfs_pool_label:      "k8slab-lxdpool"

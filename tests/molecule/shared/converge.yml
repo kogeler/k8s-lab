@@ -1,0 +1,33 @@
+---
+# Shared Molecule converge entrypoint.
+#
+# Individual role scenarios include this playbook after setting two vars:
+#   * _shared_target_role          — role name under ansible/roles/
+#   * _shared_target_role_vars     — optional dict forwarded into the role
+#
+# Integration-level scenarios (bootstrap_cluster, cluster_addons_helm, …)
+# override `roles:` directly instead of using this shim.
+
+- name: "Converge | shared | apply target role"
+  hosts: all
+  gather_facts: true
+  become: true
+  tasks:
+    - name: "Converge | shared | guard missing target role"
+      ansible.builtin.assert:
+        that:
+          - _shared_target_role is defined
+          - _shared_target_role | length > 0
+        fail_msg: >-
+          Shared converge expects `_shared_target_role` to be set to the
+          directory name of the role under ansible/roles/.
+
+    # Role-specific overrides are expected to be set as ordinary inventory
+    # host_vars alongside `_shared_target_role` — the role's own `<role>_*`
+    # variable prefix keeps them scoped. We intentionally do NOT try to
+    # pass a templated dict to `include_role vars:` — Ansible rejects
+    # `vars: "{{ some_dict }}"` on include_role since `vars:` must be a
+    # literal mapping.
+    - name: "Converge | shared | apply role {{ _shared_target_role }}"
+      ansible.builtin.include_role:
+        name: "{{ _shared_target_role }}"

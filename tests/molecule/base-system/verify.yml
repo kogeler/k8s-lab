@@ -1,0 +1,144 @@
+---
+# base_system verify — real runtime checks (plan §11.4).
+# Not just converge/idempotence: we assert actual kernel state, package
+# index, sysctl values, filesystem layout, and the btrfs pool contract.
+
+- name: "Verify | base_system"
+  hosts: all
+  gather_facts: true
+  become: true
+  vars_files:
+    - "../shared/vars/common.yml"
+  tasks:
+    # ---- Packages ------------------------------------------------------
+    - name: "Verify | base_system | collect package facts"
+      ansible.builtin.package_facts:
+        manager: apt
+
+    - name: "Verify | base_system | required packages present"
+      ansible.builtin.assert:
+        that:
+          - item in ansible_facts.packages
+        fail_msg: "required package {{ item }} not in apt package index"
+      loop:
+        - snapd
+        - python3
+        - python3-apt
+        - ca-certificates
+        - curl
+        - tar
+        - gzip
+        - xz-utils
+        - btrfs-progs
+
+    # ---- Kernel modules ------------------------------------------------
+    # /proc/modules has one module per line (first whitespace-delimited
+    # field = module name); parsing it avoids a shell `lsmod` call and
+    # keeps us fully native.
+    - name: "Verify | base_system | read /proc/modules"
+      ansible.builtin.slurp:
+        src: /proc/modules
+      register: _verify_procmods_register
+
+    - name: "Verify | base_system | extract loaded module names"
+      ansible.builtin.set_fact:
+        _verify_loaded_modules: >-
+          {{ (_verify_procmods_register.content | b64decode).splitlines()
+             | map('split') | map('first') | list }}
+
+    - name: "Verify | base_system | assert required modules loaded"
+      ansible.builtin.assert:
+        that:
+          - item in _verify_loaded_modules
+        fail_msg: "kernel module {{ item }} is not currently loaded"
+      loop:
+        - overlay
+        - br_netfilter
+        - nf_conntrack
+
+    - name: "Verify | base_system | modules persisted in /etc/modules-load.d"
+      ansible.builtin.find:
+        paths: /etc/modules-load.d
+        patterns: "*.conf"
+        recurse: false
+      register: _verify_modload_register
+
+    - name: "Verify | base_system | assert at least one modules-load.d entry"
+      ansible.builtin.assert:
+        that:
+          - _verify_modload_register.files | length > 0
+        fail_msg: "no files in /etc/modules-load.d — modprobe persistence missing"
+
+    # ---- sysctl --------------------------------------------------------
+    - name: "Verify | base_system | read live sysctl values"
+      ansible.builtin.slurp:
+        src: "/proc/sys/{{ item | replace('.', '/') }}"
+      register: _verify_sysctl_register
+      loop:
+        - fs.inotify.max_user_instances
+        - fs.inotify.max_user_watches
+        - fs.file-max
+        - net.ipv6.conf.all.forwarding
+        - net.ipv4.ip_forward
+
+    - name: "Verify | base_system | assert sysctl values applied"
+      ansible.builtin.assert:
+        that:
+          - (item.content | b64decode | trim) | int > 0
+        fail_msg: "sysctl {{ item.item }} is not positive after role run"
+      loop: "{{ _verify_sysctl_register.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+
+    # ---- /opt/capi-lab tree --------------------------------------------
+    - name: "Verify | base_system | stat opt root children"
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      loop:
+        - "/opt/capi-lab"
+        - "/opt/capi-lab/bin"
+        - "/opt/capi-lab/etc"
+      register: _verify_opt_register
+
+    - name: "Verify | base_system | assert opt root layout"
+      ansible.builtin.assert:
+        that:
+          - item.stat.exists
+          - item.stat.isdir
+          - item.stat.pw_name == "root"
+          - item.stat.gr_name == "root"
+        fail_msg: "{{ item.item }} missing or mis-owned"
+      loop: "{{ _verify_opt_register.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+
+    # ---- btrfs pool contract ------------------------------------------
+    - name: "Verify | base_system | stat btrfs pool mountpoint"
+      ansible.builtin.stat:
+        path: "{{ lxd_pool_mountpoint }}"
+      register: _verify_pool_register
+
+    - name: "Verify | base_system | assert pool mountpoint exists"
+      ansible.builtin.assert:
+        that:
+          - _verify_pool_register.stat.exists
+          - _verify_pool_register.stat.isdir
+        fail_msg: "{{ lxd_pool_mountpoint }} is not a directory"
+
+    - name: "Verify | base_system | resolve pool mount from facts"
+      ansible.builtin.set_fact:
+        _verify_pool_mount_fact: >-
+          {{
+            (ansible_facts['mounts'] | default([]))
+            | selectattr('mount', 'equalto', lxd_pool_mountpoint)
+            | list
+          }}
+
+    - name: "Verify | base_system | assert pool mount is btrfs"
+      ansible.builtin.assert:
+        that:
+          - _verify_pool_mount_fact | length == 1
+          - _verify_pool_mount_fact[0].fstype == "btrfs"
+        fail_msg: >-
+          {{ lxd_pool_mountpoint }} is not a btrfs mount — got
+          {{ _verify_pool_mount_fact | default('nothing') }}

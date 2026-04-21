@@ -1,0 +1,85 @@
+---
+# Format and mount the Vagrant-attached data disk as the LXD btrfs pool
+# source. Included by scenario-level prepare playbooks that need the
+# pool available (base_system, lxd_storage_pools, bootstrap_cluster, …).
+#
+# Inputs (required):
+#   lxd_pool_device      — e.g. /dev/disk/by-id/virtio-k8slab-lxdpool
+#   lxd_pool_mountpoint  — where the pool lives inside the guest
+#   lxd_pool_label       — filesystem label, also used by /etc/fstab entry
+#   lxd_pool_mount_opts  — mount options
+#
+# The task stays idempotent: the filesystem module does not re-mkfs when
+# a recognisable FS already exists, and ansible.posix.mount is the
+# canonical declarative form for /etc/fstab + mount state.
+
+- name: "Prepare | btrfs-pool | assert inputs"
+  ansible.builtin.assert:
+    that:
+      - lxd_pool_device      is string and lxd_pool_device      | length > 0
+      - lxd_pool_mountpoint  is string and lxd_pool_mountpoint  | length > 0
+      - lxd_pool_label       is string and lxd_pool_label       | length > 0
+      - lxd_pool_mount_opts  is string
+    fail_msg: "prepare-btrfs-pool.yml: lxd_pool_* inputs must be set via shared vars"
+
+- name: "Prepare | btrfs-pool | install btrfs tooling"
+  # btrfs-progs is normally owned by base_system; we install it here too
+  # so prepare is self-contained — `mkfs.btrfs` must exist before
+  # community.general.filesystem is invoked, and scenarios that run
+  # prepare before converge cannot rely on the role's own install step.
+  ansible.builtin.apt:
+    name: btrfs-progs
+    state: present
+    install_recommends: false
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: "Prepare | btrfs-pool | wait for disk device"
+  # Vagrant attaches the disk at VM boot; by the time prepare runs it
+  # should already be present. We still guard with a short wait so a
+  # slow virtio probe does not surface as a mysterious mkfs error.
+  ansible.builtin.wait_for:
+    path: "{{ lxd_pool_device }}"
+    state: present
+    timeout: 60
+
+- name: "Prepare | btrfs-pool | stat the device"
+  ansible.builtin.stat:
+    path: "{{ lxd_pool_device }}"
+    follow: true
+  register: _prepare_btrfs_pool_dev_register
+
+- name: "Prepare | btrfs-pool | assert device is a block special"
+  ansible.builtin.assert:
+    that:
+      - _prepare_btrfs_pool_dev_register.stat.exists
+      - _prepare_btrfs_pool_dev_register.stat.isblk | default(false)
+    fail_msg: >-
+      {{ lxd_pool_device }} is not a block device inside the guest.
+      Check that the Vagrantfile attached a disk with the correct serial
+      and that the VM has been recreated since the Vagrantfile changed.
+
+- name: "Prepare | btrfs-pool | create btrfs filesystem if absent"
+  community.general.filesystem:
+    fstype: "{{ lxd_pool_fstype }}"
+    dev: "{{ lxd_pool_device }}"
+    # `force: false` is the safe default but make it explicit — a rogue
+    # `force: true` would wipe the pool on every prepare run.
+    force: false
+    opts: "-L {{ lxd_pool_label }} {{ lxd_pool_mkfs_opts | default('') }}"
+
+- name: "Prepare | btrfs-pool | ensure mountpoint directory"
+  ansible.builtin.file:
+    path: "{{ lxd_pool_mountpoint }}"
+    state: directory
+    owner: root
+    group: root
+    mode:  "0755"
+
+- name: "Prepare | btrfs-pool | mount btrfs pool"
+  ansible.posix.mount:
+    src: "LABEL={{ lxd_pool_label }}"
+    path: "{{ lxd_pool_mountpoint }}"
+    fstype: "{{ lxd_pool_fstype }}"
+    opts: "{{ lxd_pool_mount_opts }}"
+    state: mounted

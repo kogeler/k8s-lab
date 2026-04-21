@@ -1,0 +1,31 @@
+---
+# Shared prepare steps for Molecule scenarios.
+#
+# Scenarios include this file to get test-harness prerequisites without
+# duplicating boilerplate. Keep it lean — anything role-specific belongs in
+# the scenario's own prepare.yml.
+
+- name: "Prepare | shared | update apt cache"
+  ansible.builtin.apt:
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: "Prepare | shared | install minimum test dependencies"
+  ansible.builtin.apt:
+    name:
+      - python3
+      - python3-apt
+      - ca-certificates
+      - iproute2
+      - rsync
+    state: present
+
+- name: "Prepare | shared | ensure /opt/capi-lab root exists"
+  # base_system normally owns this; we pre-create it for scenarios that
+  # apply a role other than base_system in isolation.
+  ansible.builtin.file:
+    path: /opt/capi-lab
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"

@@ -1,0 +1,27 @@
+---
+# base_system scenario prepare.
+#
+# Two steps:
+#   1. Shared prepare — test deps, opt-root skeleton.
+#   2. Btrfs pool — format and mount the disk Vagrant attached with
+#      serial `k8slab-lxdpool`, so base_system's preflight contract
+#      (base_system_btrfs_pool_required: true, injected via host_vars in
+#      molecule.yml) can assert the mount exists.
+
+- name: "Prepare | base_system"
+  hosts: all
+  gather_facts: true
+  become: true
+  vars:
+    # Molecule 26 exposes the project dir via env, not as a fact.
+    _molecule_project_dir: "{{ lookup('ansible.builtin.env', 'MOLECULE_PROJECT_DIRECTORY') }}"
+  vars_files:
+    - "../shared/vars/common.yml"
+  tasks:
+    - name: "Prepare | base_system | shared base"
+      ansible.builtin.include_tasks:
+        file: "{{ _molecule_project_dir }}/shared/tasks/prepare.yml"
+
+    - name: "Prepare | base_system | btrfs pool"
+      ansible.builtin.include_tasks:
+        file: "{{ _molecule_project_dir }}/shared/tasks/prepare-btrfs-pool.yml"

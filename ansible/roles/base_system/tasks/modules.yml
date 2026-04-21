@@ -1,0 +1,17 @@
+---
+# Kernel module handling.
+#
+# Uses `community.general.modprobe` with `persistent: present` so the
+# module is loaded now AND persisted into /etc/modules-load.d/ in a single
+# declarative call — avoiding a shell-based `modprobe` + template-file
+# split that would violate the native-first policy (plan §2.6.1).
+
+- name: "base-system | modules | load + persist"
+  community.general.modprobe:
+    name: "{{ item }}"
+    state: present
+    persistent: present
+  loop: "{{ base_system_kernel_modules }}"
+  loop_control:
+    label: "{{ item }}"
+  register: _base_system_modules_register

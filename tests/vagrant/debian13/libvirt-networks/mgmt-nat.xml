@@ -1,0 +1,33 @@
+<!--
+  Management-plane libvirt network for the k8s-lab local harness.
+
+  Purpose:
+    * SSH reachability between the developer workstation and the Vagrant VM;
+    * ordinary IPv4 NAT egress for package pulls, binary downloads, helm
+      repositories and similar administrative traffic.
+
+  This network must stay separate from the `ext6-mock` segment so the
+  external-plane test signals (RA, NDP, IPv6-only ingress) are not polluted
+  by DHCPv4/DNS traffic from the management plane.
+
+  Install with:
+    sudo virsh net-define   ./mgmt-nat.xml
+    sudo virsh net-autostart k8slab-mgmt-nat
+    sudo virsh net-start     k8slab-mgmt-nat
+-->
+<network>
+  <name>k8slab-mgmt-nat</name>
+  <forward mode='nat'>
+    <nat>
+      <port start='1024' end='65535'/>
+    </nat>
+  </forward>
+  <!-- Bridge name kept ≤15 chars (Linux IFNAMSIZ) -->
+  <bridge name='k8slab-mgmt' stp='on' delay='0'/>
+  <domain name='k8slab.mgmt.local'/>
+  <ip address='192.168.77.1' netmask='255.255.255.0'>
+    <dhcp>
+      <range start='192.168.77.100' end='192.168.77.199'/>
+    </dhcp>
+  </ip>
+</network>

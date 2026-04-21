@@ -1,0 +1,44 @@
+<!--
+  Mocked provider-facing external IPv6 /64 segment for the local harness.
+
+  Purpose (plan §11.2):
+    * emulate a real provider external plane with a routable /64;
+    * deliver Router Advertisements and DHCPv6 so the second NIC of the
+      test VM receives an IPv6 SLAAC + stateful IPv6 address;
+    * stay **isolated** so no IPv4/DNS traffic leaks through and pollutes
+      the external-plane test signals;
+    * form the same L2 segment as `probe-ext6.xml`, which gives the
+      optional probe VM an "external client" vantage point.
+
+  Architectural note on the IPv4 /30:
+    the plan (§4.1) describes external addressing as IPv6-only for node
+    allocations. That policy lives at the Ansible/systemd-networkd layer
+    — not the L2 segment. The /30 below is an RFC 5737 documentation
+    prefix (TEST-NET-1) carrying no real traffic; it exists only because
+    vagrant-libvirt's private_network plugin chokes on pure-IPv6 XML
+    with `undefined method 'to_range' for nil` when it tries to compute
+    an IPv4 DHCP range. The guest's external NIC still derives its only
+    routable address from the IPv6 /64 via DHCPv6/RA.
+
+  Keep the IPv6 prefix under 2001:db8::/32 (documentation prefix,
+  RFC 3849) so we never accidentally announce or route it externally.
+
+  libvirt network XML docs: https://libvirt.org/formatnetwork.html
+-->
+<network ipv6='yes'>
+  <name>k8slab-ext6-mock</name>
+  <!-- Bridge name kept ≤15 chars (Linux IFNAMSIZ) -->
+  <bridge name='k8slab-ext6' stp='off' delay='0'/>
+  <!-- Isolated: no <forward/> element at all. -->
+  <ip family='ipv4' address='192.0.2.1' prefix='30'>
+    <dhcp>
+      <range start='192.0.2.2' end='192.0.2.2'/>
+    </dhcp>
+  </ip>
+  <ip family='ipv6' address='2001:db8:42:100::1' prefix='64'>
+    <dhcp>
+      <range start='2001:db8:42:100::100'
+             end='2001:db8:42:100::1ff'/>
+    </dhcp>
+  </ip>
+</network>

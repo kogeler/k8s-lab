@@ -1,0 +1,78 @@
+---
+# Molecule scenario for the base_system role.
+#
+# Driver: delegated — the shared Vagrant/libvirt VM under
+# tests/vagrant/debian13 is the single managed host across scenarios
+# (plan §11.1). Lifecycle is handled by thin YAML wrappers that shell out
+# to scripts/molecule_{create,destroy}.sh so a single VM survives many
+# scenario runs.
+
+dependency:
+  name: galaxy
+  options:
+    requirements-file: ../../../ansible/requirements.yml
+
+driver:
+  # Molecule 26.x folded the old `delegated` driver into `default`.
+  # `options.managed: false` tells Molecule we own VM lifecycle — the
+  # shared Vagrant VM is brought up by `scripts/molecule_run.py` BEFORE
+  # molecule is invoked, and Molecule's own create/destroy phases become
+  # no-ops.
+  name: default
+  options:
+    managed: false
+
+platforms:
+  - name: k8slab-host
+    groups:
+      - k8slab_host
+
+provisioner:
+  name: ansible
+  config_options:
+    defaults:
+      interpreter_python: auto_silent
+      # Override Molecule's default `stdout_callback: community.general.yaml`
+      # which was removed in community.general 12.0. The modern equivalent
+      # is the built-in `default` callback with result_format=yaml.
+      stdout_callback: ansible.builtin.default
+      result_format: yaml
+      forks: 5
+      callbacks_enabled: ansible.posix.profile_tasks
+    ssh_connection:
+      pipelining: true
+  inventory:
+    host_vars:
+      k8slab-host:
+        _shared_target_role: base_system
+        # Role-specific overrides live directly in host_vars — the role's
+        # `base_system_*` prefix keeps them scoped. Enable the contract
+        # assertion: prepare.yml formats + mounts the pool disk before
+        # converge runs, so preflight must see a live btrfs mount.
+        base_system_btrfs_pool_required: true
+        # Connection coordinates come from env vars populated by
+        # `scripts/molecule_run.py` (which queries `vagrant ssh-config`
+        # once before exec'ing molecule).
+        ansible_host:                 "{{ lookup('env', 'K8SLAB_HOST_ADDR') }}"
+        ansible_user:                 "{{ lookup('env', 'K8SLAB_HOST_USER') }}"
+        ansible_port:                 "{{ lookup('env', 'K8SLAB_HOST_PORT') | int }}"
+        ansible_ssh_private_key_file: "{{ lookup('env', 'K8SLAB_HOST_KEY') }}"
+        ansible_ssh_common_args:      "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
+  playbooks:
+    prepare:  prepare.yml
+    converge: ${MOLECULE_PROJECT_DIRECTORY}/shared/converge.yml
+    verify:   verify.yml
+
+scenario:
+  name: base_system
+  test_sequence:
+    - dependency
+    - create
+    - prepare
+    - converge
+    - idempotence
+    - verify
+    - destroy
+
+verifier:
+  name: ansible

@@ -1,0 +1,21 @@
+---
+# APT package installation. No custom repos are added — plan §2.2 forbids
+# them; any non-standard tool is delivered by binary_fetch instead.
+
+- name: "base-system | install | update apt cache"
+  ansible.builtin.apt:
+    update_cache: true
+    cache_valid_time: "{{ base_system_apt_cache_valid_time }}"
+
+- name: "base-system | install | required packages"
+  ansible.builtin.apt:
+    name: "{{ base_system_packages_required }}"
+    state: present
+    install_recommends: false
+
+- name: "base-system | install | btrfs tooling"
+  ansible.builtin.apt:
+    name: "{{ base_system_btrfs_packages }}"
+    state: present
+    install_recommends: false
+  when: base_system_btrfs_enabled

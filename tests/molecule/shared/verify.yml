@@ -1,0 +1,22 @@
+---
+# Shared Molecule verify entrypoint.
+#
+# Scenarios usually ship their own scenario-local verify.yml with real
+# runtime assertions (plan §11.4 — verify must check actual behaviour, not
+# just convergence). This shared file exists so trivial scenarios can opt
+# into a minimal sanity pass without copy-pasting boilerplate; it is NOT
+# intended as a substitute for scenario-specific verification.
+
+- name: "Verify | shared | minimum runtime sanity"
+  hosts: all
+  gather_facts: true
+  become: true
+  tasks:
+    - name: "Verify | shared | host is reachable"
+      ansible.builtin.ping: {}
+
+    - name: "Verify | shared | OS family is Debian"
+      ansible.builtin.assert:
+        that:
+          - ansible_facts['os_family'] | default('') == 'Debian'
+        fail_msg: "k8s-lab targets Debian family hosts only."

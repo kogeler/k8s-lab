@@ -1,0 +1,105 @@
+# -*- mode: ruby -*-
+# vi: set ft=ruby :
+#
+# Local Debian 13 Trixie test VM for k8s-lab.
+#
+# Two NICs attached to two libvirt networks defined in ./libvirt-networks/:
+#   * eth0 → mgmt-nat    (SSH + NAT egress; management plane)
+#   * eth1 → ext6-mock   (mocked provider-facing IPv6 /64 segment,
+#                         mimics the external plane from plan §4.1)
+#
+# The `probe-ext6` network is defined here but attached only to the optional
+# probe VM; it shares the same L2 segment as ext6-mock so the probe can
+# validate NodePort / MetalLB VIP reachability from an "external" viewpoint.
+#
+# vagrant-libvirt docs:
+#   https://vagrant-libvirt.github.io/vagrant-libvirt/
+
+Vagrant.configure("2") do |config|
+  config.vm.box = ENV.fetch("K8SLAB_BOX", "debian/trixie64")
+  config.vm.box_check_update = false
+  config.ssh.forward_agent = true
+
+  # Shared sync folders: keep the repo mounted so Ansible from inside the VM
+  # (or a delegated Molecule scenario from outside) sees the same tree.
+  config.vm.synced_folder "../../../", "/vagrant",
+                          type: "rsync",
+                          rsync__exclude: [".git/", ".artifacts/",
+                                           ".vagrant/", ".terraform/",
+                                           ".molecule/", "**/.molecule/"]
+
+  config.vm.provider :libvirt do |libvirt|
+    libvirt.driver        = "kvm"
+    libvirt.memory        = Integer(ENV.fetch("K8SLAB_MEM_MB", "6144"))
+    libvirt.cpus          = Integer(ENV.fetch("K8SLAB_VCPUS", "4"))
+    libvirt.nested        = true
+    libvirt.cpu_mode      = "host-passthrough"
+    libvirt.machine_type  = "q35"
+    libvirt.disk_bus      = "virtio"
+    libvirt.nic_model_type = "virtio"
+    libvirt.default_prefix = "k8slab_"
+
+    # Dedicated data disk backing the LXD Btrfs storage pool. The serial
+    # is what pins the device path inside the guest:
+    #   /dev/disk/by-id/virtio-k8slab-lxdpool
+    # Using by-id keeps the contract independent of kernel probe order.
+    # Formatting and mounting are done by the Molecule shared prepare step
+    # (not by Vagrant), so the disk reaches the guest raw.
+    libvirt.storage :file,
+                    size: ENV.fetch("K8SLAB_LXD_POOL_GB", "40") + "G",
+                    type: "qcow2",
+                    bus: "virtio",
+                    serial: "k8slab-lxdpool"
+  end
+
+  # --- host node ----------------------------------------------------------
+  config.vm.define "host" do |host|
+    host.vm.hostname = "k8slab-host"
+
+    host.vm.network :private_network,
+                    libvirt__network_name: "k8slab-mgmt-nat",
+                    libvirt__dhcp_enabled: true,
+                    libvirt__forward_mode: "nat",
+                    autostart: true
+
+    # IPv6-only external segment. `type: "dhcp"` is the documented
+    # vagrant-libvirt option that tells the plugin "do not compute any
+    # IPAM — the guest will get its address from DHCP/RA on whatever
+    # family the libvirt network serves". Without this flag the plugin's
+    # IPv4-centric code path crashes on an IPv6-only network with
+    # `undefined method 'to_range' for nil`.
+    host.vm.network :private_network,
+                    type: "dhcp",
+                    libvirt__network_name: "k8slab-ext6-mock",
+                    libvirt__dhcp_enabled: true,
+                    libvirt__forward_mode: "none",
+                    libvirt__guest_ipv6: true,
+                    autostart: true
+  end
+
+  # --- optional probe node -----------------------------------------------
+  # Enabled with: K8SLAB_PROBE=1 vagrant up probe
+  if ENV["K8SLAB_PROBE"] == "1"
+    config.vm.define "probe", autostart: false do |probe|
+      probe.vm.hostname = "k8slab-probe"
+      probe.vm.provider :libvirt do |libvirt|
+        libvirt.memory = 1024
+        libvirt.cpus   = 1
+      end
+
+      probe.vm.network :private_network,
+                       libvirt__network_name: "k8slab-mgmt-nat",
+                       libvirt__dhcp_enabled: true,
+                       libvirt__forward_mode: "nat",
+                       autostart: true
+
+      probe.vm.network :private_network,
+                       type: "dhcp",
+                       libvirt__network_name: "k8slab-probe-ext6",
+                       libvirt__dhcp_enabled: true,
+                       libvirt__forward_mode: "none",
+                       libvirt__guest_ipv6: true,
+                       autostart: true
+    end
+  end
+end

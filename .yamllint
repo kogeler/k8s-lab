@@ -1,0 +1,36 @@
+---
+extends: default
+
+rules:
+  line-length:
+    max: 160
+    level: warning
+  truthy:
+    allowed-values: ['true', 'false', 'yes', 'no']
+    check-keys: false
+  comments:
+    min-spaces-from-content: 1
+  indentation:
+    spaces: 2
+    indent-sequences: true
+  braces:
+    max-spaces-inside: 1
+  brackets:
+    max-spaces-inside: 1
+  colons:
+    max-spaces-before: 0
+    # Allow vertical alignment of values — improves readability of our
+    # defaults / vars files far more than a strict 1-space rule costs.
+    max-spaces-after: -1
+  document-start: disable
+
+ignore: |
+  .molecule/
+  **/.molecule/
+  .vagrant/
+  **/.vagrant/
+  .terraform/
+  **/.terraform/
+  .artifacts/
+  collections/
+  charts/**/charts/

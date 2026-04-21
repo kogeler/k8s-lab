@@ -1,0 +1,36 @@
+<!--
+  External-plane L2 segment used by the optional `probe` VM (enabled with
+  `K8SLAB_PROBE=1 vagrant up probe`).
+
+  Purpose (plan §11.3):
+    * give the probe VM an "external client" vantage point on the same
+      emulated IPv6 /64 as `ext6-mock`;
+    * let end-to-end tests verify NodePort, MetalLB VIP and NDP from a
+      position topologically outside the host VM.
+
+  The network is defined separately from `ext6-mock` only to keep libvirt
+  topology declarative per VM role. In practice both networks should map
+  to the same host bridge if you want true L2 adjacency between the probe
+  and the host VM's `eth1` — adjust the bridge name here to
+  `k8slab-ext6` and drop the <ip/> block so libvirt does not attach
+  a second RA source on the same segment. Keeping them separate by
+  default avoids surprising L2 side-effects on a fresh workstation.
+-->
+<network ipv6='yes'>
+  <name>k8slab-probe-ext6</name>
+  <!-- Bridge name kept ≤15 chars (Linux IFNAMSIZ) -->
+  <bridge name='k8slab-probe' stp='off' delay='0'/>
+  <!-- RFC 5737 TEST-NET-1 /30 — see ext6-mock.xml for why the
+       IPv4 stanza is present on an otherwise IPv6-only segment. -->
+  <ip family='ipv4' address='192.0.2.5' prefix='30'>
+    <dhcp>
+      <range start='192.0.2.6' end='192.0.2.6'/>
+    </dhcp>
+  </ip>
+  <ip family='ipv6' address='2001:db8:42:100::a' prefix='64'>
+    <dhcp>
+      <range start='2001:db8:42:100::200'
+             end='2001:db8:42:100::2ff'/>
+    </dhcp>
+  </ip>
+</network>

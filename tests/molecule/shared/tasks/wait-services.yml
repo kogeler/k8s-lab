@@ -1,0 +1,31 @@
+---
+# Helper: wait for a systemd unit to enter `active (running)` state.
+#
+# Usage:
+#   - name: "Verify | bootstrap_k3s | wait for k3s"
+#     ansible.builtin.include_tasks:
+#       file: "{{ molecule_shared }}/tasks/wait-services.yml"
+#     vars:
+#       _wait_unit: k3s.service
+#       _wait_timeout: 180
+#
+# The helper keeps retry/until semantics consistent across scenarios, so
+# scenario-level verify files don't each invent their own polling loop.
+
+- name: "Wait-services | assert required inputs"
+  ansible.builtin.assert:
+    that:
+      - _wait_unit is defined
+      - _wait_unit | length > 0
+    fail_msg: "wait-services.yml requires `_wait_unit` to be set"
+
+- name: "Wait-services | {{ _wait_unit }} reaches active state"
+  ansible.builtin.systemd_service:
+    name: "{{ _wait_unit }}"
+  register: _wait_services_state_register
+  retries: "{{ ((_wait_timeout | default(120)) | int // 5) | int }}"
+  delay: 5
+  until:
+    - _wait_services_state_register.status is defined
+    - _wait_services_state_register.status.ActiveState | default('') == 'active'
+    - _wait_services_state_register.status.SubState   | default('') == 'running'

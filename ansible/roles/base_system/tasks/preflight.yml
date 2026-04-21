@@ -1,0 +1,89 @@
+---
+# Input validation for base_system. Runs before any mutating task (plan
+# §2.6.2). Keep checks declarative and use ansible.builtin.assert.
+
+- name: "base-system | preflight | gather facts"
+  # Certain OS family / distribution checks below require facts to exist;
+  # callers (e.g. Molecule scenarios) may have gather_facts: false set.
+  ansible.builtin.setup:
+    gather_subset:
+      - "!all"
+      - "!any"
+      - min
+  when: ansible_facts['os_family'] is not defined
+
+- name: "base-system | preflight | target OS is Debian 13"
+  ansible.builtin.assert:
+    that:
+      - ansible_facts['os_family'] == 'Debian'
+      - ansible_facts['distribution'] == 'Debian'
+      - (ansible_facts['distribution_major_version'] | int) >= 13
+    fail_msg: >-
+      base_system only targets Debian 13 Trixie or newer;
+      detected {{ ansible_facts['distribution'] | default('?') }}
+      {{ ansible_facts['distribution_version'] | default('?') }}.
+
+- name: "base-system | preflight | validate public inputs"
+  ansible.builtin.assert:
+    that:
+      - base_system_opt_root is string
+      - base_system_opt_root | length > 0
+      - base_system_opt_root is match('^/')
+      - base_system_opt_mode is match('^0[0-7]{3}$')
+      - base_system_apt_cache_valid_time | int >= 0
+    fail_msg: >-
+      base_system: invalid public inputs — opt_root must be absolute,
+      opt_mode must be a 4-digit octal string, apt_cache_valid_time
+      must be a non-negative integer.
+
+- name: "base-system | preflight | validate package lists"
+  ansible.builtin.assert:
+    that:
+      - base_system_packages_required is sequence
+      - base_system_packages_required | length > 0
+      - base_system_btrfs_packages is sequence
+    fail_msg: "base_system: package lists must be non-empty sequences."
+
+- name: "base-system | preflight | validate kernel inputs"
+  ansible.builtin.assert:
+    that:
+      - base_system_kernel_modules is sequence
+      - base_system_sysctl_values is mapping
+    fail_msg: >-
+      base_system: kernel_modules must be a sequence and sysctl_values
+      must be a mapping of sysctl key -> value.
+
+# ---- LXD btrfs pool contract --------------------------------------------
+# Contract-only — base_system never formats or mounts the pool disk
+# (plan deviation note in PLAN-stage1-progress.md).
+
+- name: "base-system | preflight | btrfs pool | gather mounts"
+  ansible.builtin.setup:
+    gather_subset:
+      - "!all"
+      - "!any"
+      - mounts
+  when: base_system_btrfs_pool_required
+
+- name: "base-system | preflight | btrfs pool | resolve mount entry"
+  ansible.builtin.set_fact:
+    _base_system_btrfs_pool_mount_fact: >-
+      {{
+        (ansible_facts['mounts'] | default([]))
+        | selectattr('mount', 'equalto', base_system_btrfs_pool_mountpoint)
+        | list
+      }}
+  when: base_system_btrfs_pool_required
+
+- name: "base-system | preflight | btrfs pool | assert mounted"
+  ansible.builtin.assert:
+    that:
+      - _base_system_btrfs_pool_mount_fact | length == 1
+      - _base_system_btrfs_pool_mount_fact[0].fstype == base_system_btrfs_pool_fstype
+    fail_msg: >-
+      base_system preflight: expected {{ base_system_btrfs_pool_mountpoint }}
+      to be an active {{ base_system_btrfs_pool_fstype }} mount; found
+      {{ _base_system_btrfs_pool_mount_fact | default('no entry') }}.
+      In tests this is staged by tests/molecule/shared/tasks/prepare-btrfs-pool.yml;
+      in production the installer / operator owns it.
+  when: base_system_btrfs_pool_required

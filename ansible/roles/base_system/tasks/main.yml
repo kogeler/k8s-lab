@@ -1,0 +1,56 @@
+---
+# Dispatcher-only (plan §2.6.2). Keep this file ordered and lean; any
+# real logic goes into the included thematic files.
+
+- name: "base-system | preflight"
+  ansible.builtin.include_tasks:
+    file: preflight.yml
+    apply:
+      tags: [base_system, base-system, base_system_preflight]
+  tags: [base_system, base-system, base_system_preflight]
+
+- name: "base-system | install | apt packages"
+  ansible.builtin.include_tasks:
+    file: install.yml
+    apply:
+      tags: [base_system, base-system, base_system_install]
+  when:
+    - base_system_enabled
+    - base_system_flow_control_packages
+  tags: [base_system, base-system, base_system_install]
+
+- name: "base-system | config | kernel modules"
+  ansible.builtin.include_tasks:
+    file: modules.yml
+    apply:
+      tags: [base_system, base-system, base_system_modules]
+  when:
+    - base_system_enabled
+    - base_system_flow_control_modules
+  tags: [base_system, base-system, base_system_modules]
+
+- name: "base-system | config | sysctl"
+  ansible.builtin.include_tasks:
+    file: sysctl.yml
+    apply:
+      tags: [base_system, base-system, base_system_sysctl]
+  when:
+    - base_system_enabled
+    - base_system_flow_control_sysctl
+  tags: [base_system, base-system, base_system_sysctl]
+
+- name: "base-system | config | opt root"
+  ansible.builtin.include_tasks:
+    file: config.yml
+    apply:
+      tags: [base_system, base-system, base_system_config]
+  when: base_system_enabled
+  tags: [base_system, base-system, base_system_config]
+
+- name: "base-system | healthchecks"
+  ansible.builtin.include_tasks:
+    file: healthchecks.yml
+    apply:
+      tags: [base_system, base-system, base_system_healthchecks]
+  when: base_system_enabled
+  tags: [base_system, base-system, base_system_healthchecks]

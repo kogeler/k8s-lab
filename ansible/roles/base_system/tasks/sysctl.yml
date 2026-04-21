@@ -1,0 +1,16 @@
+---
+# sysctl knobs applied idempotently via ansible.posix.sysctl. Using the
+# module (rather than a conf-file template + reload) keeps changed_when
+# accurate and respects the native-first policy.
+
+- name: "base-system | sysctl | apply"
+  ansible.posix.sysctl:
+    name: "{{ item.key }}"
+    value: "{{ item.value }}"
+    state: present
+    sysctl_file: /etc/sysctl.d/60-k8slab-base-system.conf
+    reload: true
+  loop: "{{ base_system_sysctl_values | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}={{ item.value }}"
+  when: base_system_sysctl_apply

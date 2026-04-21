@@ -1,0 +1,15 @@
+---
+# Minimum collection set required by roles in this repo.
+#
+# Bounds policy (plan §2.11):
+#   * lower bound = currently used stable upstream release at time of pin;
+#   * NO artificial upper bound blocking the next major — we track upstream;
+#   * bump + verify on `curl -sfL https://api.github.com/repos/<o>/<r>/releases/latest`
+#     and record new pins in PLAN-stage1-progress.md.
+collections:
+  - name: ansible.posix
+    version: ">=2.1.0"
+  - name: community.general
+    version: ">=12.6.0"
+  - name: community.crypto
+    version: ">=3.2.0"

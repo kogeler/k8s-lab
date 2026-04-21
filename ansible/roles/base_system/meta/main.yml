@@ -1,0 +1,21 @@
+---
+galaxy_info:
+  role_name: base_system
+  namespace: k8slab
+  author: k8s-lab contributors
+  description: >-
+    Minimal Debian 13 host preparation for the k8s-lab stack — packages,
+    kernel modules and sysctl baseline only. Does NOT install LXD (see
+    lxd_snap) or non-system binaries (see binary_fetch).
+  license: MIT
+  min_ansible_version: "2.16"
+  platforms:
+    - name: Debian
+      versions:
+        - trixie
+  galaxy_tags:
+    - kubernetes
+    - lxd
+    - bootstrap
+
+dependencies: []

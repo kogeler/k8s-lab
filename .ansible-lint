@@ -1,0 +1,30 @@
+---
+# ansible-lint contract for this repo.
+# Roles must stay native-first (plan §2.6.1); the `command-instead-of-*` and
+# `no-changed-when` warnings are kept on so shell fallbacks stay visible.
+
+profile: production
+
+exclude_paths:
+  - .git/
+  - .molecule/
+  - .vagrant/
+  - .terraform/
+  - .artifacts/
+  - collections/
+  - tests/fixtures/
+
+use_default_rules: true
+
+skip_list:
+  # Role directory names in this repo use snake_case deliberately; the plan
+  # specifies kebab-case only for task `display name`, not for directory
+  # naming (plan §2.6.3). Disable the lint that flags role dir names.
+  - role-name
+  # Inventories and group_vars are a consumer-repo concern; absence here is
+  # not a lint failure.
+  - yaml[line-length]
+
+warn_list:
+  - experimental
+  - fqcn[action-core]

@@ -1,0 +1,45 @@
+---
+# Role-internal healthchecks. These run at converge time so that a broken
+# baseline is caught immediately rather than surfacing inside a later
+# role that assumes the baseline holds. Scenario-level `verify.yml` stays
+# the canonical test surface (plan §2.6.5).
+
+- name: "base-system | healthchecks | required packages present"
+  ansible.builtin.package_facts:
+    manager: apt
+  register: _base_system_healthchecks_pkgs_register
+
+- name: "base-system | healthchecks | assert required packages installed"
+  ansible.builtin.assert:
+    that:
+      - item in ansible_facts.packages
+    fail_msg: "base_system healthcheck: expected package {{ item }} to be installed."
+  loop: "{{ base_system_packages_required }}"
+  loop_control:
+    label: "{{ item }}"
+
+- name: "base-system | healthchecks | assert btrfs tooling when enabled"
+  ansible.builtin.assert:
+    that:
+      - item in ansible_facts.packages
+    fail_msg: "base_system healthcheck: expected btrfs package {{ item }} to be installed."
+  loop: "{{ base_system_btrfs_packages }}"
+  loop_control:
+    label: "{{ item }}"
+  when: base_system_btrfs_enabled
+
+- name: "base-system | healthchecks | opt root exists"
+  ansible.builtin.stat:
+    path: "{{ base_system_opt_root }}"
+  register: _base_system_healthchecks_opt_register
+
+- name: "base-system | healthchecks | assert opt root shape"
+  ansible.builtin.assert:
+    that:
+      - _base_system_healthchecks_opt_register.stat.exists
+      - _base_system_healthchecks_opt_register.stat.isdir
+      - _base_system_healthchecks_opt_register.stat.pw_name == base_system_opt_owner
+      - _base_system_healthchecks_opt_register.stat.gr_name == base_system_opt_group
+    fail_msg: >-
+      base_system healthcheck: {{ base_system_opt_root }} is not a directory
+      owned by {{ base_system_opt_owner }}:{{ base_system_opt_group }}.

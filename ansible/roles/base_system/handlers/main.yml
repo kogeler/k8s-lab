@@ -1,0 +1,7 @@
+---
+# Handlers contract (plan §2.6.4): reactive-only, module-based, short.
+#
+# base_system currently has no asynchronous reload needs — sysctl/modprobe
+# modules handle persistence and activation in-module. This file is kept
+# as a placeholder so adding handlers later does not require touching the
+# role skeleton and tripping up ansible-lint "missing file" diagnostics.
