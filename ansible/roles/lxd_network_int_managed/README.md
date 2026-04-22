@@ -52,9 +52,26 @@ Each entry:
 | `name` | yes | Network name. ≤15 chars (Linux IFNAMSIZ). |
 | `type` | no (default `bridge`) | Only `bridge` is supported by this role's scope. |
 | `description` | no | Stored on the network. |
-| `config` | yes | LXD network config dict; string values. Must set at least one of `ipv4.address` / `ipv6.address`. |
+| `config` | yes | LXD network config dict; string values. Must set at least one of `ipv4.address` / `ipv6.address`. Put tunable keys (addresses, MTU, hwaddr) here — the substrate-required NAT/DHCP keys are baked into the role. |
 
-Default list (plan §8 dual-stack defaults):
+**Substrate-required baseline (role-internal, not user-overridable):**
+the NAT and DHCP keys every k8s-lab managed bridge must carry live in
+`vars/main.yml` as `_lxd_network_int_managed_required_config`:
+
+```yaml
+ipv4.nat:  "true"
+ipv4.dhcp: "true"
+ipv6.nat:  "true"
+ipv6.dhcp: "true"
+```
+
+These are merged on top of each entry's user-supplied `config` at apply
+time — **required keys always win the combine**, so an override in
+`lxd_network_int_managed_networks` cannot silently disable NAT or DHCP.
+(Plan §4.1 puts the internal plane behind host NAT; plan §5.2 requires
+DHCP/RA for every capi-lab node's internal nic.)
+
+Default list (plan §8 addresses, NAT/DHCP supplied by the baseline):
 
 ```yaml
 lxd_network_int_managed_networks:
@@ -63,11 +80,7 @@ lxd_network_int_managed_networks:
     description: "k8s-lab internal managed bridge (dual-stack, NAT, DHCPv4, RAv6)"
     config:
       ipv4.address: "10.77.0.1/24"
-      ipv4.nat:     "true"
-      ipv4.dhcp:    "true"
       ipv6.address: "fd42:77:1::1/64"
-      ipv6.nat:     "true"
-      ipv6.dhcp:    "true"
 ```
 
 ### Flow control
@@ -97,13 +110,11 @@ Both `_` and `-` spellings are accepted (plan §2.6.3):
         lxd_network_int_managed_networks:
           - name:        "capi-int"
             description: "lab internal managed bridge"
+            # Only the address keys are tunable here. The required
+            # NAT + DHCP keys are merged on top automatically.
             config:
               ipv4.address: "10.77.0.1/24"
-              ipv4.nat:     "true"
-              ipv4.dhcp:    "true"
               ipv6.address: "fd42:77:1::1/64"
-              ipv6.nat:     "true"
-              ipv6.dhcp:    "true"
 ```
 
 ## Testing

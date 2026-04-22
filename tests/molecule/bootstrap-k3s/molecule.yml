@@ -39,13 +39,13 @@ provisioner:
         # Required lxd_host override (meta-dep chain reaches down to it).
         lxd_host_ext_bridge_uplink: "eth2"
         # lxd_storage_pools needs the Vagrant-attached dedicated disk.
+        # Required btrfs.mount_options is baked into the role.
         lxd_storage_pools_pools:
           - name:        "capi-fast"
             driver:      "btrfs"
             description: "k8s-lab primary pool (btrfs on dedicated disk)"
             config:
-              source:              "/dev/disk/by-id/virtio-k8slab-lxdpool"
-              btrfs.mount_options: "user_subvol_rm_allowed"
+              source: "/dev/disk/by-id/virtio-k8slab-lxdpool"
         # First-run image pull is slow over a cold mirror.
         lxd_bootstrap_instance_wait_timeout: 300
         # k3s first-boot pulls the bundled images; bump the poll budget.

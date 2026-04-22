@@ -1,0 +1,27 @@
+---
+# ==========================================================================
+# lxd_bootstrap_instance — substrate-required baseline
+# ==========================================================================
+#
+# Role-internal. Holds the profile chain the bootstrap container MUST
+# carry to run single-node k3s on the lab's unprivileged-LXC substrate.
+#
+# Rationale (memory `feedback_required_values_hardcoded.md`): the
+# bootstrap container inherits its entire substrate config from LXD
+# profiles — root disk on capi-fast, internal nic on capi-int, nesting,
+# unprivileged idmap isolation, syscall interception, AppArmor override,
+# `/dev/kmsg` unix-char device. Without BOTH `capi-base` AND
+# `capi-bootstrap`, k3s' embedded containerd refuses to unpack images
+# (missing mknod/setxattr interception) or kubelet crashes on `/dev/kmsg`
+# (plan §2.8 + lxd_profiles/vars/main.yml). An empty or partial override
+# therefore breaks the role silently. Consumers append on top through
+# `lxd_bootstrap_instance_extra_profiles`.
+
+# Profiles that MUST be applied to the bootstrap container. Order
+# matters: LXD applies profiles left-to-right, so later profiles' keys
+# win on conflict. `capi-base` supplies the shared root-disk / internal-
+# nic shape; `capi-bootstrap` layers the nesting + kmsg + idmap keys
+# needed for k3s.
+_lxd_bootstrap_instance_required_profiles:
+  - "capi-base"
+  - "capi-bootstrap"

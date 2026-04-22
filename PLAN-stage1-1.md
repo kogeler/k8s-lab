@@ -26,20 +26,32 @@ PLAN-stage1-8.md ................. §21..§23 (Stage 1 meta: out-of-scope, self-
 
 Этот раздел охватывает Ansible-роли Stage 1, которые уже реализованы и
 прогнаны end-to-end в локальном Vagrant/libvirt-контуре по состоянию на
-Step 4 (2026-04-22):
+Step 5 (2026-04-22):
 
-* §13.1 `base_system` (Step 1);
+* §13.1 `base_system` (Step 1 + Step 5 required-values refactor);
 * §13.2 `lxd_host` (Step 2);
 * §13.3 `lxd_project` (Step 3 + Step 4 substrate расширение);
-* §13.4 `lxd_storage_pools` (Step 3);
-* §13.5 `lxd_network_int_managed` (Step 3);
+* §13.4 `lxd_storage_pools` (Step 3 + Step 5 required-config refactor);
+* §13.5 `lxd_network_int_managed` (Step 3 + Step 5 required-config refactor);
 * §13.6 `lxd_profiles` (Step 3 lean baseline + Step 4 full CAPN unprivileged kubeadm baseline);
-* §13.7 `lxd_bootstrap_instance` (Step 3 — первая роль Phase 3);
+* §13.7 `lxd_bootstrap_instance` (Step 3 + Step 5 required-profiles refactor);
 * §13.8 `binary_fetch` (Step 4 — отложенная Phase 1.5 / §16.1);
-* §13.9 `bootstrap_k3s` (Step 4 — первая роль Phase 4).
+* §13.9 `bootstrap_k3s` (Step 4 + Step 5 required-disables refactor).
 
 Ещё не выполненные Stage-1-роли живут в последующих шардах (§15..§20)
 вместе со своими phases.
+
+**Step 5 (2026-04-22) — сквозной audit по правилу
+`feedback_required_values_hardcoded.md`** (которое Step 3 уже применил
+в `lxd_profiles` и Step 4 — в `lxd_project`): каждая substrate-required
+ценность — пакет, sysctl, kernel module, профиль, LXD config-ключ —
+вынесена из `defaults/main.yml` в `vars/main.yml` под
+`_<role>_required_*` prefix и больше не доступна для consumer-override.
+Публичные defaults остались только для tunable-параметров +
+`*_extra_*` extension points, мержащихся поверх baseline (required
+ключи всегда побеждают merge). Регрессий не появилось — все 9
+scenario'ев прошли `converge → idempotence → verify` на чистой Vagrant
+VM (`.artifacts/regression-logs/SUMMARY.txt`).
 
 ## 13.1. `base_system`
 
@@ -75,6 +87,39 @@ sysctl baseline (inotify, fs.file-max, net.ipv6.forwarding,
 ipv4.ip_forward) + обязательные kernel modules (`overlay`,
 `br_netfilter`, `nf_conntrack`) через persistent `modprobe` —
 предусловие для LXD/containerd/kubelet downstream.
+
+### Step 5 расширения (2026-04-22)
+
+Refactor по правилу `feedback_required_values_hardcoded.md`. Раньше
+весь substrate-minimum жил в публичных defaults'ах
+(`base_system_packages_required`, `base_system_btrfs_packages`,
+`base_system_sysctl_values`, `base_system_kernel_modules`),
+что позволяло consumer'у случайно перезаписать их на `[]`/`{}` —
+preflight только проверял `is sequence`/`is mapping` и пропускал
+пустое значение, а role тихо инсталлировал ничего и downstream-роли
+(lxd_host, kube-proxy, containerd) падали на непонятных симптомах.
+Step 5 переносит все substrate-required значения в `vars/main.yml`:
+
+* `_base_system_required_packages` — `snapd`, `python3`, `python3-apt`,
+  `ca-certificates`, `curl`, `tar`, `gzip`, `xz-utils`.
+* `_base_system_btrfs_required_packages` — `btrfs-progs`.
+* `_base_system_required_sysctl` — inotify + file-max + ipv4/ipv6
+  forwarding (kube-proxy hard-requires forwarding; inotify лимиты
+  kubelet/containerd/CNI чиркают в unprivileged LXC).
+* `_base_system_required_kernel_modules` — `overlay`, `br_netfilter`,
+  `nf_conntrack` (кросс-референс с `lxd_profiles` `linux.kernel_modules`
+  assertion, §13.6).
+
+Defaults теперь экспонируют только tunable и `*_extra_*`:
+`base_system_extra_packages`, `base_system_btrfs_extra_packages`,
+`base_system_extra_sysctl`, `base_system_extra_kernel_modules` — все
+`[]`/`{}` по умолчанию, мержатся поверх required. Для sysctl merge
+direction = `extras | combine(required)` ⇒ required ключи побеждают
+при коллизии, поэтому `base_system_extra_sysctl:
+{net.ipv4.ip_forward: 0}` не сможет silent-disable-ить forwarding.
+Healthchecks ассертят против `_required_*`, не против публичных
+extras, — контракт проверяется именно на baseline, не на том, что
+consumer случайно сохранил.
 
 ## 13.2. `lxd_host`
 
@@ -251,6 +296,44 @@ Btrfs storage driver docs support these options explicitly. ([capn.linuxcontaine
   без CREATE-модуля. `uri` + REST соответствует native-first
   (§2.6.1) — это native module, не shell fallback.
 
+### Step 5 расширения (2026-04-22)
+
+Refactor по правилу `feedback_required_values_hardcoded.md`. Раньше
+дефолтный `lxd_storage_pools_pools` entry клал
+`btrfs.mount_options: user_subvol_rm_allowed` прямо в публичный
+defaults — consumer переопределив список целиком мог случайно потерять
+этот ключ, и kubelet garbage-collection внутри CAPN-нод начинал
+молча фейлить (unprivileged namespace не может удалить
+read-protected subvolume без `user_subvol_rm_allowed`, disk забивается
+за сутки image-churn'а).
+
+Step 5 вводит **driver-keyed required config baseline** в
+`vars/main.yml`:
+
+```yaml
+_lxd_storage_pools_driver_required_config:
+  btrfs:
+    btrfs.mount_options: "user_subvol_rm_allowed"
+  dir: {}
+  lvm: {}
+  zfs: {}
+```
+
+`tasks/pools.yml` строит `_lxd_storage_pools_effective_pools` в compose-
+step: для каждого entry из публичного списка мержит
+`item.config | combine(_driver_required_config[item.driver] | default({}))`.
+Required побеждает на уровне LXD config merge. POST / PATCH / healthchecks
+итерируют effective list, поэтому required ключи попадают в live LXD
+и проверяются верификацией. Публичный default-entry теперь содержит
+только `source: ""` (required override, как и раньше) —
+`btrfs.mount_options` отдельно не нужен, он приходит из baseline.
+
+Молекульные фикстуры (`tests/molecule/lxd-storage-pools/`,
+`lxd-profiles/`, `lxd-bootstrap-instance/`, `bootstrap-k3s/`) обновлены:
+больше не дублируют `btrfs.mount_options` в host_vars-override, только
+`source` — что было основной точкой регрессии, если бы refactor
+reverted.
+
 ## 13.5. `lxd_network_int_managed`
 
 **Статус: выполнено в Step 3 (2026-04-22).**
@@ -280,6 +363,36 @@ LXD managed bridge provides DHCP, IPv6 RAs and DNS via dnsmasq and does NAT by d
   `ipv6.ra` в LXD нет; единственный способ подавить RA — не ставить
   `ipv6.address`. В нашем default dual-stack контракт это не
   ограничение, но зафиксировано в README роли.
+
+### Step 5 расширения (2026-04-22)
+
+Refactor по правилу `feedback_required_values_hardcoded.md`. Раньше
+дефолтный `capi-int` entry включал `ipv4.nat`, `ipv4.dhcp`, `ipv6.nat`,
+`ipv6.dhcp` прямо в публичный `config` — consumer переопределив
+`lxd_network_int_managed_networks` мог случайно уронить NAT (ноды
+теряют egress через host, плана §4.1) или DHCP/RA (профили с internal
+nic поднимаются без IP, §5.2). Preflight проверял только
+`ipv4.address | ipv6.address` (что хотя бы одна address-семья
+сконфигурирована), на NAT/DHCP ключи никаких assertion'ов не было.
+
+Step 5 выносит substrate-required NAT/DHCP-квартет в `vars/main.yml`:
+
+```yaml
+_lxd_network_int_managed_required_config:
+  ipv4.nat:  "true"
+  ipv4.dhcp: "true"
+  ipv6.nat:  "true"
+  ipv6.dhcp: "true"
+```
+
+`tasks/networks.yml` вводит compose-step (по тому же паттерну, что и
+`lxd_storage_pools` в Step 5): для каждого entry мержит
+`item.config | default({}) | combine(_required_config)` в
+`_lxd_network_int_managed_effective_networks`. POST/PATCH/healthchecks
+гоняются по effective list. Публичный default-entry теперь держит
+только address-ключи (`ipv4.address`, `ipv6.address`) + `name` /
+`type` / `description` — всё, что consumer может tune; NAT/DHCP
+приходят из baseline.
 
 ## 13.6. `lxd_profiles`
 
@@ -428,10 +541,14 @@ Driver: `bootstrap_k3s` (§13.9) на debian/13 LXD image потребовал
   `lxd_bootstrap_instance_image_server` обратно.
 * Profiles: `[capi-base, capi-bootstrap]` (root disk, internal nic,
   nesting, unprivileged, idmap isolated).
-* `state: started`, `wait_for_container: true`,
-  `wait_for_ipv4_addresses: true` — блокирует роль до появления
-  IPv4 на всех nic'ах контейнера, чтобы Phase 4 мог сразу начинать
-  работать.
+* `state: started`, `wait_for_container: true` — модуль блокирует
+  таск на LXD operation (image pull + start). **Note (Step 5):**
+  `wait_for_ipv4_addresses: true` использовался изначально, но снят в
+  Step 5 readiness-gate refactor (§13.7 Step 5 секция ниже) — модуль
+  ждал бы IPv4 на **всех** non-lo интерфейсах, а k3s-внутри-контейнера
+  в Step 4 приносит veth-пары без IPv4 → бесконечный poll.
+  Readiness вынесен в `tasks/wait_ready.yml`, который чекает **один**
+  `readiness_ifname` (default `eth0`).
 * `ignore_volatile_options: true` — глушит ложный drift по
   `volatile.*` (mac'и, last-state timestamps).
 * **LXD НЕ реплицирует inherited profile devices в
@@ -439,6 +556,118 @@ Driver: `bootstrap_k3s` (§13.9) на debian/13 LXD image потребовал
   там. Verify bootstrap-контейнера проверяет eth0 через runtime
   `state.network` (host-side bridge port bound), а parent/nictype
   корректность остаётся в `lxd_profiles`-scenario verify.
+
+### Step 5 расширения (2026-04-22)
+
+Refactor по правилу `feedback_required_values_hardcoded.md`. Раньше
+`lxd_bootstrap_instance_profiles: [capi-base, capi-bootstrap]` был
+публичным default'ом — consumer переопределив его на `[capi-base]`
+(или `["default"]`) мог убрать обязательный `capi-bootstrap` профиль,
+из-за чего bootstrap-контейнер терял все substrate-required ключи
+(nesting, idmap isolation, kmsg passthrough, syscall intercepts),
+а k3s затем падал с невнятными симптомами внутри.
+
+Step 5 выносит required chain в `vars/main.yml`:
+
+```yaml
+_lxd_bootstrap_instance_required_profiles:
+  - "capi-base"
+  - "capi-bootstrap"
+```
+
+Публичная переменная становится `lxd_bootstrap_instance_extra_profiles: []`
+для *дополнительных* профилей поверх required. В
+`instance.yml`/`healthchecks.yml` композиция inline:
+`_required_profiles + lxd_bootstrap_instance_extra_profiles` — без
+отдельного set_fact'а. В других Step 5-refactor'ах (storage_pools /
+network_int_managed) нужен set_fact потому что merge делается в loop
+с accumulator'ом; здесь список строится тривиальной конкатенацией,
+inline-вариант короче и tag-safe (не зависит от того, прогнал ли
+consumer preflight-тег перед healthchecks).
+
+#### Readiness gate refactor (Step 5)
+
+Первый regression-прогон после required-profiles refactor'а (Step 5)
+показал аномалию, не связанную с профилями: idempotence-шаг
+`bootstrap-k3s` scenario висел ровно 300 с на таске
+`lxd-bootstrap-instance | instance | ensure bootstrap container`,
+хотя converge-шаг отрабатывал за ~1.6 с, и контейнер уже был в
+`Running` state с IPv4 на eth0. Пре-существующая проблема, которую
+Step 4 scope не трогал, но которую regression-прогон Step 5 обнажил.
+
+**Причина.** Роль делегировала readiness-семантику флагу
+`community.general.lxd_container` `wait_for_ipv4_addresses: true`.
+Модуль интерпретирует его как «poll state.network до тех пор, пока
+у каждого non-`lo` интерфейса появится non-link-local IPv4». До
+Step 4 в bootstrap-контейнере было **только eth0** — и DHCP-лиз
+появлялся за доли секунды. После Step 4 внутри контейнера
+запускается k3s, который через embedded CNI поднимает `cni0`,
+`flannel.1` и три vetth-пары (`vethXXXX`) для pod-сети. У vetth-ов
+нет и не будет IPv4 — это link-local конечные точки. Модуль, увидев
+их на idempotence-ранe, заходит в бесконечный poll до истечения
+`wait_timeout` (120 с по default'у, 300 с в molecule-override).
+
+Повторное возникновение этой проблемы в любой будущей role, которая
+создаёт контейнер с inner-stack'ом (CAPN workload nodes в Phase 5+,
+Docker-containers под registry, VM-in-container variants) — гарантия.
+Поэтому Step 5 лечит не симптом, а контракт.
+
+**Архитектурный фикс — variant C.** Role owns readiness, module
+owns CRUD:
+
+1. **Модуль — только LXD CRUD.** Из вызова
+   `community.general.lxd_container` убран `wait_for_ipv4_addresses`.
+   `wait_for_container: true` оставлен — он блокирует модуль на
+   image-pull/start operation (нужен на cold-cache converge), но
+   **не** трогает сетевой state.
+2. **Новый `tasks/wait_ready.yml`** — role-owned readiness gate.
+   Polls `GET /1.0/instances/<name>/state?project=<proj>` с
+   `until:` условием, проверяющим один конкретный интерфейс:
+   ```jinja
+   (state.network | dict2items
+    | selectattr('key','equalto', lxd_bootstrap_instance_readiness_ifname)
+    | ... | selectattr('family','equalto','inet')
+    | rejectattr('scope','equalto','local') | list | length > 0)
+   ```
+   `retries = wait_timeout // 4`, `delay = 4 s`. На idempotence eth0
+   уже имеет lease → первый poll проходит → `changed_when: false`.
+   На первом converge — ждём DHCP-лиз на eth0 (обычно <5 с после того
+   как `wait_for_container` вернёт управление).
+3. **Dispatcher** (`tasks/main.yml`): порядок теперь
+   `preflight → instance → wait_ready → healthchecks`. Gate с
+   собственным тэгом `lxd_bootstrap_instance_wait_ready`.
+4. **Контракт в `defaults/main.yml`:**
+   - `lxd_bootstrap_instance_wait_ipv4` → переименована в
+     `lxd_bootstrap_instance_wait_ready` (semantic clarification —
+     теперь это **роль-овный gate**, не module-флаг);
+   - добавлена `lxd_bootstrap_instance_readiness_ifname: "eth0"` —
+     явная точка расширения (`guest_internal_ifname` из плана §5.3);
+   - `lxd_bootstrap_instance_wait_timeout: 120` — общий wall-clock
+     бюджет и для `wait_for_container` модуля, и для readiness-poll.
+
+**Преимущества над точечным фиксом:**
+- Readiness-контракт роли **ЯВНЫЙ** в коде (`tasks/wait_ready.yml`),
+  не прячется в модульной эвристике;
+- Иммунен к любому inner-container сетевому росту: k3s CNI, Docker,
+  sidecar containers, future CAPN node agents;
+- Паттерн переиспользуется в будущих container-creating ролях
+  (Phase 5+ CAPN workload machine templates);
+- Быстрый на idempotence (первый poll exits immediately);
+- Консистентен с §2.7 ownership model: ansible (Stage 1 scope) —
+  host/LXD bootstrap; внутри контейнера rulesetов нет, только
+  observability через REST.
+
+**Regression verification** (`.artifacts/regression-logs/SUMMARY.txt`,
+2026-04-22T21:20:33):
+
+| Сценарий | До Step 5 wait_ready | После |
+|---|---|---|
+| bootstrap-k3s | **496 s** (300 s idempotence hang) | **197 s** |
+| lxd-bootstrap-instance | 180 s | 147 s |
+| прочие 7 | без изменений | без изменений |
+
+Экономия ~5 минут на full 9-scenario run (1471 s → 1132 s). Все 9
+scenario'ев PASS.
 
 ## 13.8. `binary_fetch`
 
@@ -552,12 +781,40 @@ sha256:<digest>`. Owner/group/mode деривируются от
   existing + non-empty. Плюс end-to-end test для restart-on-profile-change
   поведения `lxd_profiles` (см. §13.6 Step 4 deviation).
 
+### Step 5 расширения (2026-04-22)
+
+Refactor по правилу `feedback_required_values_hardcoded.md`. Раньше
+`bootstrap_k3s_disable_components: [traefik, servicelb]` был публичным
+default'ом. Для этой лабы оба disable'а — substrate-required (плана
+§2.9 / §5.5 доставляют ingress и LoadBalancer через Terraform Helm
+releases; бандлённые klipper-LB и traefik поднялись бы в race с
+add-ons pass'ом и сломали бы кластер). Consumer-override на `[]`
+проходил `is sequence` preflight'ом и silent'ом убивал substrate.
+
+Step 5 выносит required список в `vars/main.yml`:
+
+```yaml
+_bootstrap_k3s_required_disable_components:
+  - "traefik"
+  - "servicelb"
+```
+
+Публичная переменная — `bootstrap_k3s_extra_disable_components: []`
+для *дополнительных* disable'ов (e.g. `metrics-server`). Jinja-
+template `k3s.service.j2` теперь итерирует
+`(_required + extra)` — required всегда рендерится, consumer может
+только добавлять. Header-комментарий шаблона обновлён чтобы
+перечислить ВСЕ substrate-required флаги ExecStart (пре-существующие
+hardcoded `--disable-cloud-controller` и
+`--kubelet-arg=feature-gates=KubeletInUserNamespace=true` теперь
+упомянуты вместе с vars-sourced disables).
+
 ---
 
 # 14. Выполненные phases
 
 Этот раздел перечисляет phases, уже прошедшие end-to-end в локальном
-Vagrant/libvirt-контуре по состоянию на Step 4 (2026-04-22):
+Vagrant/libvirt-контуре по состоянию на Step 5 (2026-04-22):
 
 * §14.1 Phase 0 — repo skeleton и local harness (Step 1);
 * §14.2 Phase 1 — host bootstrap (Steps 1–2; `binary_fetch` отложен и
@@ -568,6 +825,17 @@ Vagrant/libvirt-контуре по состоянию на Step 4 (2026-04-22):
 * §14.6 Phase 4 — bootstrap management cluster (Step 4 — частично:
   `bootstrap_k3s` готов; `bootstrap_clusterctl` / `bootstrap_capn_secret`
   / `bootstrap_api_publish` остаются в §16.3..§16.5).
+
+Step 5 — **сквозной refactor без новых phases**: substrate-required
+значения в `base_system` / `lxd_storage_pools` / `lxd_network_int_managed`
+/ `lxd_bootstrap_instance` / `bootstrap_k3s` перенесены в `vars/main.yml`
+(§13.1 / §13.4 / §13.5 / §13.7 / §13.9 соответственно). Contract
+всех пяти phases (Phase 0..4) перепроверен end-to-end прогоном Molecule
+на чистой Vagrant VM — 9 scenario'ев PASS в sequence, `.artifacts/
+regression-logs/SUMMARY.txt`. Step 5 не добавляет новых phases и не
+расширяет scope Stage 1; единственное observable изменение для
+consumer'ов — сузившийся публичный контракт defaults (см. per-role
+Step 5 секции в §13).
 
 Ещё не выполненные phases живут в §15..§20.
 

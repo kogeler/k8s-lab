@@ -37,14 +37,14 @@ provisioner:
         # Required lxd_host override (pulled in transitively).
         lxd_host_ext_bridge_uplink: "eth2"
         # lxd_storage_pools runs transitively — the test VM's dedicated
-        # disk is the pool source.
+        # disk is the pool source. Required btrfs.mount_options is baked
+        # into the role (vars/main.yml), so we only supply `source`.
         lxd_storage_pools_pools:
           - name:        "capi-fast"
             driver:      "btrfs"
             description: "k8s-lab primary pool (btrfs on dedicated disk)"
             config:
-              source:              "/dev/disk/by-id/virtio-k8slab-lxdpool"
-              btrfs.mount_options: "user_subvol_rm_allowed"
+              source: "/dev/disk/by-id/virtio-k8slab-lxdpool"
         ansible_host:                 "{{ lookup('env', 'K8SLAB_HOST_ADDR') }}"
         ansible_user:                 "{{ lookup('env', 'K8SLAB_HOST_USER') }}"
         ansible_port:                 "{{ lookup('env', 'K8SLAB_HOST_PORT') | int }}"

@@ -44,14 +44,16 @@ provisioner:
         lxd_host_ext_bridge_uplink: "eth2"
         # Declare the pool here so both the role AND scenario-level
         # verify see the same source path. `source` is the Vagrant-
-        # attached dedicated disk (serial `k8slab-lxdpool`).
+        # attached dedicated disk (serial `k8slab-lxdpool`). The
+        # substrate-required `btrfs.mount_options=user_subvol_rm_allowed`
+        # is merged on top automatically by the role — it lives in
+        # ansible/roles/lxd_storage_pools/vars/main.yml.
         lxd_storage_pools_pools:
           - name:        "capi-fast"
             driver:      "btrfs"
             description: "k8s-lab primary pool (btrfs on dedicated disk)"
             config:
-              source:              "/dev/disk/by-id/virtio-k8slab-lxdpool"
-              btrfs.mount_options: "user_subvol_rm_allowed"
+              source: "/dev/disk/by-id/virtio-k8slab-lxdpool"
         ansible_host:                 "{{ lookup('env', 'K8SLAB_HOST_ADDR') }}"
         ansible_user:                 "{{ lookup('env', 'K8SLAB_HOST_USER') }}"
         ansible_port:                 "{{ lookup('env', 'K8SLAB_HOST_PORT') | int }}"

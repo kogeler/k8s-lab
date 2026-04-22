@@ -43,16 +43,18 @@
       Project and name must be lowercase alnum (plus `-`/`_` for
       project, `-` for name), start with a letter, ≤63 chars.
 
-- name: "lxd-bootstrap-instance | preflight | validate profiles list"
+- name: "lxd-bootstrap-instance | preflight | validate extra profiles list"
+  # Required profiles live in `vars/main.yml` and cannot be overridden.
+  # Only the public extras list is validated — empty is fine (the
+  # default), but wrong shape would break the concat below.
   ansible.builtin.assert:
     that:
-      - lxd_bootstrap_instance_profiles is sequence
-      - lxd_bootstrap_instance_profiles | length > 0
-      - (lxd_bootstrap_instance_profiles | map('string') | list)
+      - lxd_bootstrap_instance_extra_profiles is sequence
+      - (lxd_bootstrap_instance_extra_profiles | map('string') | list)
           | select('equalto', '') | list | length == 0
     fail_msg: >-
-      lxd_bootstrap_instance: `lxd_bootstrap_instance_profiles` must
-      be a non-empty list of non-empty profile names.
+      lxd_bootstrap_instance: `lxd_bootstrap_instance_extra_profiles`
+      must be a (possibly empty) sequence of non-empty profile names.
 
 - name: "lxd-bootstrap-instance | preflight | validate image source"
   ansible.builtin.assert:
@@ -71,9 +73,12 @@
   ansible.builtin.assert:
     that:
       - lxd_bootstrap_instance_state in ['started', 'stopped', 'absent']
-      - lxd_bootstrap_instance_wait_ipv4 is boolean
-      - lxd_bootstrap_instance_wait_timeout | int > 0
+      - lxd_bootstrap_instance_wait_ready is boolean
+      - lxd_bootstrap_instance_readiness_ifname is string
+      - lxd_bootstrap_instance_readiness_ifname | length > 0
+      - lxd_bootstrap_instance_wait_timeout | int >= 4
     fail_msg: >-
       lxd_bootstrap_instance: desired_state must be one of
-      {started, stopped, absent}; wait_ipv4 boolean;
-      wait_timeout positive integer.
+      {started, stopped, absent}; wait_ready boolean; readiness_ifname
+      non-empty string; wait_timeout >= 4 (readiness poll uses 4-second
+      delay and at least one retry must fit).

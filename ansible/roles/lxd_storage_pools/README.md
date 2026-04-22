@@ -57,9 +57,25 @@ lxd_storage_pools_pools:
     driver:      "btrfs"
     description: "k8s-lab primary pool (btrfs on dedicated block device)"
     config:
-      source: ""                                # caller MUST override
-      btrfs.mount_options: "user_subvol_rm_allowed"
+      source: ""   # caller MUST override — preflight rejects empty
 ```
+
+**Driver-required config baseline (role-internal, not user-overridable):**
+driver-specific keys every k8s-lab pool must carry live in
+`vars/main.yml` as `_lxd_storage_pools_driver_required_config` and are
+merged on top of each entry's user-supplied `config` at apply time —
+**required keys always win**, so an override in `lxd_storage_pools_pools`
+cannot silently drop them. Currently:
+
+```yaml
+btrfs:
+  btrfs.mount_options: "user_subvol_rm_allowed"
+```
+
+(kubelet garbage-collection inside unprivileged CAPN nodes breaks
+without `user_subvol_rm_allowed`). Non-btrfs drivers have empty baselines
+for now; add more driver-specific keys here if the substrate requires
+them.
 
 ### Flow control
 
@@ -90,8 +106,10 @@ Both `_` and `-` spellings are accepted (plan §2.6.3):
             driver:      "btrfs"
             description: "primary pool"
             config:
+              # `btrfs.mount_options=user_subvol_rm_allowed` is merged
+              # on top automatically from vars/main.yml — only `source`
+              # needs to come from the consumer here.
               source: "/dev/disk/by-id/virtio-k8slab-lxdpool"
-              btrfs.mount_options: "user_subvol_rm_allowed"
 ```
 
 ## Testing

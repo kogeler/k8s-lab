@@ -1,0 +1,28 @@
+---
+# ==========================================================================
+# lxd_network_int_managed — substrate-required baseline
+# ==========================================================================
+#
+# Role-internal. Holds the LXD network config keys that EVERY managed
+# bridge this role creates must carry on the k8s-lab substrate.
+#
+# Rationale (memory `feedback_required_values_hardcoded.md`):
+#
+#   ipv4.nat / ipv6.nat — plan §4.1 puts the internal plane behind host
+#     NAT so k8s nodes can egress to the wider network without consuming
+#     external address space. Disabling NAT strands every container.
+#   ipv4.dhcp / ipv6.dhcp — plan §5.2 puts capi-lab profiles' internal
+#     nic on `capi-int` and expects DHCP/RA to hand out the node IP.
+#     Without DHCP, nodes come up with no usable IPv4 and IPv6 RAs stop
+#     being emitted, which breaks the whole network plane.
+#
+# Consumers keep tuning the address / name / description fields in
+# `defaults/main.yml`. If an override there sets any of these required
+# keys, the required value wins the combine — the role cannot be
+# silently disabled.
+
+_lxd_network_int_managed_required_config:
+  ipv4.nat:  "true"
+  ipv4.dhcp: "true"
+  ipv6.nat:  "true"
+  ipv6.dhcp: "true"

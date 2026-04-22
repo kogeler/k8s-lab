@@ -7,6 +7,13 @@
 # packages explicitly allowed by plan §2.2 are installed here; every other
 # tool is expected to be delivered by `binary_fetch` or `lxd_host`.
 #
+# The substrate-required package set, kernel modules and sysctl knobs are
+# baked into `vars/main.yml` (`_base_system_required_*`) so a consumer
+# cannot accidentally disable them by overriding a default to `[]` / `{}`.
+# This file holds only what consumers legitimately tune — paths, cache
+# freshness, flow-control toggles — plus `*_extra_*` extension points
+# appended on top of the required baseline at task time.
+#
 # Public contract (plan §2.6.2): variables exposed to callers are prefixed
 # `base_system_*`. Helper / computed facts use the `_base_system_*` prefix
 # and must stay internal.
@@ -28,29 +35,19 @@ base_system_opt_group: "root"
 base_system_opt_mode:  "0755"
 
 # -- Packages --------------------------------------------------------------
-
-# APT packages allowed by plan §13.1. The list is intentionally small —
-# anything outside this set is a bootstrap signal that the role scope is
-# being stretched and needs re-design.
-base_system_packages_required:
-  - snapd
-  - python3
-  - python3-apt
-  - ca-certificates
-  - curl
-  - tar
-  - gzip
-  - xz-utils
-
-# Optional extras, gated per capability. We do not add helpers "just in
-# case" — each flag below is consumed by a later phase.
 #
-# btrfs-progs: required whenever `storage.driver == "btrfs"` (plan §13.4);
-# toggled explicitly rather than installed unconditionally so the role
-# stays lean on hosts that use ZFS/dir-backed pools.
+# Required packages live in `vars/main.yml` as `_base_system_required_packages`.
+# This list is merged on top — use it for site-specific extras (e.g. a
+# diagnostic package set or a vendor agent). Empty by default.
+base_system_extra_packages: []
+
+# Btrfs tooling capability. The required package list
+# (`_base_system_btrfs_required_packages`) ships `btrfs-progs`; the
+# toggle below is kept as a public knob so consumers can opt out on hosts
+# that use ZFS/dir-backed pools. Extras append on top when the toggle is
+# on — e.g. `btrfsmaintenance`.
 base_system_btrfs_enabled: true
-base_system_btrfs_packages:
-  - btrfs-progs
+base_system_btrfs_extra_packages: []
 
 # APT cache freshness window (seconds). Keeps converge/idempotence fast
 # while not being so stale that newly added packages fail to resolve.
@@ -58,31 +55,17 @@ base_system_apt_cache_valid_time: 3600
 
 # -- Kernel / sysctl -------------------------------------------------------
 
-# Node containers require several kernel knobs; these are applied to the
-# host so that LXD instances inherit sane defaults via nesting. The values
-# track Kubernetes upstream recommendations.
+# Required sysctl knobs live in `vars/main.yml` as `_base_system_required_sysctl`.
+# The extras map is merged AFTER the required baseline (required keys
+# always win) so an override here cannot silently disable a required knob.
 base_system_sysctl_apply: true
-base_system_sysctl_values:
-  # inotify limits are the most common reason container init systems fail
-  # silently on larger nested setups (kubelet, containerd, CNI agents).
-  fs.inotify.max_user_instances: 1024
-  fs.inotify.max_user_watches:   1048576
-  # Plenty of fd headroom — containerd + kubelet can burn through the
-  # default 8192 quickly on Kubernetes nodes.
-  fs.file-max:                   2097152
-  # Make sure IPv6 forwarding is up even when `net.ipv6.conf.default`
-  # would otherwise default to 0 on Debian minimal installs.
-  net.ipv6.conf.all.forwarding:  1
-  net.ipv4.ip_forward:           1
+base_system_extra_sysctl: {}
 
 # -- Kernel modules --------------------------------------------------------
-
-# Modules we need loaded on the host. LXD + kubeadm path in CAPN documents
-# `br_netfilter`, `overlay`, `nf_conntrack` as required (plan §13.6 refs).
-base_system_kernel_modules:
-  - overlay
-  - br_netfilter
-  - nf_conntrack
+#
+# Required modules live in `vars/main.yml` as `_base_system_required_kernel_modules`.
+# This list is appended — use it for extras (e.g. `wireguard`, `nbd`).
+base_system_extra_kernel_modules: []
 
 # -- Flow control ---------------------------------------------------------
 

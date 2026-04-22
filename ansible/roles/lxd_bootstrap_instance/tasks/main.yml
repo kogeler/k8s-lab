@@ -18,6 +18,19 @@
     - lxd_bootstrap_instance_flow_control_instance
   tags: [lxd_bootstrap_instance, lxd-bootstrap-instance, lxd_bootstrap_instance_instance]
 
+- name: "lxd-bootstrap-instance | wait_ready"
+  # Readiness gate — poll until the role's contract interface has an
+  # IPv4 lease. Runs after instance.yml has returned and before
+  # healthchecks / any downstream role depending on network reachability.
+  ansible.builtin.include_tasks:
+    file: wait_ready.yml
+    apply:
+      tags: [lxd_bootstrap_instance, lxd-bootstrap-instance, lxd_bootstrap_instance_wait_ready]
+  when:
+    - lxd_bootstrap_instance_enabled
+    - lxd_bootstrap_instance_state == 'started'
+  tags: [lxd_bootstrap_instance, lxd-bootstrap-instance, lxd_bootstrap_instance_wait_ready]
+
 - name: "lxd-bootstrap-instance | healthchecks"
   ansible.builtin.include_tasks:
     file: healthchecks.yml

@@ -9,6 +9,44 @@
 #   POST   /1.0/storage-pools       body: {name, driver, description, config}
 #   GET    /1.0/storage-pools/<n>
 #   PATCH  /1.0/storage-pools/<n>   body: {description, config}
+#
+# Each pool's `config` is composed at apply time as
+# `user_config | combine(_driver_required_config[driver])` so the
+# substrate-required driver keys (e.g. `btrfs.mount_options`) ALWAYS win
+# — consumers cannot silently strip them via an override in
+# `lxd_storage_pools_pools`.
+
+# ---------------------------------------------------------------------------
+# Step 0: compose the effective pools list. For each entry, look up the
+# driver's required-config map (if any) and merge it on top of the
+# user-supplied config. Published as a fact so Step 3 and healthchecks
+# iterate the same composition.
+# ---------------------------------------------------------------------------
+
+- name: "lxd-storage-pools | pools | reset effective pools accumulator"
+  ansible.builtin.set_fact:
+    _lxd_storage_pools_effective_pools: []
+
+- name: "lxd-storage-pools | pools | compose effective per-entry config"
+  ansible.builtin.set_fact:
+    _lxd_storage_pools_effective_pools: >-
+      {{
+        _lxd_storage_pools_effective_pools
+        + [
+          item
+          | combine({
+              'config':
+                (item.config | default({})
+                 | combine(
+                     _lxd_storage_pools_driver_required_config[item.driver]
+                     | default({})
+                   ))
+            })
+        ]
+      }}
+  loop: "{{ lxd_storage_pools_pools }}"
+  loop_control:
+    label: "{{ item.name }}"
 
 # ---------------------------------------------------------------------------
 # Step 1: fetch the current pool list. The REST endpoint returns a list
@@ -64,7 +102,7 @@
             | zip(item.config | dict2items | map(attribute='value') | map('string') | list)
           )
         }}
-  loop: "{{ lxd_storage_pools_pools }}"
+  loop: "{{ _lxd_storage_pools_effective_pools }}"
   loop_control:
     label: "{{ item.name }}"
   when: item.name not in _lxd_storage_pools_existing
@@ -92,7 +130,7 @@
     method:      GET
     status_code: 200
     return_content: true
-  loop: "{{ lxd_storage_pools_pools }}"
+  loop: "{{ _lxd_storage_pools_effective_pools }}"
   loop_control:
     label: "{{ item.name }}"
   when: item.name in _lxd_storage_pools_existing

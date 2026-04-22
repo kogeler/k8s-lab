@@ -1,0 +1,56 @@
+---
+# Role-owned readiness gate.
+#
+# Contract: the bootstrap container is "ready" when a SINGLE named
+# container-side interface (default `eth0`, the internal-plane nic
+# from the `capi-base` profile — plan §5.3 guest_internal_ifname)
+# has a non-link-local IPv4 address. Downstream roles (`bootstrap_k3s`)
+# only need to reach the container over this nic; they do not care
+# about transient CNI veth-pairs inner k3s brings up inside.
+#
+# This replaces `community.general.lxd_container`'s
+# `wait_for_ipv4_addresses: true` flag which polls EVERY non-lo
+# interface and hangs until `wait_timeout` once k3s CNI creates
+# veth / cni0 / flannel.1 interfaces without IPv4 (see role README
+# caveats for the full rationale).
+#
+# The poll is cheap on idempotence: if the container has been up for a
+# while, the first GET returns `addresses` already including the
+# DHCP lease on eth0, `until:` is satisfied, no retries fire.
+
+- name: "lxd-bootstrap-instance | wait_ready | poll state.network until readiness nic has IPv4"
+  # ansible.builtin.uri over the snap socket — same native path every
+  # other role in this repo uses to talk to LXD (plan §2.6.1).
+  ansible.builtin.uri:
+    url: >-
+      http://localhost/1.0/instances/{{ lxd_bootstrap_instance_name }}/state?project={{ lxd_bootstrap_instance_project }}
+    unix_socket: "/var/snap/lxd/common/lxd/unix.socket"
+    method:      GET
+    status_code: 200
+    return_content: true
+  register: _lxd_bootstrap_instance_readiness_register
+  until: >-
+    (
+      (_lxd_bootstrap_instance_readiness_register.json.metadata.network | default({}))
+      | dict2items
+      | selectattr('key', 'equalto', lxd_bootstrap_instance_readiness_ifname)
+      | map(attribute='value')
+      | map(attribute='addresses')
+      | map('default', [])
+      | flatten
+      | selectattr('family', 'equalto', 'inet')
+      | rejectattr('scope', 'equalto', 'local')
+      | list
+      | length > 0
+    )
+  # 4-second poll delay; retries scaled to the shared wall-clock
+  # budget `lxd_bootstrap_instance_wait_timeout`. On idempotence the
+  # first iteration passes so retries are never consumed; on first
+  # converge we wait for the DHCP lease on eth0 (usually <5s once the
+  # container is Running).
+  retries: "{{ (lxd_bootstrap_instance_wait_timeout | int) // 4 }}"
+  delay: 4
+  changed_when: false
+  when:
+    - lxd_bootstrap_instance_state == 'started'
+    - lxd_bootstrap_instance_wait_ready

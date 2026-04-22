@@ -47,17 +47,20 @@
       octal strings.
 
 - name: "bootstrap-k3s | preflight | validate k3s server flags"
+  # Only the public extras are validated here — the substrate-required
+  # disables live in `vars/main.yml` and are not user-overridable.
   ansible.builtin.assert:
     that:
-      - bootstrap_k3s_disable_components is sequence
+      - bootstrap_k3s_extra_disable_components is sequence
       - bootstrap_k3s_tls_san is sequence
       - bootstrap_k3s_extra_kubelet_feature_gates is sequence
       - bootstrap_k3s_extra_args is sequence
       - bootstrap_k3s_wait_retries | int > 0
       - bootstrap_k3s_wait_delay | int > 0
     fail_msg: >-
-      bootstrap_k3s: disable_components / tls_san / extra_args must be
-      sequences; wait_retries + wait_delay must be positive integers.
+      bootstrap_k3s: extra_disable_components / tls_san / extra_args
+      must be sequences; wait_retries + wait_delay must be positive
+      integers.
 
 - name: "bootstrap-k3s | preflight | assert host k3s binary exists"
   ansible.builtin.stat:

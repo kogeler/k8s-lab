@@ -1,6 +1,9 @@
 ---
 # APT package installation. No custom repos are added — plan §2.2 forbids
 # them; any non-standard tool is delivered by binary_fetch instead.
+#
+# Required packages come from `vars/main.yml` and are always installed;
+# `base_system_extra_packages` is appended on top for site extras.
 
 - name: "base-system | install | update apt cache"
   ansible.builtin.apt:
@@ -9,13 +12,13 @@
 
 - name: "base-system | install | required packages"
   ansible.builtin.apt:
-    name: "{{ base_system_packages_required }}"
+    name: "{{ _base_system_required_packages + base_system_extra_packages }}"
     state: present
     install_recommends: false
 
 - name: "base-system | install | btrfs tooling"
   ansible.builtin.apt:
-    name: "{{ base_system_btrfs_packages }}"
+    name: "{{ _base_system_btrfs_required_packages + base_system_btrfs_extra_packages }}"
     state: present
     install_recommends: false
   when: base_system_btrfs_enabled

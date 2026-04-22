@@ -2,6 +2,11 @@
 # sysctl knobs applied idempotently via ansible.posix.sysctl. Using the
 # module (rather than a conf-file template + reload) keeps changed_when
 # accurate and respects the native-first policy.
+#
+# Required knobs come from `vars/main.yml` (`_base_system_required_sysctl`);
+# `base_system_extra_sysctl` overlays site-specific extras on top. The
+# required map wins the merge so an extras override cannot disable a
+# required knob (e.g. setting `net.ipv4.ip_forward: 0`).
 
 - name: "base-system | sysctl | apply"
   ansible.posix.sysctl:
@@ -10,7 +15,7 @@
     state: present
     sysctl_file: /etc/sysctl.d/60-k8slab-base-system.conf
     reload: true
-  loop: "{{ base_system_sysctl_values | dict2items }}"
+  loop: "{{ (base_system_extra_sysctl | combine(_base_system_required_sysctl)) | dict2items }}"
   loop_control:
     label: "{{ item.key }}={{ item.value }}"
   when: base_system_sysctl_apply

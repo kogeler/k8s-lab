@@ -1,0 +1,28 @@
+---
+# ==========================================================================
+# bootstrap_k3s — substrate-required baseline
+# ==========================================================================
+#
+# Role-internal. Holds the k3s server flags the lab contract requires on
+# every bootstrap cluster run.
+#
+# Rationale (memory `feedback_required_values_hardcoded.md`): plan §2.9
+# hard-locks cluster add-ons (ingress, LoadBalancer) to Terraform-delivered
+# Helm charts (MetalLB / Calico). The stock k3s server ships Traefik and
+# servicelb on by default — both must be off, otherwise they race the
+# Terraform add-ons pass and leave the cluster in a broken state. That
+# makes the disable list substrate-required, not a tunable default.
+#
+# Consumers who want to disable ADDITIONAL components on top (e.g.
+# `--disable=metrics-server`) set `bootstrap_k3s_extra_disable_components`
+# in defaults/main.yml.
+
+# Components k3s must always disable at `k3s server` start:
+#
+#   traefik   — plan §2.9 delivers ingress via MetalLB + a separate
+#               ingress controller as Terraform Helm releases.
+#   servicelb — plan §5.5 delivers Service LoadBalancer via MetalLB; k3s'
+#               bundled servicelb (klipper) would hijack the VIP range.
+_bootstrap_k3s_required_disable_components:
+  - "traefik"
+  - "servicelb"

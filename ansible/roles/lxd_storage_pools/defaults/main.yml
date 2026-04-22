@@ -32,10 +32,18 @@ lxd_storage_pools_lxd_socket_path: "/var/snap/lxd/common/lxd/unix.socket"
 #   name:        (required) pool name.
 #   driver:      (required) btrfs | dir | lvm | zfs.
 #   description: (optional) free-form description stored in LXD.
-#   config:      (required) dict of LXD storage pool config keys. `source`
-#                must be set to a block device, path or empty (loop-back)
-#                depending on driver semantics. All values must be strings
-#                — LXD stores config as strings on the wire.
+#   config:      (required) dict of LXD storage pool config keys the
+#                consumer legitimately tunes — `source`, `size`,
+#                `zfs.pool_name`, etc. All values must be strings (LXD
+#                wire contract).
+#
+#                Driver-specific substrate-required keys live in
+#                `vars/main.yml` as `_lxd_storage_pools_driver_required_config`
+#                and are merged on top at apply time (required wins),
+#                so a consumer cannot silently drop them via override.
+#                For btrfs pools that means `btrfs.mount_options=user_subvol_rm_allowed`
+#                — without it kubelet garbage-collection breaks inside
+#                unprivileged CAPN nodes.
 #
 # Default list is intentionally source-less: plan §8 marks
 # `storage.source` as required input, and a bad default would silently
@@ -48,10 +56,6 @@ lxd_storage_pools_pools:
     config:
       # Caller MUST override — preflight rejects empty `source`.
       source: ""
-      # User-visible btrfs mount options. `user_subvol_rm_allowed` lets
-      # unprivileged namespaces delete their own subvolumes — needed for
-      # kubelet garbage collection inside CAPN nodes.
-      btrfs.mount_options: "user_subvol_rm_allowed"
 
 # -- Flow control (plan §2.6.3) -------------------------------------------
 #

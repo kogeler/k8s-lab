@@ -42,6 +42,9 @@
       desired.
 
 - name: "lxd-network-int-managed | preflight | every network has a valid shape"
+  # The substrate-required NAT/DHCP keys live in `vars/main.yml` and are
+  # merged on top of each entry's config at apply time (required wins).
+  # Consumers only need to supply at least one address family here.
   ansible.builtin.assert:
     that:
       - item.name is string

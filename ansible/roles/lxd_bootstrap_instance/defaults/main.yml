@@ -10,9 +10,12 @@
 # instance object + its lifecycle.
 #
 # Scope:
-#   * one container per role run (default list has exactly one entry).
-#   * applies the `capi-base` + `capi-bootstrap` profiles by default
-#     — nesting, unprivileged, root disk on capi-fast, eth0 on capi-int.
+#   * one container per role run.
+#   * always applies the `capi-base` + `capi-bootstrap` profiles
+#     (baked into `vars/main.yml` as
+#     `_lxd_bootstrap_instance_required_profiles`) — nesting,
+#     unprivileged, root disk on capi-fast, eth0 on capi-int.
+#     Consumers append extras via `lxd_bootstrap_instance_extra_profiles`.
 #   * does NOT install k3s / kubectl / clusterctl — those land via
 #     binary_fetch (Phase 3.5) and bootstrap_k3s / bootstrap_clusterctl
 #     (Phase 4) into an already-running container.
@@ -41,12 +44,16 @@ lxd_bootstrap_instance_project: "capi-lab"
 lxd_bootstrap_instance_name: "capi-bootstrap-0"
 lxd_bootstrap_instance_type: "container"   # container | virtual-machine
 
-# Profiles to apply. Stage 1 uses capi-base (root disk, internal nic)
-# + capi-bootstrap (nesting, unprivileged). Consumers can append extra
-# profiles by overriding the list; keep the two defaults present.
-lxd_bootstrap_instance_profiles:
-  - "capi-base"
-  - "capi-bootstrap"
+# Profiles to apply.
+#
+# The substrate-required profiles live in `vars/main.yml` as
+# `_lxd_bootstrap_instance_required_profiles` (capi-base + capi-bootstrap);
+# removing either breaks k3s startup (missing nesting / kmsg / idmap —
+# see lxd_profiles/vars/main.yml). `lxd_bootstrap_instance_extra_profiles`
+# appends on top for optional per-instance profiles (e.g. a local
+# diagnostics profile). LXD applies profiles left-to-right, so extras
+# can layer keys on top of the required baseline.
+lxd_bootstrap_instance_extra_profiles: []
 
 # -- Image source ---------------------------------------------------------
 #
@@ -75,11 +82,30 @@ lxd_bootstrap_instance_devices: {}
 # `stopped` ensures it exists but is offline; `absent` deletes it.
 lxd_bootstrap_instance_state: "started"
 
-# After start, wait until every nic inside the container reports an
-# IPv4 address. Bootstrap phases (k3s) need a reachable eth0 before
-# they can even run; failing early here is better than a timeout deep
-# inside bootstrap_k3s.
-lxd_bootstrap_instance_wait_ipv4: true
+# Role-owned readiness gate. When true, after the LXD state transition
+# settles, `tasks/wait_ready.yml` polls LXD REST until a SINGLE named
+# interface (below) has a non-link-local IPv4. This is the contract
+# downstream roles actually need — `bootstrap_k3s` reaches the
+# container over eth0, and it does not care about transient CNI
+# veth/cni*/flannel* interfaces k3s creates inside. Using the stock
+# `community.general.lxd_container` `wait_for_ipv4_addresses: true`
+# flag was the previous approach; it demands IPv4 on EVERY non-lo
+# interface, which hangs at `wait_timeout` once inner k3s brings up
+# veth-pairs without IPv4. This role keeps `wait_for_container: true`
+# on the module call (so the module blocks on image-pull / start
+# operations) but drops the broken per-interface IPv4 wait.
+lxd_bootstrap_instance_wait_ready: true
+
+# Name of the container-side nic the readiness gate polls. Defaults
+# to the internal-plane nic from the `capi-base` profile (plan §5.3
+# `guest_internal_ifname`). Consumers with a non-standard layout set
+# this explicitly.
+lxd_bootstrap_instance_readiness_ifname: "eth0"
+
+# Shared wall-clock budget for: (a) `community.general.lxd_container`
+# wait_for_container (image pull + start); (b) role-owned readiness
+# poll. The readiness poll uses retries = wait_timeout // 4 with a
+# 4-second delay, so the total ceiling matches the number below.
 lxd_bootstrap_instance_wait_timeout: 120
 
 # -- Flow control (plan §2.6.3) -------------------------------------------

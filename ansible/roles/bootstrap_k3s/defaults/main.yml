@@ -70,15 +70,14 @@ bootstrap_k3s_unit_mode: "0644"
 
 # -- k3s server flags -----------------------------------------------------
 #
-# Everything below lands as CLI flags on `k3s server`. Plan §16.2 spells
-# out the required defaults; Stage 1 keeps Traefik and servicelb off —
-# MetalLB and ingress are delivered as Terraform add-ons.
-
-# Components k3s should NOT bring up. `--disable=<comp>` is accepted
-# once per component by the k3s CLI.
-bootstrap_k3s_disable_components:
-  - "traefik"
-  - "servicelb"
+# Everything below lands as CLI flags on `k3s server`. The substrate-
+# required disables (traefik, servicelb) live in `vars/main.yml` as
+# `_bootstrap_k3s_required_disable_components` and cannot be overridden —
+# plan §2.9 / §5.5 delivers ingress + LoadBalancer via Terraform Helm
+# releases, and k3s' bundled components would race the add-ons pass.
+# `bootstrap_k3s_extra_disable_components` appends on top for optional
+# extras (e.g. `metrics-server`).
+bootstrap_k3s_extra_disable_components: []
 
 # Subject-alternative names for the kube-apiserver certificate. Tests
 # can reach the apiserver via the container's internal IP straight off

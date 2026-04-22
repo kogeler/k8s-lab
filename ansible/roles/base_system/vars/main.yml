@@ -1,0 +1,82 @@
+---
+# ==========================================================================
+# base_system — substrate-required baseline
+# ==========================================================================
+#
+# Role-internal. This file holds the APT packages, kernel modules and
+# sysctl knobs the role MUST install / load / apply on its target
+# substrate (Debian 13 host running LXD + CAPN kubeadm nodes).
+#
+# Rationale (memory `feedback_required_values_hardcoded.md`): if a value
+# is mandatory for the role to work at all — e.g. `snapd` (lxd_host
+# depends on it), `python3-apt` (Ansible's apt module requires it),
+# `overlay`/`br_netfilter`/`nf_conntrack` (kube-proxy/containerd/CNI
+# require them), `net.ipv4.ip_forward=1` (kube-proxy refuses to start
+# without it) — it belongs here, NOT in `defaults/main.yml`, so a
+# consumer cannot silently break the role by overriding the default to
+# `[]` / `{}` / a smaller subset. User-tunable extensions live in
+# `base_system_extra_*` variables (defaults/main.yml) and are merged on
+# top of this baseline at task time.
+
+# -- Required APT packages -------------------------------------------------
+#
+# The minimum set every k8s-lab host needs before any other role runs:
+#
+#   snapd         — lxd_host installs LXD via snap (plan §2.1 / §13.2).
+#   python3 / python3-apt — Ansible apt module needs the bindings.
+#   ca-certificates — TLS trust store for curl / snap / apt.
+#   curl          — binary_fetch uses it via get_url's fallback path and
+#                   healthchecks shell out to it for probe assertions.
+#   tar / gzip / xz-utils — binary_fetch unpacks upstream release
+#                   tarballs under /opt/capi-lab/bin.
+_base_system_required_packages:
+  - snapd
+  - python3
+  - python3-apt
+  - ca-certificates
+  - curl
+  - tar
+  - gzip
+  - xz-utils
+
+# -- Required Btrfs tooling ------------------------------------------------
+#
+# `btrfs-progs` is the only Debian package that ships mkfs.btrfs / btrfs.
+# `lxd_storage_pools` lets LXD format the block device itself via snap,
+# but base_system still pins the package so `base_system_btrfs_pool_required`
+# contract checks (and any operator inspection) have the CLI available.
+_base_system_btrfs_required_packages:
+  - btrfs-progs
+
+# -- Required sysctl knobs -------------------------------------------------
+#
+# Every entry here is known-required:
+#
+#   net.ipv4.ip_forward / net.ipv6.conf.all.forwarding  → kube-proxy
+#     refuses to program rules without forwarding enabled; plan §4 dual-
+#     stack traffic path depends on both.
+#   fs.inotify.max_user_instances / max_user_watches    → kubelet,
+#     containerd and several CNI agents silently fail on the stock Debian
+#     limit of 128 instances / 8192 watches inside a nested container.
+#   fs.file-max                                         → containerd +
+#     kubelet chew through the default 8192 quickly.
+_base_system_required_sysctl:
+  fs.inotify.max_user_instances: 1024
+  fs.inotify.max_user_watches:   1048576
+  fs.file-max:                   2097152
+  net.ipv6.conf.all.forwarding:  1
+  net.ipv4.ip_forward:           1
+
+# -- Required kernel modules ----------------------------------------------
+#
+# Cross-referenced by lxd_profiles' `linux.kernel_modules` assertion on
+# every k8s profile (see lxd_profiles/vars/main.yml). Removing any entry
+# breaks the corresponding CAPN node feature:
+#
+#   overlay        → containerd snapshotter.
+#   br_netfilter   → iptables rules on bridged traffic (kube-proxy).
+#   nf_conntrack   → kube-proxy NAT tracking.
+_base_system_required_kernel_modules:
+  - overlay
+  - br_netfilter
+  - nf_conntrack

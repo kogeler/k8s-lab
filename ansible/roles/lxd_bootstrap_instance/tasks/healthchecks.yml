@@ -23,7 +23,7 @@
       - (_lxd_bootstrap_instance_health_show_register.json.metadata.project | default(''))
           == lxd_bootstrap_instance_project
       - (_lxd_bootstrap_instance_health_show_register.json.metadata.profiles | default([]))
-          == lxd_bootstrap_instance_profiles
+          == (_lxd_bootstrap_instance_required_profiles + lxd_bootstrap_instance_extra_profiles)
     fail_msg: >-
       bootstrap instance identity mismatch —
       name={{ _lxd_bootstrap_instance_health_show_register.json.metadata.name | default('?') }},
@@ -65,4 +65,4 @@
       {{ _lxd_bootstrap_instance_health_show_register.json.metadata.state.network | default({}) }}.
   when:
     - lxd_bootstrap_instance_state == 'started'
-    - lxd_bootstrap_instance_wait_ipv4
+    - lxd_bootstrap_instance_wait_ready

@@ -36,22 +36,20 @@
       opt_mode must be a 4-digit octal string, apt_cache_valid_time
       must be a non-negative integer.
 
-- name: "base-system | preflight | validate package lists"
+- name: "base-system | preflight | validate extras shape"
+  # The substrate-required package / module / sysctl sets live in
+  # `vars/main.yml` and cannot be overridden. We only validate the extras
+  # consumers CAN tune — empty is fine (default), but wrong types (string
+  # instead of list, list instead of mapping) would break the merge.
   ansible.builtin.assert:
     that:
-      - base_system_packages_required is sequence
-      - base_system_packages_required | length > 0
-      - base_system_btrfs_packages is sequence
-    fail_msg: "base_system: package lists must be non-empty sequences."
-
-- name: "base-system | preflight | validate kernel inputs"
-  ansible.builtin.assert:
-    that:
-      - base_system_kernel_modules is sequence
-      - base_system_sysctl_values is mapping
+      - base_system_extra_packages is sequence
+      - base_system_btrfs_extra_packages is sequence
+      - base_system_extra_kernel_modules is sequence
+      - base_system_extra_sysctl is mapping
     fail_msg: >-
-      base_system: kernel_modules must be a sequence and sysctl_values
-      must be a mapping of sysctl key -> value.
+      base_system: `*_extra_packages` / `*_extra_kernel_modules` must be
+      sequences and `base_system_extra_sysctl` must be a mapping.
 
 # ---- LXD btrfs pool contract --------------------------------------------
 # Contract-only — base_system never formats or mounts the pool disk

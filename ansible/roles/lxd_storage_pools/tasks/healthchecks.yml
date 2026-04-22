@@ -5,13 +5,16 @@
 # Scenario verify.yml is the canonical acceptance surface.
 
 - name: "lxd-storage-pools | healthchecks | fetch each managed pool"
+  # Iterate the EFFECTIVE list (driver-required config merged on top)
+  # so the per-key assertion below catches drift on required keys too,
+  # not just the tunable fields a consumer supplied.
   ansible.builtin.uri:
     url:         "http://localhost/1.0/storage-pools/{{ item.name }}"
     unix_socket: "{{ lxd_storage_pools_lxd_socket_path }}"
     method:      GET
     status_code: 200
     return_content: true
-  loop: "{{ lxd_storage_pools_pools }}"
+  loop: "{{ _lxd_storage_pools_effective_pools }}"
   loop_control:
     label: "{{ item.name }}"
   register: _lxd_storage_pools_health_show_register

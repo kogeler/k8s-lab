@@ -14,7 +14,7 @@
     that:
       - item in ansible_facts.packages
     fail_msg: "base_system healthcheck: expected package {{ item }} to be installed."
-  loop: "{{ base_system_packages_required }}"
+  loop: "{{ _base_system_required_packages }}"
   loop_control:
     label: "{{ item }}"
 
@@ -23,7 +23,7 @@
     that:
       - item in ansible_facts.packages
     fail_msg: "base_system healthcheck: expected btrfs package {{ item }} to be installed."
-  loop: "{{ base_system_btrfs_packages }}"
+  loop: "{{ _base_system_btrfs_required_packages }}"
   loop_control:
     label: "{{ item }}"
   when: base_system_btrfs_enabled

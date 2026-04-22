@@ -12,7 +12,8 @@ Plan §16.2. The role owns "k3s on the bootstrap node" and nothing else:
   `/usr/local/bin/k3s`;
 * renders a minimal systemd unit and env file inside the container;
 * enables + starts the `k3s` service with Stage 1 server flags
-  (`--disable=traefik`, `--disable=servicelb`, configurable TLS SANs);
+  (substrate-required `--disable=traefik` + `--disable=servicelb`,
+  configurable TLS SANs);
 * polls `k3s kubectl get nodes` until the bootstrap node reports Ready.
 
 It does **not**:
@@ -93,9 +94,17 @@ role.
 
 ### k3s server flags
 
+The substrate-required disable list — `traefik` and `servicelb` — is
+baked into `vars/main.yml` as `_bootstrap_k3s_required_disable_components`
+and cannot be overridden. Plan §2.9 / §5.5 delivers ingress +
+LoadBalancer through Terraform Helm releases (MetalLB + an ingress
+controller); leaving k3s' bundled versions on would race the add-ons
+pass. `bootstrap_k3s_extra_disable_components` appends on top for
+non-required extras.
+
 | Variable | Default | Description |
 | --- | --- | --- |
-| `bootstrap_k3s_disable_components` | `[traefik, servicelb]` | Rendered one-per-component as `--disable=<x>` (plan §16.2). |
+| `bootstrap_k3s_extra_disable_components` | `[]` | *Additional* components disabled on top of the required baseline. Each entry renders as `--disable=<x>`. Typical extras: `metrics-server`. |
 | `bootstrap_k3s_tls_san` | `[]` | Each entry becomes `--tls-san=<x>`. |
 | `bootstrap_k3s_write_kubeconfig_mode` | `0644` | `--write-kubeconfig-mode=<mode>`. |
 | `bootstrap_k3s_token` | `""` | `--token=<x>` when non-empty; also set as `K3S_TOKEN` in the env file. |

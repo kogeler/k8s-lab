@@ -42,25 +42,25 @@ lxd_network_int_managed_lxd_socket_path: "/var/snap/lxd/common/lxd/unix.socket"
 #   type:        (optional) defaults to "bridge". Only `bridge` is
 #                supported by this role's scope.
 #   description: (optional) free-form description stored in LXD.
-#   config:      (required) dict of LXD network config keys. All
-#                values must be strings — LXD stores config as strings
-#                on the wire.
+#   config:      (required) dict of LXD network config keys the
+#                consumer legitimately tunes — addresses, MTU, hwaddr,
+#                etc. The substrate-required NAT / DHCP keys live in
+#                `vars/main.yml` as `_lxd_network_int_managed_required_config`
+#                and are merged on top at apply time (required wins),
+#                so an override here CANNOT silently disable NAT / DHCP.
+#                All values must be strings — LXD stores config as
+#                strings on the wire.
 #
-# Plan §8 dual-stack defaults:
-#   ipv4: 10.77.0.0/24 → bridge holds 10.77.0.1/24, NAT+DHCPv4 on.
-#   ipv6: fd42:77:1::/64 → bridge holds fd42:77:1::1/64, NAT+DHCPv6 on
-#         (RAs are always emitted by LXD when `ipv6.address` is set).
+# Plan §8 dual-stack defaults: the addresses below pair with the
+# required NAT / DHCP baseline in `vars/main.yml` to give capi-int the
+# full "NAT44 + NAT66 + DHCPv4 + RAv6" behaviour.
 lxd_network_int_managed_networks:
   - name:        "capi-int"
     type:        "bridge"
     description: "k8s-lab internal managed bridge (dual-stack, NAT, DHCPv4, RAv6)"
     config:
       ipv4.address: "10.77.0.1/24"
-      ipv4.nat:     "true"
-      ipv4.dhcp:    "true"
       ipv6.address: "fd42:77:1::1/64"
-      ipv6.nat:     "true"
-      ipv6.dhcp:    "true"
 
 # -- Flow control (plan §2.6.3) -------------------------------------------
 #

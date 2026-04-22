@@ -1,9 +1,14 @@
 {{ ansible_managed | comment }}
 # Mirrors upstream github.com/k3s-io/k3s/blob/master/k3s.service. Type=notify,
 # KillMode=process, Delegate=yes, TimeoutStartSec=0, Restart=always — all carry
-# over unchanged. Two substrate-required flags (`--disable-cloud-controller`
-# and `--kubelet-arg=feature-gates=KubeletInUserNamespace=true`) are hardcoded
-# in ExecStart below — see the rationale in defaults/main.yml + role README.
+# over unchanged. Substrate-required flags live OUTSIDE the public defaults:
+#   * `--disable-cloud-controller` — hardcoded in ExecStart (plan §2.4).
+#   * `--kubelet-arg=feature-gates=KubeletInUserNamespace=true` — hardcoded
+#     in ExecStart (plan §2.8 unprivileged LXC).
+#   * `--disable=traefik` + `--disable=servicelb` — sourced from
+#     `_bootstrap_k3s_required_disable_components` in vars/main.yml
+#     (plan §2.9 / §5.5 deliver ingress + LoadBalancer via Terraform Helm).
+# See the role README + vars/main.yml for the full rationale.
 
 [Unit]
 Description=Lightweight Kubernetes (k3s-server)
@@ -27,7 +32,7 @@ ExecStart={{ bootstrap_k3s_container_bin_path }} server \
     --write-kubeconfig-mode={{ bootstrap_k3s_write_kubeconfig_mode }} \
     --disable-cloud-controller \
     --kubelet-arg=feature-gates={{ (['KubeletInUserNamespace=true'] + bootstrap_k3s_extra_kubelet_feature_gates) | join(',') }} \
-{% for component in bootstrap_k3s_disable_components %}
+{% for component in (_bootstrap_k3s_required_disable_components + bootstrap_k3s_extra_disable_components) %}
     --disable={{ component }} \
 {% endfor %}
 {% for san in bootstrap_k3s_tls_san %}

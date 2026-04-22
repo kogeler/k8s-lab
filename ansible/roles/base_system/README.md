@@ -35,6 +35,20 @@ the consumer repository.
 All public variables use the `base_system_*` prefix. Internal values use
 `_base_system_*` and must not be consumed outside the role.
 
+### Required baseline (role-internal, not user-overridable)
+
+The substrate-required APT package list, kernel modules and sysctl knobs
+are NOT exposed as defaults. They live in `vars/main.yml` as
+`_base_system_required_packages`, `_base_system_btrfs_required_packages`,
+`_base_system_required_kernel_modules` and `_base_system_required_sysctl`.
+That choice is deliberate: the role depends on every one of these values
+on its target substrate (e.g. `snapd` for `lxd_host`, `python3-apt` for
+Ansible's apt module, `overlay`/`br_netfilter`/`nf_conntrack` for
+kube-proxy/containerd/CNI, `net.ipv4.ip_forward=1` for kube-proxy). An
+empty override would break downstream roles with no preflight warning.
+
+Consumers extend the baseline through `*_extra_*` variables (below).
+
 ### General
 
 | Variable | Default | Description |
@@ -45,22 +59,22 @@ All public variables use the `base_system_*` prefix. Internal values use
 | `base_system_opt_group` | `root` | Group of `opt_root` and children. |
 | `base_system_opt_mode` | `0755` | Mode of `opt_root` and children (octal string). |
 
-### Packages
+### Package extras
 
 | Variable | Default | Description |
 | --- | --- | --- |
-| `base_system_packages_required` | see defaults | APT packages required on every host. |
+| `base_system_extra_packages` | `[]` | Appended on top of `_base_system_required_packages`. Site-specific extras. |
 | `base_system_btrfs_enabled` | `true` | Install `btrfs-progs`. |
-| `base_system_btrfs_packages` | `[btrfs-progs]` | Package list for the Btrfs path. |
+| `base_system_btrfs_extra_packages` | `[]` | Appended on top of `_base_system_btrfs_required_packages` when `btrfs_enabled=true`. |
 | `base_system_apt_cache_valid_time` | `3600` | Seconds of APT cache freshness. |
 
-### Kernel / sysctl
+### Kernel / sysctl extras
 
 | Variable | Default | Description |
 | --- | --- | --- |
-| `base_system_kernel_modules` | `[overlay, br_netfilter, nf_conntrack]` | Modules loaded and persisted. |
+| `base_system_extra_kernel_modules` | `[]` | Appended on top of `_base_system_required_kernel_modules`. |
 | `base_system_sysctl_apply` | `true` | Apply sysctl values. |
-| `base_system_sysctl_values` | see defaults | Mapping of sysctl key → value. |
+| `base_system_extra_sysctl` | `{}` | Merged with `_base_system_required_sysctl`. Required entries always win the merge — an override here cannot disable a required knob. |
 
 ### Flow control
 
@@ -113,8 +127,9 @@ and hyphen spellings are both accepted:
     - role: base_system
       vars:
         base_system_btrfs_enabled: true
-        base_system_sysctl_values:
-          fs.inotify.max_user_watches: 2097152
+        # Required sysctls always apply; this adds a site knob on top.
+        base_system_extra_sysctl:
+          vm.swappiness: 10
 ```
 
 ## Testing

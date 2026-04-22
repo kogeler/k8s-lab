@@ -5,13 +5,16 @@
 # Scenario verify.yml is the canonical acceptance surface.
 
 - name: "lxd-network-int-managed | healthchecks | fetch each managed network"
+  # Iterate the EFFECTIVE list (required config merged on top) so the
+  # per-key assertion below catches drift on the required NAT/DHCP keys
+  # too — not just the tunable fields a consumer supplied.
   ansible.builtin.uri:
     url:         "http://localhost/1.0/networks/{{ item.name }}"
     unix_socket: "{{ lxd_network_int_managed_lxd_socket_path }}"
     method:      GET
     status_code: 200
     return_content: true
-  loop: "{{ lxd_network_int_managed_networks }}"
+  loop: "{{ _lxd_network_int_managed_effective_networks }}"
   loop_control:
     label: "{{ item.name }}"
   register: _lxd_network_int_managed_health_show_register

@@ -9,6 +9,40 @@
 #   POST   /1.0/networks              body: {name, type, description, config}
 #   GET    /1.0/networks/<name>
 #   PATCH  /1.0/networks/<name>       body: {description, config}
+#
+# Each entry's `config` is composed at apply time as
+# `user_config | combine(_required_config)` so the substrate-required
+# NAT / DHCP keys ALWAYS win — consumers cannot silently disable them
+# via an override in `lxd_network_int_managed_networks`.
+
+# ---------------------------------------------------------------------------
+# Step 0: compose the effective networks list. Each entry's user-supplied
+# `config` has `_lxd_network_int_managed_required_config` merged on top —
+# required keys (NAT/DHCP) always win. Published as a fact so Step 3 and
+# healthchecks iterate over the same composition.
+# ---------------------------------------------------------------------------
+
+- name: "lxd-network-int-managed | networks | reset effective networks accumulator"
+  ansible.builtin.set_fact:
+    _lxd_network_int_managed_effective_networks: []
+
+- name: "lxd-network-int-managed | networks | compose effective per-entry config"
+  ansible.builtin.set_fact:
+    _lxd_network_int_managed_effective_networks: >-
+      {{
+        _lxd_network_int_managed_effective_networks
+        + [
+          item
+          | combine({
+              'config':
+                (item.config | default({})
+                 | combine(_lxd_network_int_managed_required_config))
+            })
+        ]
+      }}
+  loop: "{{ lxd_network_int_managed_networks }}"
+  loop_control:
+    label: "{{ item.name }}"
 
 # ---------------------------------------------------------------------------
 # Step 1: fetch existing networks.
@@ -56,7 +90,7 @@
             | zip(item.config | dict2items | map(attribute='value') | map('string') | list)
           )
         }}
-  loop: "{{ lxd_network_int_managed_networks }}"
+  loop: "{{ _lxd_network_int_managed_effective_networks }}"
   loop_control:
     label: "{{ item.name }}"
   when: item.name not in _lxd_network_int_managed_existing
@@ -77,7 +111,7 @@
     method:      GET
     status_code: 200
     return_content: true
-  loop: "{{ lxd_network_int_managed_networks }}"
+  loop: "{{ _lxd_network_int_managed_effective_networks }}"
   loop_control:
     label: "{{ item.name }}"
   when: item.name in _lxd_network_int_managed_existing

@@ -5,13 +5,17 @@
 # module is loaded now AND persisted into /etc/modules-load.d/ in a single
 # declarative call — avoiding a shell-based `modprobe` + template-file
 # split that would violate the native-first policy (plan §2.6.1).
+#
+# Required modules come from `vars/main.yml`
+# (`_base_system_required_kernel_modules`); `base_system_extra_kernel_modules`
+# is appended for site extras.
 
 - name: "base-system | modules | load + persist"
   community.general.modprobe:
     name: "{{ item }}"
     state: present
     persistent: present
-  loop: "{{ base_system_kernel_modules }}"
+  loop: "{{ _base_system_required_kernel_modules + base_system_extra_kernel_modules }}"
   loop_control:
     label: "{{ item }}"
   register: _base_system_modules_register

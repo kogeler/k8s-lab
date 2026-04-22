@@ -11,8 +11,11 @@
     - "../shared/vars/common.yml"
   vars:
     _socket_path: "/var/snap/lxd/common/lxd/unix.socket"
-    # Mirror the scenario's pool declaration so verify does not drift
-    # from what was converged.
+    # Declared live-state expectation — independent of how the role
+    # sources each key. The scenario's `lxd_storage_pools_pools` only
+    # passes `source`; `btrfs.mount_options` is added by the role's
+    # substrate baseline (vars/main.yml). Verify must see both in live
+    # LXD config, so both are asserted here.
     _expected_pools:
       - name:        "capi-fast"
         driver:      "btrfs"

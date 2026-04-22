@@ -1,0 +1,30 @@
+---
+# ==========================================================================
+# lxd_storage_pools — substrate-required baseline
+# ==========================================================================
+#
+# Role-internal. Holds the LXD storage pool config keys that EVERY pool
+# of a given driver MUST carry on the k8s-lab substrate.
+#
+# Rationale (memory `feedback_required_values_hardcoded.md`):
+#
+#   btrfs.mount_options=user_subvol_rm_allowed — without this, kubelet's
+#     garbage collector cannot delete per-container subvolumes inside
+#     CAPN nodes (unprivileged namespace lacks CAP_SYS_ADMIN to delete
+#     read-protected subvolumes). Node disks fill up within a day of
+#     image churn. This is a substrate property, not a tunable.
+#
+# Consumers still supply `source` and any other tunable config through
+# `lxd_storage_pools_pools` (defaults/main.yml); the required keys below
+# are merged on top at apply time (required wins), so an override
+# cannot silently strip them.
+
+# Keyed by LXD driver name. Empty maps are explicit so `| combine()`
+# never errors out on an unknown driver — preflight still gates driver
+# to the allowed set.
+_lxd_storage_pools_driver_required_config:
+  btrfs:
+    btrfs.mount_options: "user_subvol_rm_allowed"
+  dir: {}
+  lvm: {}
+  zfs: {}
