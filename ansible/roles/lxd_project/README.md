@@ -38,43 +38,38 @@ All public variables use the `lxd_project_*` prefix (plan §2.6.2).
 | `lxd_project_description` | `k8s-lab — CAPN substrate project` | Free-form description. |
 | `lxd_project_lxd_socket_path` | `/var/snap/lxd/common/lxd/unix.socket` | Path to the LXD unix socket (consumed by `ansible.builtin.uri`). |
 
-### Feature isolation
+### Substrate baseline (role-internal)
 
-Dict of `features.*` booleans. `true` = project owns its own copy,
-`false` = project shares the `default` project's copy (read-only).
+Project feature isolation and the `restricted=true` allow-list are
+not exposed as user-overridable defaults — they live in
+`vars/main.yml`. Every key there is consumed by another role in this
+repo, so disabling any of them silently breaks downstream:
 
-| Key | Default | Notes |
-| --- | --- | --- |
-| `images` | `true` | |
-| `profiles` | `true` | |
-| `networks` | `false` | LXD rejects `bridge` networks in non-default projects — inherit instead. |
-| `networks.zones` | `false` | Must match `networks`; LXD enforces the pair. |
-| `storage.volumes` | `true` | |
-| `storage.buckets` | `true` | |
+* `features.{images, profiles, storage.volumes, storage.buckets}` =
+  `true` — project owns its own copy of those.
+* `features.{networks, networks.zones}` = `false` — LXD rejects
+  `bridge` networks in non-default projects (plan §13.5 deviation),
+  so we inherit the default project's read-only view.
+* `restricted = true` — turn on the allow-list.
+* `restricted.containers.nesting = allow` — k8s nodes need nesting.
+* `restricted.containers.privilege = unprivileged` — plan §2.8 hard-lock.
+* `restricted.containers.lowlevel = allow` — profiles need
+  `raw.lxc` + `linux.kernel_modules`.
+* `restricted.containers.interception = allow` — profiles need
+  `security.syscalls.intercept.*` for containerd.
+* `restricted.devices.disk = managed` — only LXD-managed pool volumes.
+* `restricted.devices.nic = allow` — external plane attaches through
+  the host-level Linux bridge `br-ext6` owned by `lxd_host`, which
+  LXD classifies as "unmanaged" (a future iteration may wrap it in a
+  LXD-managed bridge and tighten this back).
+* `restricted.devices.unix-char = allow` — profiles map host
+  `/dev/kmsg` into k8s nodes for kubelet's oomWatcher.
 
-### Restrictions
+### Extensions
 
 | Variable | Default | Description |
 | --- | --- | --- |
-| `lxd_project_restricted` | `true` | Master `restricted=true` flag — turns on the allow-list. |
-| `lxd_project_restrictions` | see below | Dict of `restricted.*` keys to string values. |
-
-Default `lxd_project_restrictions`:
-
-```yaml
-restricted.containers.nesting:   "allow"         # required by kubeadm nodes
-restricted.containers.privilege: "unprivileged"  # plan §2.8 — no privileged path
-restricted.devices.disk:         "managed"       # only LXD-managed pool volumes
-restricted.devices.nic:          "allow"         # plan §4-5 external plane uses host bridge br-ext6
-restricted.containers.lowlevel:  "allow"         # profiles need linux.kernel_modules / raw.lxc
-```
-
-`restricted.devices.nic` is deliberately `allow` (not `managed`):
-the external plane attaches through the host-level Linux bridge
-`br-ext6` owned by `lxd_host`, which LXD classifies as "unmanaged"
-— `managed` rejects those NICs outright. A future iteration may
-wrap `br-ext6` in a LXD-managed bridge via
-`bridge.external_interfaces` and tighten this restriction back.
+| `lxd_project_extra_restrictions` | `{}` | Extra `restricted.*` keys merged on top of the baseline. Use to layer additional restrictions; not for disabling baseline values. |
 
 ### Flow control
 
@@ -101,11 +96,9 @@ Both `_` and `-` spellings are accepted (plan §2.6.3):
     - role: lxd_project
       vars:
         lxd_project_name: "capi-lab"
-        lxd_project_restrictions:
-          restricted.containers.nesting:   "allow"
-          restricted.containers.privilege: "unprivileged"
-          restricted.devices.disk:         "managed"
-          restricted.devices.nic:          "managed"
+        # Layer an extra restriction on top of the baseline:
+        lxd_project_extra_restrictions:
+          restricted.virtual-machines.lowlevel: "block"
 ```
 
 ## Testing

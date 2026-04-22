@@ -1,0 +1,66 @@
+---
+# Role-internal healthchecks. Plan §2.6.6 requires verify to exercise
+# real behaviour — so we run the binary and match its self-reported
+# version against the pin.
+
+- name: "binary-fetch | healthchecks | kubectl version"
+  ansible.builtin.command:
+    argv:
+      - "{{ binary_fetch_bin_dir }}/{{ binary_fetch_kubectl_dest_filename }}"
+      - "version"
+      - "--client=true"
+      - "--output=yaml"
+  register: _binary_fetch_kubectl_version_register
+  changed_when: false
+  when: binary_fetch_kubectl_enabled
+
+- name: "binary-fetch | healthchecks | kubectl version matches pin"
+  ansible.builtin.assert:
+    that:
+      - binary_fetch_kubectl_version in _binary_fetch_kubectl_version_register.stdout
+    fail_msg: >-
+      kubectl self-reported version does not contain pin
+      "{{ binary_fetch_kubectl_version }}". Raw stdout (truncated):
+      {{ _binary_fetch_kubectl_version_register.stdout[:300] | default('<empty>') }}
+  when: binary_fetch_kubectl_enabled
+
+- name: "binary-fetch | healthchecks | clusterctl version"
+  ansible.builtin.command:
+    argv:
+      - "{{ binary_fetch_bin_dir }}/{{ binary_fetch_clusterctl_dest_filename }}"
+      - "version"
+      - "--output=yaml"
+  register: _binary_fetch_clusterctl_version_register
+  changed_when: false
+  when: binary_fetch_clusterctl_enabled
+
+- name: "binary-fetch | healthchecks | clusterctl version matches pin"
+  ansible.builtin.assert:
+    that:
+      - binary_fetch_clusterctl_version in _binary_fetch_clusterctl_version_register.stdout
+    fail_msg: >-
+      clusterctl self-reported version does not contain pin
+      "{{ binary_fetch_clusterctl_version }}". Raw stdout (truncated):
+      {{ _binary_fetch_clusterctl_version_register.stdout[:300] | default('<empty>') }}
+  when: binary_fetch_clusterctl_enabled
+
+- name: "binary-fetch | healthchecks | k3s --version"
+  # k3s prints its version including the `+k3s<N>` suffix. Running with
+  # `--version` avoids starting the server.
+  ansible.builtin.command:
+    argv:
+      - "{{ binary_fetch_bin_dir }}/{{ binary_fetch_k3s_dest_filename }}"
+      - "--version"
+  register: _binary_fetch_k3s_version_register
+  changed_when: false
+  when: binary_fetch_k3s_enabled
+
+- name: "binary-fetch | healthchecks | k3s version matches pin"
+  ansible.builtin.assert:
+    that:
+      - binary_fetch_k3s_version in _binary_fetch_k3s_version_register.stdout
+    fail_msg: >-
+      k3s self-reported version does not contain pin
+      "{{ binary_fetch_k3s_version }}". Raw stdout (truncated):
+      {{ _binary_fetch_k3s_version_register.stdout[:300] | default('<empty>') }}
+  when: binary_fetch_k3s_enabled

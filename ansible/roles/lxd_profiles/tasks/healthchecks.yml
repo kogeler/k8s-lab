@@ -15,7 +15,7 @@
     method:      GET
     status_code: 200
     return_content: true
-  loop: "{{ lxd_profiles_profiles }}"
+  loop: "{{ _lxd_profiles_effective }}"
   loop_control:
     label: "{{ item.name }}"
   register: _lxd_profiles_health_show_register

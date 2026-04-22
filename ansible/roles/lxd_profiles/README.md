@@ -62,24 +62,33 @@ All public variables use the `lxd_profiles_*` prefix (plan §2.6.2).
 | `lxd_profiles_internal_ifname` | `eth0` |
 | `lxd_profiles_external_ifname` | `eth1` |
 
-### Profiles
+### Profile catalogue (role-internal)
 
-`lxd_profiles_profiles` is a list of profile definitions. Each entry:
+The four profiles are not exposed as a user-overridable list. Their
+substrate-required config — `security.nesting`, `security.privileged`,
+`security.idmap.isolated`, `security.syscalls.intercept.mknod`,
+`security.syscalls.intercept.setxattr`, `linux.kernel_modules`,
+`raw.lxc` — lives in `vars/main.yml`. That choice is deliberate: any
+of those values being missing breaks the lab (k3s crashloops, kubelet
+can't open `/dev/kmsg`, containerd can't unpack images). Exposing them
+as defaults would let a consumer accidentally disable the role by
+clearing one of them.
 
-| Field | Required | Description |
+User-tunable tuning goes through **per-profile extension variables**
+that are merged on top of the baseline at apply time:
+
+| Profile | `*_extra_config` | `*_extra_devices` |
 | --- | --- | --- |
-| `name` | yes | Profile name. |
-| `description` | no | Stored on the profile. |
-| `config` | no | LXD config dict; string values. |
-| `devices` | no | Device dict — device name → device config dict. |
+| `capi-base` | `lxd_profiles_capi_base_extra_config` | `lxd_profiles_capi_base_extra_devices` |
+| `capi-bootstrap` | `lxd_profiles_capi_bootstrap_extra_config` | `lxd_profiles_capi_bootstrap_extra_devices` |
+| `capi-controlplane` | `lxd_profiles_capi_controlplane_extra_config` | `lxd_profiles_capi_controlplane_extra_devices` |
+| `capi-worker` | `lxd_profiles_capi_worker_extra_config` | `lxd_profiles_capi_worker_extra_devices` |
 
-Default list (see `defaults/main.yml` for the full content):
-
-* `capi-base` — root disk on `capi-fast`, eth0 on `capi-int`.
-* `capi-bootstrap` — `security.nesting=true`, `security.privileged=false`,
-  `security.idmap.isolated=true`, no devices.
-* `capi-controlplane` / `capi-worker` — adds `linux.kernel_modules`
-  and eth1 on `br-ext6`.
+All default to `{}`. Keys set here take precedence over the baseline —
+use them for non-critical knobs (e.g. extra `raw.idmap` mappings,
+additional disk devices). If a consumer actually needs to turn off
+something the baseline sets, treat that as a bug in the baseline, not
+something to paper over with an extra.
 
 ### Flow control
 
@@ -94,6 +103,7 @@ Both `_` and `-` spellings are accepted (plan §2.6.3):
 
 * `lxd_profiles` / `lxd-profiles` — whole role.
 * `lxd_profiles_preflight` — input validation only.
+* `lxd_profiles_compose` — build the effective profile list (catalog + extras).
 * `lxd_profiles_profiles` — profile create / merge.
 * `lxd_profiles_healthchecks` — in-role healthchecks.
 
@@ -133,13 +143,14 @@ make -C tests/molecule lxd-profiles-delegated-test
 
 ## Caveats
 
-* **Unprivileged baseline is a lean subset for Stage 1.** The CAPN
-  Canonical LXD unprivileged kubeadm profile lists more keys
-  (`raw.lxc.*`, `security.syscalls.intercept.*`, `boot-dir` disk
-  device mapping `/boot`). The Stage 1 profile ships the minimum
-  required for the LXD substrate contract; the full tuning lands
-  alongside `lxd_bootstrap_instance` / `bootstrap_k3s` when inner
-  Kubernetes drives the exact kernel / syscall requirements.
+* **Unprivileged baseline hard-pins the CAPN knobs k3s needs.** The
+  baseline now ships `security.syscalls.intercept.mknod`,
+  `security.syscalls.intercept.setxattr`, `linux.kernel_modules` and
+  `raw.lxc=lxc.apparmor.profile=unconfined` — without these k3s'
+  embedded containerd fails image unpack and kubelet cannot open
+  `/dev/kmsg`. The `boot-dir` disk mapping that CAPN docs list for
+  kubeadm is still deferred to a later phase since `bootstrap_k3s`
+  does not currently need it.
 * **Bridge networks live in the default project, profiles in
   capi-lab.** capi-lab resolves the `capi-int` nic parent via
   `features.networks=false` inheritance (see `lxd_project`). There is
@@ -150,3 +161,21 @@ make -C tests/molecule lxd-profiles-delegated-test
   rather than full device-dict equality, because LXD occasionally
   normalises optional keys and strict equality would produce
   false-positive drift reports.
+* **Restart-on-profile-change has a re-run blind spot.** When a
+  profile entry changes, the role lists running instances in the
+  project that reference that profile and restarts them via
+  `community.general.lxd_container state=restarted` — most of the
+  baseline keys (`security.privileged`, `security.idmap.isolated`,
+  `security.syscalls.intercept.*`, `raw.lxc`) are *not* live-update
+  per [LXD instance options reference][lxd-options], so without the
+  restart the new values stay on the profile but never reach the
+  running instance. If the profile change applies but the follow-up
+  restart fails, a *re-run* sees the profile already matching
+  (`changed=false`) and does not retry the restart — the instance
+  stays on the old config until the operator restarts it manually
+  or until something forces another profile change. A more robust
+  drift detector would compare each instance's `expanded_config`
+  against the profile baseline; that is intentionally deferred to
+  keep Stage 1 scope tight.
+
+[lxd-options]: https://documentation.ubuntu.com/lxd/latest/reference/instance_options/

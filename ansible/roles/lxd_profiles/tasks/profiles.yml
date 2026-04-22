@@ -32,7 +32,90 @@
       }}
     devices: "{{ item.devices | default({}) }}"
     merge_profile: true
-  loop: "{{ lxd_profiles_profiles }}"
+  loop: "{{ _lxd_profiles_effective }}"
   loop_control:
     label: "{{ item.name }}"
   register: _lxd_profiles_apply_register
+
+# ---------------------------------------------------------------------------
+# Profile config keys split into "live updateable" and "needs restart"
+# (see https://documentation.ubuntu.com/lxd/latest/reference/instance_options/
+# Live update column). Most of the substrate baseline this role ships
+# (`security.privileged`, `security.idmap.isolated`,
+# `security.syscalls.intercept.*`, `raw.lxc`) is NOT live-updateable —
+# LXD accepts the PATCH on the profile but does not propagate the new
+# values onto running instances. To avoid silent drift, we restart any
+# instance attached to a profile we just modified.
+#
+# Caveat (documented in role README): if a profile change applies but
+# the follow-up restart fails, a re-run sees the profile already
+# matching (changed=false) and does not retry the restart — the
+# instance stays on the old config until the operator restarts it
+# manually or until something forces a profile change again. A more
+# robust drift detector would compare each instance's expanded_config
+# against the profile baseline; intentionally deferred to keep Stage 1
+# scope tight.
+# ---------------------------------------------------------------------------
+
+- name: "lxd-profiles | profiles | derive names of profiles whose config drifted"
+  ansible.builtin.set_fact:
+    _lxd_profiles_changed_names: >-
+      {{
+        (_lxd_profiles_apply_register.results | default([]))
+        | selectattr('changed', 'equalto', true)
+        | map(attribute='item.name')
+        | list
+      }}
+
+- name: "lxd-profiles | profiles | list instances in project"
+  # Only fired when at least one profile changed; on a fully idempotent
+  # converge this is a no-op and adds zero load.
+  ansible.builtin.uri:
+    url: >-
+      http://localhost/1.0/instances?project={{ lxd_profiles_project }}&recursion=1
+    unix_socket: "/var/snap/lxd/common/lxd/unix.socket"
+    method:      GET
+    status_code: 200
+    return_content: true
+  register: _lxd_profiles_instances_register
+  changed_when: false
+  when: _lxd_profiles_changed_names | length > 0
+
+- name: "lxd-profiles | profiles | compute restart targets"
+  # Pure-Jinja accumulation: for each instance in the project, keep
+  # its name if it is Running and its applied-profile list intersects
+  # the set of profiles we just modified.
+  ansible.builtin.set_fact:
+    _lxd_profiles_restart_targets: >-
+      {{
+        _lxd_profiles_restart_targets | default([])
+        + (
+          [item.name]
+          if (
+            (item.status | default('')) == 'Running'
+            and ((item.profiles | default([])) | intersect(_lxd_profiles_changed_names)) | length > 0
+          )
+          else []
+        )
+      }}
+  loop: "{{ _lxd_profiles_instances_register.json.metadata | default([]) }}"
+  loop_control:
+    label: "{{ item.name | default('?') }}"
+  when: _lxd_profiles_changed_names | length > 0
+
+- name: "lxd-profiles | profiles | restart instance after profile change"
+  community.general.lxd_container:
+    url:                "{{ lxd_profiles_lxd_socket_uri }}"
+    snap_url:           "{{ lxd_profiles_lxd_socket_uri }}"
+    project:            "{{ lxd_profiles_project }}"
+    name:               "{{ item }}"
+    state:              restarted
+    timeout:            60
+    wait_for_container: true
+    # Don't block on IPv4 here — caller roles that depend on a reachable
+    # instance (lxd_bootstrap_instance, bootstrap_k3s) re-establish
+    # readiness via their own healthchecks.
+    wait_for_ipv4_addresses: false
+    ignore_volatile_options: true
+  loop: "{{ _lxd_profiles_restart_targets | default([]) }}"
+  when: _lxd_profiles_changed_names | length > 0

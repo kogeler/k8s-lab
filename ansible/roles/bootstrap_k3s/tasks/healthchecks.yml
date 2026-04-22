@@ -1,0 +1,65 @@
+---
+# Role-internal healthchecks (plan §2.6.6). Run inside the container
+# via `lxc exec` to stay on the SSH→host→lxc boundary used by the
+# install + service tasks. `retries + until` is Ansible's native
+# polling idiom even when the worker is a shell fallback.
+
+- name: "bootstrap-k3s | healthchecks | poll k3s node readiness"
+  ansible.builtin.command:
+    argv:
+      - "{{ bootstrap_k3s_lxc_cli }}"
+      - "exec"
+      - "--project={{ bootstrap_k3s_project }}"
+      - "--env"
+      - "KUBECONFIG=/etc/rancher/k3s/k3s.yaml"
+      - "{{ bootstrap_k3s_instance_name }}"
+      - "--"
+      - "{{ bootstrap_k3s_container_bin_path }}"
+      - "kubectl"
+      - "get"
+      - "nodes"
+      - "--no-headers"
+      - "-o"
+      - "custom-columns=NAME:.metadata.name,READY:.status.conditions[?(@.type=='Ready')].status"
+  register: _bootstrap_k3s_nodes_register
+  retries: "{{ bootstrap_k3s_wait_retries | int }}"
+  delay:   "{{ bootstrap_k3s_wait_delay | int }}"
+  until:
+    - _bootstrap_k3s_nodes_register.rc == 0
+    - ('True' in _bootstrap_k3s_nodes_register.stdout_lines | default([]) | map('trim') | map('split') | map('last') | list)
+  changed_when: false
+
+- name: "bootstrap-k3s | healthchecks | assert at least one Ready node"
+  ansible.builtin.assert:
+    that:
+      - _bootstrap_k3s_nodes_register.rc == 0
+      - (_bootstrap_k3s_nodes_register.stdout_lines | default([])) | length > 0
+      - ('True' in _bootstrap_k3s_nodes_register.stdout_lines | map('trim') | map('split') | map('last') | list)
+    fail_msg: >-
+      bootstrap_k3s healthcheck failed: no Ready node on kube-apiserver.
+      stdout={{ _bootstrap_k3s_nodes_register.stdout | default('') }}
+      stderr={{ _bootstrap_k3s_nodes_register.stderr | default('') }}
+
+- name: "bootstrap-k3s | healthchecks | stat in-container kubeconfig"
+  ansible.builtin.command:
+    argv:
+      - "{{ bootstrap_k3s_lxc_cli }}"
+      - "exec"
+      - "--project={{ bootstrap_k3s_project }}"
+      - "{{ bootstrap_k3s_instance_name }}"
+      - "--"
+      - "sh"
+      - "-c"
+      - "test -s /etc/rancher/k3s/k3s.yaml && wc -c < /etc/rancher/k3s/k3s.yaml"
+  register: _bootstrap_k3s_kubeconfig_register
+  changed_when: false
+
+- name: "bootstrap-k3s | healthchecks | assert kubeconfig non-empty"
+  ansible.builtin.assert:
+    that:
+      - _bootstrap_k3s_kubeconfig_register.rc == 0
+      - (_bootstrap_k3s_kubeconfig_register.stdout | trim | int) > 100
+    fail_msg: >-
+      /etc/rancher/k3s/k3s.yaml missing or tiny inside container:
+      rc={{ _bootstrap_k3s_kubeconfig_register.rc }},
+      size={{ _bootstrap_k3s_kubeconfig_register.stdout | default('?') | trim }}.

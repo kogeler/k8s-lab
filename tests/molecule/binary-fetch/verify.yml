@@ -1,0 +1,155 @@
+---
+# binary_fetch verify — plan §9.4 real runtime assertions.
+#
+# Beyond converge/idempotence, we assert that every pinned binary:
+#   * exists at the expected path with the declared ownership + mode,
+#   * carries the exact sha256 we derived from the upstream sha256 file,
+#   * runs and self-reports a version string containing the pinned tag.
+
+- name: "Verify | binary_fetch"
+  hosts: all
+  gather_facts: true
+  become: true
+  vars_files:
+    - "../shared/vars/common.yml"
+  vars:
+    _bin_dir: "{{ opt_root }}/bin"
+    _binaries:
+      - name:           "kubectl"
+        version_pin:    "{{ kubectl_version }}"
+        checksum_url:   "https://dl.k8s.io/release/{{ kubectl_version }}/bin/linux/amd64/kubectl.sha256"
+        checksum_style: "plain"
+        checksum_entry: ""
+        version_probe:
+          argv: ["version", "--client=true", "--output=yaml"]
+      - name:           "clusterctl"
+        version_pin:    "{{ clusterctl_version }}"
+        # clusterctl releases ship no sha256 file — verify compares the
+        # on-disk digest to the same pinned value the role consumes.
+        # Keeping the digest in sync with defaults/main.yml is the
+        # version-bump operator's responsibility.
+        checksum_url:   ""
+        checksum_style: "pinned"
+        pinned_sha256:  "b20044c66b62e273d6fe101ea82a00dc2329c28e2bca1e9b6274b744474429ba"
+        checksum_entry: ""
+        version_probe:
+          argv: ["version", "--output=yaml"]
+      - name:           "k3s"
+        version_pin:    "{{ k3s_version }}"
+        checksum_url:   "https://github.com/k3s-io/k3s/releases/download/{{ k3s_version | urlencode }}/sha256sum-amd64.txt"
+        checksum_style: "manifest"
+        checksum_entry: "k3s"
+        version_probe:
+          argv: ["--version"]
+  tasks:
+    # ---- File existence + ownership ----------------------------------
+    - name: "Verify | binary_fetch | stat target binaries"
+      ansible.builtin.stat:
+        path: "{{ _bin_dir }}/{{ item.name }}"
+        checksum_algorithm: sha256
+      loop: "{{ _binaries }}"
+      loop_control:
+        label: "{{ item.name }}"
+      register: _verify_stat_register
+
+    - name: "Verify | binary_fetch | assert file layout"
+      ansible.builtin.assert:
+        that:
+          - item.stat.exists
+          - not item.stat.isdir
+          - item.stat.pw_name == "root"
+          - item.stat.gr_name == "root"
+          - item.stat.mode == "0755"
+          # Sanity size — every one of these binaries is well above 1 MiB,
+          # which rules out an accidental HTML error page written through.
+          - item.stat.size > 1048576
+        fail_msg: >-
+          {{ item.item.name }} missing or malformed:
+          exists={{ item.stat.exists }}, mode={{ item.stat.mode | default('?') }},
+          owner={{ item.stat.pw_name | default('?') }}/{{ item.stat.gr_name | default('?') }},
+          size={{ item.stat.size | default('?') }}.
+      loop: "{{ _verify_stat_register.results }}"
+      loop_control:
+        label: "{{ item.item.name }}"
+
+    # ---- Independent sha256 cross-check ------------------------------
+    # Redownload the upstream sha256 file independently of the role —
+    # or adopt the pinned digest for binaries that publish no upstream
+    # checksum — and compare against the on-disk digest. Catches the
+    # role silently writing a file with stale content.
+    - name: "Verify | binary_fetch | fetch upstream sha256 (remote styles)"
+      ansible.builtin.uri:
+        url:            "{{ item.checksum_url }}"
+        method:         GET
+        return_content: true
+        status_code:    200
+        timeout:        60
+      loop: "{{ _binaries }}"
+      loop_control:
+        label: "{{ item.name }}"
+      register: _verify_checksum_register
+      changed_when: false
+      when: item.checksum_style in ['plain', 'manifest']
+
+    - name: "Verify | binary_fetch | resolve expected sha256 per binary"
+      ansible.builtin.set_fact:
+        _verify_expected_checksums: >-
+          {{ _verify_expected_checksums | default({}) | combine({item.name: _this_hash}) }}
+      vars:
+        _remote_result: >-
+          {{ (_verify_checksum_register.results | default([]))
+             | selectattr('item.name', 'equalto', item.name)
+             | rejectattr('skipped', 'defined')
+             | first | default({}) }}
+        _plain_hash: >-
+          {{ ((_remote_result.content | default('') | trim | split()) + [''])[0] }}
+        _manifest_hash: >-
+          {{ (
+               _remote_result.content | default('')
+               | regex_findall(
+                   '^([0-9a-fA-F]{64})\s+' ~ (item.checksum_entry | regex_escape) ~ '\s*$',
+                   multiline=True
+                 )
+             ) | first | default('') }}
+        _this_hash: >-
+          {{ (item.pinned_sha256 | default(''))
+             if item.checksum_style == 'pinned'
+             else (_plain_hash if item.checksum_style == 'plain' else _manifest_hash) }}
+      loop: "{{ _binaries }}"
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: "Verify | binary_fetch | assert on-disk sha256 matches expected"
+      ansible.builtin.assert:
+        that:
+          - (_verify_expected_checksums[item.item.name] | default('')) is match('^[0-9a-fA-F]{64}$')
+          - (item.stat.checksum | lower) == (_verify_expected_checksums[item.item.name] | lower)
+        fail_msg: >-
+          {{ item.item.name }} sha256 mismatch:
+          on-disk={{ item.stat.checksum | default('<missing>') }},
+          expected={{ _verify_expected_checksums[item.item.name] | default('<unresolved>') }}.
+      loop: "{{ _verify_stat_register.results }}"
+      loop_control:
+        label: "{{ item.item.name }}"
+
+    # ---- Runtime self-report -----------------------------------------
+    - name: "Verify | binary_fetch | run binary --version"
+      ansible.builtin.command:
+        argv: "{{ [_bin_dir ~ '/' ~ item.name] + item.version_probe.argv }}"
+      loop: "{{ _binaries }}"
+      loop_control:
+        label: "{{ item.name }}"
+      register: _verify_version_register
+      changed_when: false
+
+    - name: "Verify | binary_fetch | assert self-reported version matches pin"
+      ansible.builtin.assert:
+        that:
+          - item.item.version_pin in item.stdout
+        fail_msg: >-
+          {{ item.item.name }} self-report missing pin
+          "{{ item.item.version_pin }}":
+          stdout={{ item.stdout[:200] | default('<empty>') }}
+      loop: "{{ _verify_version_register.results }}"
+      loop_control:
+        label: "{{ item.item.name }}"

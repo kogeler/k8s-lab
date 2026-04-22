@@ -1,0 +1,128 @@
+---
+# ==========================================================================
+# bootstrap_k3s — role defaults
+# ==========================================================================
+#
+# Purpose (plan §16.2): install k3s inside the already-running LXC
+# bootstrap container and bring the single-node cluster up. The role owns
+# "k3s on the bootstrap node" and nothing else — clusterctl / CAPN
+# secrets / API publish are separate Phase 4 roles.
+#
+# Execution model:
+#   * `lxc file push` (documented shell fallback) pushes the k3s binary
+#     from the host's /opt/capi-lab/bin into the container.
+#   * For everything else — systemd unit render, daemon-reload, service
+#     lifecycle, kube readiness probe — tasks target the container via
+#     `community.general.lxd` connection plugin + delegate_to. That
+#     keeps module-based idempotence for the config surface.
+#
+# Public contract (plan §2.6.2): every variable exposed to callers is
+# prefixed `bootstrap_k3s_*`. Internal / derived facts use the
+# `_bootstrap_k3s_*` prefix.
+
+# -- General ---------------------------------------------------------------
+
+# Whole-role toggle. When false, preflight still runs to catch
+# inconsistent inputs; no mutating task is applied.
+bootstrap_k3s_enabled: true
+
+# LXD project + instance the bootstrap container lives in. These MUST
+# match lxd_project + lxd_bootstrap_instance — cross-role coupling is
+# by value only (plan §2.6.5 bans reading another role's `<other>_*`).
+bootstrap_k3s_project: "capi-lab"
+bootstrap_k3s_instance_name: "capi-bootstrap-0"
+
+# LXD remote the connection plugin talks to. `local` is the default
+# unix-socket remote on every LXD install.
+bootstrap_k3s_lxd_remote: "local"
+
+# Absolute path to the `lxc` CLI. The snap install puts it under
+# /snap/bin/lxc; /snap/bin is not on $PATH in non-interactive Ansible
+# sessions, so the role references the binary explicitly rather than
+# relying on login-shell PATH munging.
+bootstrap_k3s_lxc_cli: "/snap/bin/lxc"
+
+# -- Binary delivery -------------------------------------------------------
+
+# Host-side directory owned by binary_fetch (plan §16.1). `k3s` landed
+# here is pushed into the container with 0755 on every converge.
+bootstrap_k3s_host_bin_dir: "/opt/capi-lab/bin"
+bootstrap_k3s_host_k3s_filename: "k3s"
+
+# In-container location for the k3s binary. Upstream docs and the
+# stock systemd units assume /usr/local/bin/k3s, so every local symlink
+# (`kubectl`, `crictl`, …) that k3s auto-creates ends up on $PATH.
+bootstrap_k3s_container_bin_path: "/usr/local/bin/k3s"
+bootstrap_k3s_bin_mode: "0755"
+
+# Host-side staging directory for the rendered systemd unit + env
+# file. Persistent (under `/opt/capi-lab/etc/`) so `ansible.builtin.template`
+# reports `changed=false` on a second converge when inputs have not
+# moved — which is the requirement for Molecule's idempotence check.
+bootstrap_k3s_host_staging_dir: "{{ binary_fetch_opt_root | default('/opt/capi-lab') }}/etc/bootstrap_k3s"
+
+# -- systemd unit ---------------------------------------------------------
+
+bootstrap_k3s_service_name: "k3s"
+bootstrap_k3s_unit_path: "/etc/systemd/system/{{ bootstrap_k3s_service_name }}.service"
+bootstrap_k3s_env_path:  "/etc/default/{{ bootstrap_k3s_service_name }}"
+bootstrap_k3s_unit_mode: "0644"
+
+# -- k3s server flags -----------------------------------------------------
+#
+# Everything below lands as CLI flags on `k3s server`. Plan §16.2 spells
+# out the required defaults; Stage 1 keeps Traefik and servicelb off —
+# MetalLB and ingress are delivered as Terraform add-ons.
+
+# Components k3s should NOT bring up. `--disable=<comp>` is accepted
+# once per component by the k3s CLI.
+bootstrap_k3s_disable_components:
+  - "traefik"
+  - "servicelb"
+
+# Subject-alternative names for the kube-apiserver certificate. Tests
+# can reach the apiserver via the container's internal IP straight off
+# the bat; production / pivot consumers add host/FQDN entries here.
+bootstrap_k3s_tls_san: []
+
+# Mode of the `/etc/rancher/k3s/k3s.yaml` kubeconfig k3s writes at
+# startup. `0644` makes it readable by the later `export_artifacts`
+# step without escalation.
+bootstrap_k3s_write_kubeconfig_mode: "0644"
+
+# Optional shared secret for node join. Empty → k3s auto-generates one
+# on first boot; persisting it across role runs is the consumer's job
+# when they plan multi-node bootstrap clusters.
+bootstrap_k3s_token: ""
+
+# Pod / Service CIDRs. Leave empty to accept k3s defaults
+# (10.42.0.0/16 for pods, 10.43.0.0/16 for services).
+bootstrap_k3s_cluster_cidr: ""
+bootstrap_k3s_service_cidr: ""
+
+# *Additional* kubelet feature-gates, merged after the substrate-required
+# gates the template always emits (see k3s.service.j2 —
+# `KubeletInUserNamespace=true` is hardcoded because plan §2.8 hard-locks
+# unprivileged LXC and kubelet would otherwise crash on /dev/kmsg). Set
+# entries as `<Gate>=<true|false>`; they land in the same
+# `--kubelet-arg=feature-gates=<csv>` alongside the required ones.
+bootstrap_k3s_extra_kubelet_feature_gates: []
+
+# Free-form extra arguments appended verbatim to the ExecStart line.
+# Each entry is a single token ("--foo=bar" or "--foo" + "bar" as two
+# entries). Useful for etcd tunings, kube-apiserver flags, etc.
+bootstrap_k3s_extra_args: []
+
+# -- Readiness probe ------------------------------------------------------
+#
+# After `systemctl start k3s`, the role polls `k3s kubectl get nodes`
+# until at least one node reports Ready. Both timers are generous —
+# first-boot k3s pulls component images.
+bootstrap_k3s_wait_retries: 60
+bootstrap_k3s_wait_delay: 4
+
+# -- Flow control (plan §2.6.3) -------------------------------------------
+#
+# Coarse-grained only.
+bootstrap_k3s_flow_control_install: true
+bootstrap_k3s_flow_control_service: true

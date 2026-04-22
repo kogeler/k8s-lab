@@ -1,0 +1,81 @@
+---
+# Fetch one binary defined by `_binary_fetch_this` (injected by the
+# dispatcher). Two-step flow:
+#   1. Resolve the expected sha256, either by fetching the upstream
+#      sha256 file (plain / manifest styles) or by consuming a pinned
+#      hash from the role defaults (pinned style — used when upstream
+#      does not publish a checksum artefact; see clusterctl).
+#   2. get_url the binary with `checksum=sha256:<digest>` so Ansible
+#      refuses the file if the hash drifts, and skips re-download when
+#      the destination already matches the digest (idempotent).
+
+- name: "binary-fetch | install | fetch checksum | {{ _binary_fetch_this.name }}"
+  ansible.builtin.uri:
+    url:              "{{ _binary_fetch_this.checksum_url }}"
+    method:           GET
+    return_content:   true
+    status_code:      200
+    timeout:          "{{ binary_fetch_download_timeout | int }}"
+    follow_redirects: safe
+  register: _binary_fetch_checksum_register
+  changed_when: false
+  when: _binary_fetch_this.checksum_style in ['plain', 'manifest']
+
+- name: "binary-fetch | install | parse plain sha256 | {{ _binary_fetch_this.name }}"
+  # Plain style: the whole file is either `<hex>` or `<hex>  <filename>`
+  # on a single line. First whitespace token is the digest.
+  ansible.builtin.set_fact:
+    _binary_fetch_sha256: >-
+      {{
+        (_binary_fetch_checksum_register.content | trim | split())[0]
+      }}
+  when: _binary_fetch_this.checksum_style == "plain"
+
+- name: "binary-fetch | install | parse manifest sha256 | {{ _binary_fetch_this.name }}"
+  # Manifest style: multi-line `<hex>  <name>` (sha256sum(1) format).
+  # regex_findall with multiline=True + an explicit filename match picks
+  # the exact row we want regardless of file order.
+  ansible.builtin.set_fact:
+    _binary_fetch_sha256: >-
+      {{
+        (
+          _binary_fetch_checksum_register.content
+          | regex_findall(
+              '^([0-9a-fA-F]{64})\s+' ~ (_binary_fetch_this.checksum_entry | regex_escape) ~ '\s*$',
+              multiline=True
+            )
+        )
+        | first
+        | default('')
+      }}
+  when: _binary_fetch_this.checksum_style == "manifest"
+
+- name: "binary-fetch | install | adopt pinned sha256 | {{ _binary_fetch_this.name }}"
+  # Pinned style: upstream does not publish a sha256 artefact (clusterctl);
+  # the role ships the digest itself, audited at pin time (see defaults).
+  ansible.builtin.set_fact:
+    _binary_fetch_sha256: "{{ _binary_fetch_this.pinned_sha256 | default('') }}"
+  when: _binary_fetch_this.checksum_style == "pinned"
+
+- name: "binary-fetch | install | assert sha256 well-formed | {{ _binary_fetch_this.name }}"
+  ansible.builtin.assert:
+    that:
+      - _binary_fetch_sha256 is string
+      - _binary_fetch_sha256 is match('^[0-9a-fA-F]{64}$')
+    fail_msg: >-
+      binary_fetch: failed to extract sha256 for "{{ _binary_fetch_this.name }}"
+      from {{ _binary_fetch_this.checksum_url | default('<pinned>') }}
+      (style={{ _binary_fetch_this.checksum_style }},
+      entry={{ _binary_fetch_this.checksum_entry | default('-') }}).
+
+- name: "binary-fetch | install | download binary | {{ _binary_fetch_this.name }}"
+  ansible.builtin.get_url:
+    url:      "{{ _binary_fetch_this.url }}"
+    dest:     "{{ binary_fetch_bin_dir }}/{{ _binary_fetch_this.dest_filename }}"
+    checksum: "sha256:{{ _binary_fetch_sha256 }}"
+    owner:    "{{ binary_fetch_owner }}"
+    group:    "{{ binary_fetch_group }}"
+    mode:     "{{ binary_fetch_mode }}"
+    timeout:  "{{ binary_fetch_download_timeout | int }}"
+    force:    false
+  register: _binary_fetch_download_register

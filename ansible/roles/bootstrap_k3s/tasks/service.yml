@@ -1,0 +1,53 @@
+---
+# Bring the k3s service up inside the container via `lxc exec
+# systemctl`. handlers/main.yml owns daemon-reload + restart on drift;
+# this file only does the initial enable + start.
+
+- name: "bootstrap-k3s | service | enable k3s"
+  ansible.builtin.command:
+    argv:
+      - "{{ bootstrap_k3s_lxc_cli }}"
+      - "exec"
+      - "--project={{ bootstrap_k3s_project }}"
+      - "{{ bootstrap_k3s_instance_name }}"
+      - "--"
+      - "systemctl"
+      - "enable"
+      - "{{ bootstrap_k3s_service_name }}.service"
+  register: _bootstrap_k3s_enable_register
+  changed_when: "'Created symlink' in _bootstrap_k3s_enable_register.stdout
+                 or 'Created symlink' in _bootstrap_k3s_enable_register.stderr"
+
+- name: "bootstrap-k3s | service | read current systemctl is-active"
+  ansible.builtin.command:
+    argv:
+      - "{{ bootstrap_k3s_lxc_cli }}"
+      - "exec"
+      - "--project={{ bootstrap_k3s_project }}"
+      - "{{ bootstrap_k3s_instance_name }}"
+      - "--"
+      - "systemctl"
+      - "is-active"
+      - "{{ bootstrap_k3s_service_name }}.service"
+  register: _bootstrap_k3s_is_active_register
+  changed_when: false
+  failed_when: false
+
+- name: "bootstrap-k3s | service | start k3s if not yet active"
+  ansible.builtin.command:
+    argv:
+      - "{{ bootstrap_k3s_lxc_cli }}"
+      - "exec"
+      - "--project={{ bootstrap_k3s_project }}"
+      - "{{ bootstrap_k3s_instance_name }}"
+      - "--"
+      - "systemctl"
+      - "start"
+      - "{{ bootstrap_k3s_service_name }}.service"
+  when: (_bootstrap_k3s_is_active_register.stdout | trim) != 'active'
+  changed_when: (_bootstrap_k3s_is_active_register.stdout | trim) != 'active'
+
+# Flush handlers now so any env / unit drift materialises before
+# healthchecks probe kube-apiserver.
+- name: "bootstrap-k3s | service | flush handlers"
+  ansible.builtin.meta: flush_handlers

@@ -1,0 +1,98 @@
+---
+# Input validation for binary_fetch (plan §2.6.2). Runs before any
+# mutating task; asserts failed pins catch misconfiguration immediately
+# rather than part-way through a download loop.
+
+- name: "binary-fetch | preflight | gather facts"
+  ansible.builtin.setup:
+    gather_subset:
+      - "!all"
+      - "!any"
+      - min
+  when: ansible_facts['os_family'] is not defined
+
+- name: "binary-fetch | preflight | target OS is Debian 13+"
+  ansible.builtin.assert:
+    that:
+      - ansible_facts['os_family'] == 'Debian'
+      - ansible_facts['distribution'] == 'Debian'
+      - (ansible_facts['distribution_major_version'] | int) >= 13
+    fail_msg: >-
+      binary_fetch only targets Debian 13 Trixie or newer; detected
+      {{ ansible_facts['distribution'] | default('?') }}
+      {{ ansible_facts['distribution_version'] | default('?') }}.
+
+- name: "binary-fetch | preflight | validate paths + ownership"
+  ansible.builtin.assert:
+    that:
+      - binary_fetch_opt_root is string
+      - binary_fetch_opt_root is match('^/')
+      - binary_fetch_bin_dir is string
+      - binary_fetch_bin_dir is match('^/')
+      - binary_fetch_mode is match('^0[0-7]{3}$')
+      - binary_fetch_owner | length > 0
+      - binary_fetch_group | length > 0
+      - binary_fetch_download_timeout | int > 0
+    fail_msg: >-
+      binary_fetch: opt_root / bin_dir must be absolute paths, mode a
+      4-digit octal string, owner/group non-empty, timeout positive.
+
+- name: "binary-fetch | preflight | validate architecture"
+  ansible.builtin.assert:
+    that:
+      - binary_fetch_arch in ['amd64']
+    fail_msg: >-
+      binary_fetch: only `amd64` is supported today; `{{ binary_fetch_arch }}`
+      would require URL-template updates in defaults/main.yml.
+
+- name: "binary-fetch | preflight | validate kubectl pin"
+  ansible.builtin.assert:
+    that:
+      - binary_fetch_kubectl_version is match('^v[0-9]+\\.[0-9]+\\.[0-9]+$')
+      - binary_fetch_kubectl_url is match('^https://')
+      - binary_fetch_kubectl_checksum_url is match('^https://')
+      - binary_fetch_kubectl_checksum_style in ['plain', 'manifest']
+      - binary_fetch_kubectl_dest_filename | length > 0
+    fail_msg: >-
+      binary_fetch: kubectl pin malformed. version must be vMAJOR.MINOR.PATCH,
+      URLs must be https, checksum_style one of {plain, manifest}.
+
+- name: "binary-fetch | preflight | validate clusterctl pin"
+  ansible.builtin.assert:
+    that:
+      - binary_fetch_clusterctl_version is match('^v[0-9]+\\.[0-9]+\\.[0-9]+$')
+      - binary_fetch_clusterctl_url is match('^https://')
+      # clusterctl uses `pinned` style — upstream publishes no sha256
+      # artefact. The pinned digest is validated here; the `.checksum_url`
+      # stays empty so the fetch task is skipped by `when:`.
+      - binary_fetch_clusterctl_checksum_style == 'pinned'
+      - binary_fetch_clusterctl_checksum_sha256 is match('^[0-9a-fA-F]{64}$')
+      - binary_fetch_clusterctl_dest_filename | length > 0
+    fail_msg: >-
+      binary_fetch: clusterctl pin malformed. Expect pinned-style with a
+      64-hex digest (no upstream sha256 file is published for
+      clusterctl releases).
+
+- name: "binary-fetch | preflight | validate k3s pin"
+  ansible.builtin.assert:
+    that:
+      # k3s version carries a `+k3s<N>` suffix — see plan §8a.
+      - binary_fetch_k3s_version is match('^v[0-9]+\\.[0-9]+\\.[0-9]+\\+k3s[0-9]+$')
+      - binary_fetch_k3s_url is match('^https://')
+      - binary_fetch_k3s_checksum_url is match('^https://')
+      - binary_fetch_k3s_checksum_style in ['plain', 'manifest']
+      - binary_fetch_k3s_checksum_entry | length > 0
+      - binary_fetch_k3s_dest_filename | length > 0
+    fail_msg: >-
+      binary_fetch: k3s pin malformed. Version must be vMAJOR.MINOR.PATCH+k3sN;
+      manifest entry must name the asset inside sha256sum-*.txt.
+
+- name: "binary-fetch | preflight | ensure bin dir exists"
+  # base_system already creates opt_root/bin; re-assert as a contract
+  # guard so binary_fetch fails loudly if the dep chain is broken.
+  ansible.builtin.file:
+    path:  "{{ binary_fetch_bin_dir }}"
+    state: directory
+    owner: "{{ binary_fetch_owner }}"
+    group: "{{ binary_fetch_group }}"
+    mode:  "{{ binary_fetch_mode }}"

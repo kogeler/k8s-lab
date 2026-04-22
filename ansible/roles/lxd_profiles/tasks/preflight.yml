@@ -54,36 +54,19 @@
       / internal_ifname / external_ifname must all be non-empty
       strings.
 
-- name: "lxd-profiles | preflight | profiles list is a non-empty list"
+- name: "lxd-profiles | preflight | validate per-profile user extras are mappings"
+  # Only user-facing knobs are validated — the catalog itself
+  # (vars/main.yml) is role-internal and trusted by construction.
   ansible.builtin.assert:
     that:
-      - lxd_profiles_profiles is sequence
-      - lxd_profiles_profiles | length > 0
+      - lxd_profiles_capi_base_extra_config is mapping
+      - lxd_profiles_capi_base_extra_devices is mapping
+      - lxd_profiles_capi_bootstrap_extra_config is mapping
+      - lxd_profiles_capi_bootstrap_extra_devices is mapping
+      - lxd_profiles_capi_controlplane_extra_config is mapping
+      - lxd_profiles_capi_controlplane_extra_devices is mapping
+      - lxd_profiles_capi_worker_extra_config is mapping
+      - lxd_profiles_capi_worker_extra_devices is mapping
     fail_msg: >-
-      lxd_profiles: `lxd_profiles_profiles` must be a non-empty list.
-
-- name: "lxd-profiles | preflight | every profile has a valid shape"
-  ansible.builtin.assert:
-    that:
-      - item.name is string
-      - item.name | length > 0
-      - item.name is match('^[a-z][a-z0-9_-]{0,62}$')
-      - (item.config | default({})) is mapping
-      - (item.devices | default({})) is mapping
-    fail_msg: >-
-      lxd_profiles: profile entry {{ item | default({}) }} is invalid.
-      Each profile must have a non-empty `name` (lowercase alnum / `_`
-      / `-`, start with a letter) and optional `config` / `devices`
-      mappings.
-  loop: "{{ lxd_profiles_profiles }}"
-  loop_control:
-    label: "{{ item.name | default('<unnamed>') }}"
-
-- name: "lxd-profiles | preflight | profile names are unique"
-  ansible.builtin.assert:
-    that:
-      - (lxd_profiles_profiles | map(attribute='name') | list) | unique | length
-          == lxd_profiles_profiles | length
-    fail_msg: >-
-      lxd_profiles: duplicate profile names in
-      `lxd_profiles_profiles`. Names must be unique per project.
+      lxd_profiles: every `lxd_profiles_capi_<role>_extra_config` and
+      `..._extra_devices` must be a mapping (defaults are `{}`).

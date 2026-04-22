@@ -8,6 +8,16 @@
       tags: [lxd_profiles, lxd-profiles, lxd_profiles_preflight]
   tags: [lxd_profiles, lxd-profiles, lxd_profiles_preflight]
 
+- name: "lxd-profiles | compose"
+  # Builds `_lxd_profiles_effective` — the catalog (vars/main.yml)
+  # merged with per-profile user extras from defaults. Both
+  # profiles.yml and healthchecks.yml iterate over it.
+  ansible.builtin.include_tasks:
+    file: compose.yml
+    apply:
+      tags: [lxd_profiles, lxd-profiles, lxd_profiles_compose]
+  tags: [lxd_profiles, lxd-profiles, lxd_profiles_compose]
+
 - name: "lxd-profiles | config | profiles"
   ansible.builtin.include_tasks:
     file: profiles.yml

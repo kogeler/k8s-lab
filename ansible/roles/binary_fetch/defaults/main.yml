@@ -1,0 +1,110 @@
+---
+# ==========================================================================
+# binary_fetch — role defaults
+# ==========================================================================
+#
+# Purpose (plan §16.1): fetch pinned upstream release binaries for
+# kubectl / clusterctl / k3s into /opt/capi-lab/bin with checksum
+# verification. No APT repos, no install.sh; the role lays the binaries
+# with deterministic owner/group/mode and nothing else.
+#
+# Dynamic checksum policy:
+#   We fetch the upstream `.sha256` (or manifest) per run and feed its
+#   value to ansible.builtin.get_url's `checksum:` parameter. Keeping a
+#   second table of hex digests in this repo would drift against the
+#   version pin; the version pin + upstream sha256 file is already an
+#   authenticated fingerprint of the release.
+#
+# Public contract (plan §2.6.2): every variable exposed to callers is
+# prefixed `binary_fetch_*`. Internal / derived facts use the
+# `_binary_fetch_*` prefix.
+
+# -- General ---------------------------------------------------------------
+
+# Whole-role toggle. When false, preflight still runs to catch
+# inconsistent inputs but no mutating task is applied.
+binary_fetch_enabled: true
+
+# Shared filesystem root. Must match base_system_opt_root — base_system
+# owns the directory itself (plan §2.7 ownership model).
+binary_fetch_opt_root: "/opt/capi-lab"
+
+# Final destination for the binaries.
+binary_fetch_bin_dir: "{{ binary_fetch_opt_root }}/bin"
+
+# Deterministic owner/group/mode for every artefact the role writes.
+binary_fetch_owner: "root"
+binary_fetch_group: "root"
+binary_fetch_mode:  "0755"
+
+# Download wall-time cap. Upstream mirrors can be slow on first run —
+# 180s covers a cold cache over a slow uplink.
+binary_fetch_download_timeout: 180
+
+# -- Architecture ----------------------------------------------------------
+
+# Only amd64 is exercised by Stage 1 local harness; aarch64 support is a
+# stretch goal and would need URL-template changes below.
+binary_fetch_arch: "amd64"
+
+# -- kubectl --------------------------------------------------------------
+#
+# Upstream: dl.k8s.io/release/<version>/bin/linux/<arch>/kubectl (+ .sha256).
+# The `.sha256` file is a single line containing only the hex digest.
+
+binary_fetch_kubectl_enabled: true
+binary_fetch_kubectl_version: "v1.35.3"               # verified 2026-04-21
+binary_fetch_kubectl_url: >-
+  https://dl.k8s.io/release/{{ binary_fetch_kubectl_version }}/bin/linux/{{ binary_fetch_arch }}/kubectl
+binary_fetch_kubectl_checksum_url: "{{ binary_fetch_kubectl_url }}.sha256"
+binary_fetch_kubectl_checksum_style: "plain"
+binary_fetch_kubectl_dest_filename: "kubectl"
+
+# -- clusterctl -----------------------------------------------------------
+#
+# Upstream: kubernetes-sigs/cluster-api GitHub releases. Unlike kubectl
+# and k3s, the Cluster API release pipeline does NOT publish any sha256
+# artefact alongside the binaries (confirmed 2026-04-22 on v1.12.5 —
+# the release asset list contains only the raw clusterctl-*-* binaries
+# and kubernetes YAML manifests). We therefore pin the sha256 directly
+# in this defaults file; the hash is derived on the control node with
+# `sha256sum` at the time of the version bump and its date is recorded
+# inline, matching the §2.11 verification-log discipline.
+#
+# Deviation from the "fetch upstream sha" model used elsewhere in this
+# role: `checksum_style: pinned` consumes `checksum_sha256` directly
+# and skips the uri fetch step.
+
+binary_fetch_clusterctl_enabled: true
+binary_fetch_clusterctl_version: "v1.12.5"            # verified 2026-04-21
+binary_fetch_clusterctl_url: >-
+  https://github.com/kubernetes-sigs/cluster-api/releases/download/{{ binary_fetch_clusterctl_version }}/clusterctl-linux-{{ binary_fetch_arch }}
+binary_fetch_clusterctl_checksum_url: ""              # no upstream asset
+binary_fetch_clusterctl_checksum_style: "pinned"
+binary_fetch_clusterctl_checksum_sha256: "b20044c66b62e273d6fe101ea82a00dc2329c28e2bca1e9b6274b744474429ba"  # verified 2026-04-22
+binary_fetch_clusterctl_dest_filename: "clusterctl"
+
+# -- k3s ------------------------------------------------------------------
+#
+# Upstream: k3s-io/k3s GitHub releases. Version carries a `+k3s1` suffix
+# that must be URL-encoded in the release-asset path. The sha256 file is
+# a manifest (lines like `<hex>  <filename>`); we match the row whose
+# filename column is exactly `k3s`.
+
+binary_fetch_k3s_enabled: true
+binary_fetch_k3s_version: "v1.35.3+k3s1"              # verified 2026-04-21
+binary_fetch_k3s_url: >-
+  https://github.com/k3s-io/k3s/releases/download/{{ binary_fetch_k3s_version | urlencode }}/k3s
+binary_fetch_k3s_checksum_url: >-
+  https://github.com/k3s-io/k3s/releases/download/{{ binary_fetch_k3s_version | urlencode }}/sha256sum-{{ binary_fetch_arch }}.txt
+binary_fetch_k3s_checksum_style: "manifest"
+binary_fetch_k3s_checksum_entry: "k3s"
+binary_fetch_k3s_dest_filename: "k3s"
+
+# -- Flow control (plan §2.6.3) -------------------------------------------
+#
+# Coarse, per-binary — no per-task switches. Set any of these to `false`
+# to skip that binary entirely while still asserting its inputs.
+binary_fetch_flow_control_kubectl:    true
+binary_fetch_flow_control_clusterctl: true
+binary_fetch_flow_control_k3s:        true

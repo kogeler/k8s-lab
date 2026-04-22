@@ -66,16 +66,20 @@ PLAN-stage1-8.md ................. §21..§23 (Stage 1 meta: out-of-scope, self-
 - §13. Выполненные Ansible-роли
   - §13.1. `base_system` (Step 1)
   - §13.2. `lxd_host` (Step 2)
-  - §13.3. `lxd_project` (Step 3)
+  - §13.3. `lxd_project` (Step 3 + Step 4 substrate расширение)
   - §13.4. `lxd_storage_pools` (Step 3)
   - §13.5. `lxd_network_int_managed` (Step 3)
-  - §13.6. `lxd_profiles` (Step 3)
+  - §13.6. `lxd_profiles` (Step 3 lean baseline + Step 4 full CAPN baseline)
   - §13.7. `lxd_bootstrap_instance` (Step 3)
+  - §13.8. `binary_fetch` (Step 4)
+  - §13.9. `bootstrap_k3s` (Step 4)
 - §14. Выполненные phases
   - §14.1. Phase 0 — repo skeleton и local harness
   - §14.2. Phase 1 — host bootstrap
   - §14.3. Phase 2 — LXD substrate
   - §14.4. Phase 3 — bootstrap instance
+  - §14.5. Phase 3.5 — `binary_fetch` (Step 4)
+  - §14.6. Phase 4 — bootstrap management cluster (Step 4 partial)
 
 ### PLAN-stage1-2.md — §15 (Phase 2.5 external L2 gate)
 

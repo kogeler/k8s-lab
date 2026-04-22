@@ -1,0 +1,79 @@
+---
+# Dispatcher-only (plan §2.6.2). Each binary gets its own themed
+# include; preflight and healthchecks bracket the mutating section.
+
+- name: "binary-fetch | preflight"
+  ansible.builtin.include_tasks:
+    file: preflight.yml
+    apply:
+      tags: [binary_fetch, binary-fetch, binary_fetch_preflight]
+  tags: [binary_fetch, binary-fetch, binary_fetch_preflight]
+
+- name: "binary-fetch | install | kubectl"
+  ansible.builtin.include_tasks:
+    file: install_one.yml
+    apply:
+      tags: [binary_fetch, binary-fetch, binary_fetch_kubectl]
+  vars:
+    _binary_fetch_this:
+      name:            "kubectl"
+      url:             "{{ binary_fetch_kubectl_url }}"
+      checksum_url:    "{{ binary_fetch_kubectl_checksum_url }}"
+      checksum_style:  "{{ binary_fetch_kubectl_checksum_style }}"
+      checksum_entry:  ""
+      dest_filename:   "{{ binary_fetch_kubectl_dest_filename }}"
+      version_pin:     "{{ binary_fetch_kubectl_version }}"
+  when:
+    - binary_fetch_enabled
+    - binary_fetch_kubectl_enabled
+    - binary_fetch_flow_control_kubectl
+  tags: [binary_fetch, binary-fetch, binary_fetch_kubectl]
+
+- name: "binary-fetch | install | clusterctl"
+  ansible.builtin.include_tasks:
+    file: install_one.yml
+    apply:
+      tags: [binary_fetch, binary-fetch, binary_fetch_clusterctl]
+  vars:
+    _binary_fetch_this:
+      name:            "clusterctl"
+      url:             "{{ binary_fetch_clusterctl_url }}"
+      checksum_url:    "{{ binary_fetch_clusterctl_checksum_url }}"
+      checksum_style:  "{{ binary_fetch_clusterctl_checksum_style }}"
+      checksum_entry:  ""
+      pinned_sha256:   "{{ binary_fetch_clusterctl_checksum_sha256 }}"
+      dest_filename:   "{{ binary_fetch_clusterctl_dest_filename }}"
+      version_pin:     "{{ binary_fetch_clusterctl_version }}"
+  when:
+    - binary_fetch_enabled
+    - binary_fetch_clusterctl_enabled
+    - binary_fetch_flow_control_clusterctl
+  tags: [binary_fetch, binary-fetch, binary_fetch_clusterctl]
+
+- name: "binary-fetch | install | k3s"
+  ansible.builtin.include_tasks:
+    file: install_one.yml
+    apply:
+      tags: [binary_fetch, binary-fetch, binary_fetch_k3s]
+  vars:
+    _binary_fetch_this:
+      name:            "k3s"
+      url:             "{{ binary_fetch_k3s_url }}"
+      checksum_url:    "{{ binary_fetch_k3s_checksum_url }}"
+      checksum_style:  "{{ binary_fetch_k3s_checksum_style }}"
+      checksum_entry:  "{{ binary_fetch_k3s_checksum_entry }}"
+      dest_filename:   "{{ binary_fetch_k3s_dest_filename }}"
+      version_pin:     "{{ binary_fetch_k3s_version }}"
+  when:
+    - binary_fetch_enabled
+    - binary_fetch_k3s_enabled
+    - binary_fetch_flow_control_k3s
+  tags: [binary_fetch, binary-fetch, binary_fetch_k3s]
+
+- name: "binary-fetch | healthchecks"
+  ansible.builtin.include_tasks:
+    file: healthchecks.yml
+    apply:
+      tags: [binary_fetch, binary-fetch, binary_fetch_healthchecks]
+  when: binary_fetch_enabled
+  tags: [binary_fetch, binary-fetch, binary_fetch_healthchecks]

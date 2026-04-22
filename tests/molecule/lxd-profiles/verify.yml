@@ -22,27 +22,42 @@
         required_config: {}
       - name: "capi-bootstrap"
         description_must_contain: "bootstrap"
-        required_devices: []
+        required_devices:
+          - {name: "kmsg", type: "unix-char"}
         required_config:
-          security.nesting:        "true"
-          security.privileged:     "false"
-          security.idmap.isolated: "true"
+          security.nesting:                     "true"
+          security.privileged:                  "false"
+          security.idmap.isolated:              "true"
+          security.syscalls.intercept.mknod:    "true"
+          security.syscalls.intercept.setxattr: "true"
+          linux.kernel_modules:                 "br_netfilter,ip_vs,nf_conntrack,overlay"
+          raw.lxc:                              "lxc.apparmor.profile=unconfined"
       - name: "capi-controlplane"
         description_must_contain: "control-plane"
         required_devices:
+          - {name: "kmsg", type: "unix-char"}
           - {name: "eth1", type: "nic", nictype: "bridged", parent: "br-ext6"}
         required_config:
-          security.nesting:        "true"
-          security.privileged:     "false"
-          security.idmap.isolated: "true"
+          security.nesting:                     "true"
+          security.privileged:                  "false"
+          security.idmap.isolated:              "true"
+          security.syscalls.intercept.mknod:    "true"
+          security.syscalls.intercept.setxattr: "true"
+          linux.kernel_modules:                 "br_netfilter,ip_vs,nf_conntrack,overlay"
+          raw.lxc:                              "lxc.apparmor.profile=unconfined"
       - name: "capi-worker"
         description_must_contain: "worker"
         required_devices:
+          - {name: "kmsg", type: "unix-char"}
           - {name: "eth1", type: "nic", nictype: "bridged", parent: "br-ext6"}
         required_config:
-          security.nesting:        "true"
-          security.privileged:     "false"
-          security.idmap.isolated: "true"
+          security.nesting:                     "true"
+          security.privileged:                  "false"
+          security.idmap.isolated:              "true"
+          security.syscalls.intercept.mknod:    "true"
+          security.syscalls.intercept.setxattr: "true"
+          linux.kernel_modules:                 "br_netfilter,ip_vs,nf_conntrack,overlay"
+          raw.lxc:                              "lxc.apparmor.profile=unconfined"
   tasks:
     # ---- Profile existence ------------------------------------------
     - name: "Verify | lxd_profiles | list profiles in capi-lab"

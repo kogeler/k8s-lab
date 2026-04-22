@@ -30,31 +30,52 @@ identity secret + API publish + artifacts export).
 
 ## 16.1. Role: `binary_fetch`
 
+**Статус: выполнено в Step 4 (2026-04-22) — полное описание, deviation
+notes и checksum-style breakdown живут в §13.8.**
+
 Скачивает в `/opt/capi-lab/bin`:
 
 * `kubectl`
 * `clusterctl`
 * `k3s`
-* optional `jq`, `yq`
+* optional `jq`, `yq` (отложено — потребители не запросили)
 
 Требования:
 
-* version pinning
-* checksum verification
+* version pinning (трекают §8a verified version log)
+* checksum verification (см. §13.8 implementation note про три
+  checksum styles: `plain`/`manifest`/`pinned`)
 * no custom apt repos
 * owner/group/mode deterministic
 
 ## 16.2. Role: `bootstrap_k3s`
 
+**Статус: выполнено в Step 4 (2026-04-22) — полное описание,
+substrate-required hardcoded флаги, execution-model rationale
+(`lxc exec` shell вместо `community.general.lxd` connection plugin)
+и end-to-end verify живут в §13.9. Step 4 также потребовал
+substrate-расширений в §13.3 / §13.6 (interception=allow,
+unix-char=allow, `/dev/kmsg` device, syscalls.intercept.*,
+raw.lxc apparmor=unconfined, restart-on-profile-change) — см.
+их Step 4 deviation секции.**
+
 Внутри bootstrap LXC:
 
-* раскладывает `k3s`, `kubectl`, `clusterctl`;
+* раскладывает `k3s` (kubectl / clusterctl остаются на host'е,
+  потребляются `bootstrap_clusterctl` §16.3 в следующих Step'ах);
 * стартует `k3s server` с:
 
-  * `--tls-san <host IP/FQDN>`
-  * `--disable=servicelb`
-  * `--disable=traefik`
-  * при необходимости `--disable=local-storage`
+  * `--disable-cloud-controller` (substrate-required, hardcoded)
+  * `--kubelet-arg=feature-gates=KubeletInUserNamespace=true`
+    (substrate-required, hardcoded)
+  * `--disable=servicelb` (default)
+  * `--disable=traefik` (default)
+  * `--tls-san <host IP/FQDN>` опционально через
+    `bootstrap_k3s_tls_san: []`
+  * `--cluster-cidr` / `--service-cidr` опционально (Step 4 не
+    требовал — k3s defaults достаточно)
+  * `--disable=local-storage` отложено (см. §16.6 export_artifacts —
+    локальный storage может потребоваться pivot'у)
 
 K3s docs и FAQ explicitly support disabling packaged components like `traefik` and `servicelb`, and `server` docs support `--tls-san`. ([K3s][18])
 
@@ -107,39 +128,42 @@ CAPN identity secret format это прямо описывает. ([capn.linuxco
 
 ## 16.7. Phase 3.5 — binary_fetch (отложен из Phase 1)
 
-**Статус: не выполнено.**
+**Статус: выполнено в Step 4 (2026-04-22) — см. §14.5.**
 
 Перенесён из Phase 1 в Step 2 — kubectl / clusterctl / k3s впервые
-нужны только на Phase 4 (`bootstrap_k3s`). См. §16.1.
+нужны только на Phase 4 (`bootstrap_k3s`). См. §16.1 / §13.8.
 
-Сделать:
+Сделано:
 
-* скачать pinned версии `kubectl`, `clusterctl`, `k3s` в
+* скачаны pinned версии `kubectl`, `clusterctl`, `k3s` в
   `/opt/capi-lab/bin` с checksum verification;
-* опционально — `jq`, `yq`.
+* `jq` / `yq` отложены — на Step 4 потребители не запросили; могут
+  быть добавлены позже без breaking-change ролей через
+  `binary_fetch_*_enabled` toggles или новый бинарь в каталоге.
 
-Acceptance:
-
-* файлы присутствуют, checksum верифицированы, owner/group/mode
-  детерминированы.
+Acceptance: достигнуто (см. §14.5).
 
 ## 16.8. Phase 4 — bootstrap management cluster
 
-**Статус: не выполнено.**
+**Статус: частично выполнено в Step 4 (2026-04-22) — см. §14.6.**
+`bootstrap_k3s` готов; `bootstrap_clusterctl` / `bootstrap_capn_secret`
+/ `bootstrap_api_publish` остаются.
 
 Роли:
 
-* `bootstrap_k3s`
-* `bootstrap_clusterctl`
-* `bootstrap_capn_secret`
-* `bootstrap_api_publish`
+* `bootstrap_k3s` ✓ (Step 4 — §13.9)
+* `bootstrap_clusterctl` ☐ (§16.3)
+* `bootstrap_capn_secret` ☐ (§16.4)
+* `bootstrap_api_publish` ☐ (§16.5)
 
-Acceptance:
+Acceptance (целая phase, после оставшихся ролей):
 
 * bootstrap API reachable from runner
 * `clusterctl init` done
 * providers healthy
 * LXD identity secret present
+
+Acceptance Step 4 части (доказано verify scenario'ями) — см. §14.6.
 
 [1]: https://capn.linuxcontainers.org/?utm_source=chatgpt.com "Introduction - The cluster-api-provider-incus book"
 [2]: https://documentation.ubuntu.com/lxd/latest/reference/network_bridge/?utm_source=chatgpt.com "Bridge network - LXD documentation"

@@ -1,0 +1,122 @@
+---
+# ==========================================================================
+# lxd_profiles — substrate-required baseline
+# ==========================================================================
+#
+# This file is role-internal and MUST NOT be treated as part of the public
+# contract. It holds the exact LXD config + device set each of the four
+# k8s-lab profiles needs to do its job on the locked substrate (plan
+# §2.8 unprivileged LXC, plan §13.6 CAPN kubeadm baseline).
+#
+# Rationale (memory `feedback_required_values_hardcoded.md`): if a value
+# is mandatory for the role to work at all — e.g. `security.nesting=true`
+# for inner containerd, `raw.lxc=lxc.apparmor.profile=unconfined` for
+# kubelet's `/dev/kmsg` access, or `linux.kernel_modules` for kube-proxy —
+# it belongs here, NOT in `defaults/main.yml`, so a consumer cannot
+# silently break the role by overriding it. User-tunable extensions live
+# in `lxd_profiles_<profile>_extra_config` / `..._extra_devices` and are
+# merged on top of this baseline in `tasks/compose.yml`.
+#
+# Shared inputs that consumers legitimately tune (pool name, bridges,
+# ifnames) are referenced via `lxd_profiles_*` variables from
+# `defaults/main.yml` and resolved at runtime.
+
+_lxd_profiles_catalog:
+  - name:        "capi-base"
+    description: "k8s-lab base profile — root disk on the primary pool + internal nic."
+    config: {}
+    devices:
+      root:
+        type: "disk"
+        path: "/"
+        pool: "{{ lxd_profiles_storage_pool }}"
+      eth0:
+        type:    "nic"
+        nictype: "bridged"
+        parent:  "{{ lxd_profiles_internal_network }}"
+        name:    "{{ lxd_profiles_internal_ifname }}"
+
+  - name:        "capi-bootstrap"
+    description: "k8s-lab bootstrap container — unprivileged + nesting for inner k3s."
+    config:
+      # Plan §2.8 hard-locks this repo to unprivileged LXC + nesting;
+      # k3s' embedded containerd refuses to start without nesting and
+      # refuses to unpack images without mknod/setxattr syscall
+      # interception. `restricted.containers.lowlevel=allow` +
+      # `restricted.containers.interception=allow` on the capi-lab
+      # project (plan §13.3) grant the interception keys below.
+      security.nesting:                     "true"
+      security.privileged:                  "false"
+      security.idmap.isolated:              "true"
+      security.syscalls.intercept.mknod:    "true"
+      security.syscalls.intercept.setxattr: "true"
+      # Kernel modules kube-proxy / containerd / overlayfs rely on.
+      # base_system persists them on the host via modprobe; the
+      # `linux.kernel_modules` key asks LXD to assert they are
+      # available at instance start time.
+      linux.kernel_modules: "br_netfilter,ip_vs,nf_conntrack,overlay"
+      # The default LXD unprivileged AppArmor profile blocks access to
+      # `/dev/kmsg` and interferes with iptables / netlink ops
+      # kube-proxy performs. Dropping AppArmor for this profile is the
+      # documented recipe for running k3s in unprivileged LXC (Proxmox
+      # forum, discuss.linuxcontainers.org/t/7539, triangletodd gist).
+      # Plan §2.8 still holds — the container stays unprivileged; only
+      # AppArmor confinement is removed.
+      raw.lxc: "lxc.apparmor.profile=unconfined"
+    devices:
+      # Expose the host's /dev/kmsg kernel message buffer to the
+      # container. It is not populated by default in unprivileged LXC
+      # (the udev / devtmpfs rules that create it on bare metal do
+      # not run in a nested container). Kubelet opens /dev/kmsg from
+      # its oomWatcher constructor and refuses to start if the file
+      # is missing, which is exactly what kills k3s here. Mapping it
+      # through an LXD unix-char device exposes the host's kmsg
+      # read-only — k3s just reads kernel log messages, which is all
+      # oomWatcher wants.
+      kmsg:
+        type:   "unix-char"
+        source: "/dev/kmsg"
+        path:   "/dev/kmsg"
+
+  - name:        "capi-controlplane"
+    description: "k8s-lab CAPI control-plane — CAPN unprivileged kubeadm baseline + external nic."
+    config:
+      security.nesting:                     "true"
+      security.privileged:                  "false"
+      security.idmap.isolated:              "true"
+      security.syscalls.intercept.mknod:    "true"
+      security.syscalls.intercept.setxattr: "true"
+      linux.kernel_modules:                 "br_netfilter,ip_vs,nf_conntrack,overlay"
+      raw.lxc:                              "lxc.apparmor.profile=unconfined"
+    devices:
+      # See capi-bootstrap above for the /dev/kmsg rationale.
+      kmsg:
+        type:   "unix-char"
+        source: "/dev/kmsg"
+        path:   "/dev/kmsg"
+      eth1:
+        type:    "nic"
+        nictype: "bridged"
+        parent:  "{{ lxd_profiles_external_bridge }}"
+        name:    "{{ lxd_profiles_external_ifname }}"
+
+  - name:        "capi-worker"
+    description: "k8s-lab CAPI worker — CAPN unprivileged kubeadm baseline + external nic."
+    config:
+      security.nesting:                     "true"
+      security.privileged:                  "false"
+      security.idmap.isolated:              "true"
+      security.syscalls.intercept.mknod:    "true"
+      security.syscalls.intercept.setxattr: "true"
+      linux.kernel_modules:                 "br_netfilter,ip_vs,nf_conntrack,overlay"
+      raw.lxc:                              "lxc.apparmor.profile=unconfined"
+    devices:
+      kmsg:
+        type:   "unix-char"
+        source: "/dev/kmsg"
+        path:   "/dev/kmsg"
+      eth1:
+        type:    "nic"
+        nictype: "bridged"
+        parent:  "{{ lxd_profiles_external_bridge }}"
+        name:    "{{ lxd_profiles_external_ifname }}"

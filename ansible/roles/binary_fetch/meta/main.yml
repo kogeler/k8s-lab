@@ -1,0 +1,25 @@
+---
+galaxy_info:
+  role_name: binary_fetch
+  namespace: k8slab
+  author: k8s-lab contributors
+  description: >-
+    Fetch pinned kubectl / clusterctl / k3s release binaries into
+    /opt/capi-lab/bin with upstream sha256 verification. Does NOT install
+    any APT package, does NOT configure services — later phase roles
+    (bootstrap_k3s, bootstrap_clusterctl) consume the binaries.
+  license: MIT
+  min_ansible_version: "2.16"
+  platforms:
+    - name: Debian
+      versions:
+        - trixie
+  galaxy_tags:
+    - kubernetes
+    - bootstrap
+
+dependencies:
+  # base_system owns /opt/capi-lab/{bin,etc} + ca-certificates + curl so
+  # that get_url has a working PKI and the destination directory exists
+  # with deterministic ownership before we start writing into it.
+  - role: base_system

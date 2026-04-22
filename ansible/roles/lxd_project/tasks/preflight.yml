@@ -46,40 +46,21 @@
       filesystem path to the LXD unix socket (got
       "{{ lxd_project_lxd_socket_path | default('') }}").
 
-- name: "lxd-project | preflight | validate feature flags"
+- name: "lxd-project | preflight | validate user extras shape"
+  # Substrate baseline (vars/main.yml) is role-internal and trusted by
+  # construction. Only the user-facing extras dict is validated here.
   ansible.builtin.assert:
     that:
-      - lxd_project_features is mapping
-      - lxd_project_features | length > 0
-      # Normalise to "True"/"False" strings first so the check fails
-      # cleanly when callers pass e.g. the string "yes" or the int 1.
-      - (lxd_project_features.values() | map('string') | list)
-          | difference(['True', 'False']) | length == 0
-    fail_msg: >-
-      lxd_project: every value in `lxd_project_features` must be a
-      boolean (they are stringified to "true"/"false" when sent to LXD).
-      Current map: {{ lxd_project_features }}.
-
-- name: "lxd-project | preflight | validate restricted flag"
-  ansible.builtin.assert:
-    that:
-      - lxd_project_restricted is boolean
-    fail_msg: >-
-      lxd_project: `lxd_project_restricted` must be a boolean.
-
-- name: "lxd-project | preflight | validate restriction keys + values"
-  ansible.builtin.assert:
-    that:
-      - lxd_project_restrictions is mapping
-      # Every key must start with "restricted." — otherwise it ends up as
+      - lxd_project_extra_restrictions is mapping
+      # Every key must start with "restricted." — otherwise it lands as
       # a non-restriction config key and silently takes effect somewhere
       # we did not expect.
-      - (lxd_project_restrictions.keys() | list)
+      - (lxd_project_extra_restrictions.keys() | list)
           | reject('match', '^restricted\\.') | list | length == 0
       # Every value must be a non-empty string.
-      - (lxd_project_restrictions.values() | map('string') | list)
+      - (lxd_project_extra_restrictions.values() | map('string') | list)
           | select('equalto', '') | list | length == 0
     fail_msg: >-
-      lxd_project: every key in `lxd_project_restrictions` must start
-      with `restricted.` and every value must be a non-empty string.
-      Current map: {{ lxd_project_restrictions }}.
+      lxd_project: every key in `lxd_project_extra_restrictions` must
+      start with `restricted.` and every value must be a non-empty
+      string. Current map: {{ lxd_project_extra_restrictions }}.

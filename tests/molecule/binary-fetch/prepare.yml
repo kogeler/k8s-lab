@@ -1,0 +1,16 @@
+---
+# binary_fetch scenario prepare — minimal shared bootstrap only.
+# base_system (meta-dep) does the real host prep when converge runs.
+
+- name: "Prepare | binary_fetch"
+  hosts: all
+  gather_facts: true
+  become: true
+  vars:
+    _molecule_project_dir: "{{ lookup('ansible.builtin.env', 'MOLECULE_PROJECT_DIRECTORY') }}"
+  vars_files:
+    - "../shared/vars/common.yml"
+  tasks:
+    - name: "Prepare | binary_fetch | shared base"
+      ansible.builtin.include_tasks:
+        file: "{{ _molecule_project_dir }}/shared/tasks/prepare.yml"

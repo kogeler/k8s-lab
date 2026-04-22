@@ -1,0 +1,37 @@
+---
+# Dispatcher-only (plan §2.6.2). Each include file covers one concern.
+
+- name: "bootstrap-k3s | preflight"
+  ansible.builtin.include_tasks:
+    file: preflight.yml
+    apply:
+      tags: [bootstrap_k3s, bootstrap-k3s, bootstrap_k3s_preflight]
+  tags: [bootstrap_k3s, bootstrap-k3s, bootstrap_k3s_preflight]
+
+- name: "bootstrap-k3s | install"
+  ansible.builtin.include_tasks:
+    file: install.yml
+    apply:
+      tags: [bootstrap_k3s, bootstrap-k3s, bootstrap_k3s_install]
+  when:
+    - bootstrap_k3s_enabled
+    - bootstrap_k3s_flow_control_install
+  tags: [bootstrap_k3s, bootstrap-k3s, bootstrap_k3s_install]
+
+- name: "bootstrap-k3s | service"
+  ansible.builtin.include_tasks:
+    file: service.yml
+    apply:
+      tags: [bootstrap_k3s, bootstrap-k3s, bootstrap_k3s_service]
+  when:
+    - bootstrap_k3s_enabled
+    - bootstrap_k3s_flow_control_service
+  tags: [bootstrap_k3s, bootstrap-k3s, bootstrap_k3s_service]
+
+- name: "bootstrap-k3s | healthchecks"
+  ansible.builtin.include_tasks:
+    file: healthchecks.yml
+    apply:
+      tags: [bootstrap_k3s, bootstrap-k3s, bootstrap_k3s_healthchecks]
+  when: bootstrap_k3s_enabled
+  tags: [bootstrap_k3s, bootstrap-k3s, bootstrap_k3s_healthchecks]

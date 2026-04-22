@@ -1,0 +1,183 @@
+---
+# Install k3s inside the bootstrap container.
+#
+# Every write path below uses the LXD CLI (`lxc file push`, `lxc exec`)
+# as a documented shell fallback (plan §2.6.1). Rationale: in the
+# Molecule harness the Ansible controller is not the LXD host — the
+# Vagrant VM is — so the community.general.lxd connection plugin is
+# not usable (it shells out to `lxc` on the controller). Staying on
+# `ssh://host` with explicit `lxc exec` invocations keeps us on the
+# same connection boundary that lxd_bootstrap_instance already uses.
+#
+# Idempotence is earned by explicit state comparison:
+#   * binary push — compare sha256 host-side vs container-side;
+#   * systemd unit + env — compare live content vs rendered content
+#     via `lxc exec cat`; push only when they differ.
+
+# ---- Resolve in-container state ----------------------------------------
+
+- name: "bootstrap-k3s | install | in-container k3s sha256"
+  # `set +e` on the sh: missing binary prints MISSING, never an error.
+  ansible.builtin.command:
+    argv:
+      - "{{ bootstrap_k3s_lxc_cli }}"
+      - "exec"
+      - "--project={{ bootstrap_k3s_project }}"
+      - "{{ bootstrap_k3s_instance_name }}"
+      - "--"
+      - "sh"
+      - "-c"
+      - >-
+        if [ -x {{ bootstrap_k3s_container_bin_path }} ]; then
+          sha256sum {{ bootstrap_k3s_container_bin_path }} | awk '{print $1}';
+        else
+          echo MISSING;
+        fi
+  register: _bootstrap_k3s_dest_sha_register
+  changed_when: false
+
+- name: "bootstrap-k3s | install | record host + dest sha256"
+  ansible.builtin.set_fact:
+    _bootstrap_k3s_src_sha:  "{{ _bootstrap_k3s_host_k3s_stat.stat.checksum | lower }}"
+    _bootstrap_k3s_dest_sha: "{{ _bootstrap_k3s_dest_sha_register.stdout | trim | lower }}"
+
+# ---- Push binary only when needed --------------------------------------
+
+- name: "bootstrap-k3s | install | push k3s into container"
+  ansible.builtin.command:
+    argv:
+      - "{{ bootstrap_k3s_lxc_cli }}"
+      - "file"
+      - "push"
+      - "--project={{ bootstrap_k3s_project }}"
+      - "--mode={{ bootstrap_k3s_bin_mode }}"
+      - "--uid=0"
+      - "--gid=0"
+      - "{{ bootstrap_k3s_host_bin_dir }}/{{ bootstrap_k3s_host_k3s_filename }}"
+      - "{{ bootstrap_k3s_instance_name }}{{ bootstrap_k3s_container_bin_path }}"
+  when: _bootstrap_k3s_dest_sha != _bootstrap_k3s_src_sha
+  changed_when: _bootstrap_k3s_dest_sha != _bootstrap_k3s_src_sha
+  notify: "bootstrap-k3s | handlers | restart k3s"
+
+# ---- Render systemd unit + env file locally and push -------------------
+#
+# `template` renders to a persistent staging dir under /opt/capi-lab
+# (owned by base_system) so a second converge against unchanged inputs
+# produces `changed=false` and the idempotence check passes. A
+# follow-up comparison against live in-container content decides if we
+# push. Staging files are `0600` because the env file may carry the
+# k3s token when a consumer sets one.
+
+- name: "bootstrap-k3s | install | ensure staging dir on host"
+  ansible.builtin.file:
+    path:  "{{ bootstrap_k3s_host_staging_dir }}"
+    state: directory
+    owner: "root"
+    group: "root"
+    mode:  "0750"
+
+- name: "bootstrap-k3s | install | render env file to staging path"
+  ansible.builtin.template:
+    src:   "k3s.env.j2"
+    dest:  "{{ bootstrap_k3s_host_staging_dir }}/k3s.env"
+    owner: "root"
+    group: "root"
+    mode:  "0600"
+
+- name: "bootstrap-k3s | install | render systemd unit to staging path"
+  ansible.builtin.template:
+    src:   "k3s.service.j2"
+    dest:  "{{ bootstrap_k3s_host_staging_dir }}/k3s.service"
+    owner: "root"
+    group: "root"
+    mode:  "0600"
+
+- name: "bootstrap-k3s | install | read in-container env + unit for drift compare"
+  ansible.builtin.command:
+    argv:
+      - "{{ bootstrap_k3s_lxc_cli }}"
+      - "exec"
+      - "--project={{ bootstrap_k3s_project }}"
+      - "{{ bootstrap_k3s_instance_name }}"
+      - "--"
+      - "sh"
+      - "-c"
+      - >-
+        echo '==ENV=='; [ -f {{ bootstrap_k3s_env_path }} ] && cat {{ bootstrap_k3s_env_path }};
+        echo '==UNIT=='; [ -f {{ bootstrap_k3s_unit_path }} ] && cat {{ bootstrap_k3s_unit_path }};
+        echo '==END=='
+  register: _bootstrap_k3s_live_register
+  changed_when: false
+
+- name: "bootstrap-k3s | install | read staged env + unit"
+  ansible.builtin.slurp:
+    src: "{{ item }}"
+  register: _bootstrap_k3s_staged_register
+  loop:
+    - "{{ bootstrap_k3s_host_staging_dir }}/k3s.env"
+    - "{{ bootstrap_k3s_host_staging_dir }}/k3s.service"
+
+- name: "bootstrap-k3s | install | compute drift flags"
+  ansible.builtin.set_fact:
+    _bootstrap_k3s_env_drift: >-
+      {{
+        (_bootstrap_k3s_staged_register.results[0].content | b64decode)
+        not in _bootstrap_k3s_live_register.stdout
+      }}
+    _bootstrap_k3s_unit_drift: >-
+      {{
+        (_bootstrap_k3s_staged_register.results[1].content | b64decode)
+        not in _bootstrap_k3s_live_register.stdout
+      }}
+
+# ---- Ensure destination directories exist inside container -------------
+
+- name: "bootstrap-k3s | install | ensure in-container dirs"
+  ansible.builtin.command:
+    argv:
+      - "{{ bootstrap_k3s_lxc_cli }}"
+      - "exec"
+      - "--project={{ bootstrap_k3s_project }}"
+      - "{{ bootstrap_k3s_instance_name }}"
+      - "--"
+      - "sh"
+      - "-c"
+      - >-
+        mkdir -p {{ bootstrap_k3s_env_path | dirname }} {{ bootstrap_k3s_unit_path | dirname }}
+  changed_when: false
+
+# ---- Push env + unit on drift ------------------------------------------
+
+- name: "bootstrap-k3s | install | push env file into container"
+  ansible.builtin.command:
+    argv:
+      - "{{ bootstrap_k3s_lxc_cli }}"
+      - "file"
+      - "push"
+      - "--project={{ bootstrap_k3s_project }}"
+      - "--mode=0644"
+      - "--uid=0"
+      - "--gid=0"
+      - "{{ bootstrap_k3s_host_staging_dir }}/k3s.env"
+      - "{{ bootstrap_k3s_instance_name }}{{ bootstrap_k3s_env_path }}"
+  when: _bootstrap_k3s_env_drift
+  changed_when: _bootstrap_k3s_env_drift
+  notify: "bootstrap-k3s | handlers | restart k3s"
+
+- name: "bootstrap-k3s | install | push systemd unit into container"
+  ansible.builtin.command:
+    argv:
+      - "{{ bootstrap_k3s_lxc_cli }}"
+      - "file"
+      - "push"
+      - "--project={{ bootstrap_k3s_project }}"
+      - "--mode={{ bootstrap_k3s_unit_mode }}"
+      - "--uid=0"
+      - "--gid=0"
+      - "{{ bootstrap_k3s_host_staging_dir }}/k3s.service"
+      - "{{ bootstrap_k3s_instance_name }}{{ bootstrap_k3s_unit_path }}"
+  when: _bootstrap_k3s_unit_drift
+  changed_when: _bootstrap_k3s_unit_drift
+  notify:
+    - "bootstrap-k3s | handlers | daemon-reload"
+    - "bootstrap-k3s | handlers | restart k3s"

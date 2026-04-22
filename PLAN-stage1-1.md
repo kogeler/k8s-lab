@@ -26,15 +26,17 @@ PLAN-stage1-8.md ................. §21..§23 (Stage 1 meta: out-of-scope, self-
 
 Этот раздел охватывает Ansible-роли Stage 1, которые уже реализованы и
 прогнаны end-to-end в локальном Vagrant/libvirt-контуре по состоянию на
-Step 3 (2026-04-22):
+Step 4 (2026-04-22):
 
 * §13.1 `base_system` (Step 1);
 * §13.2 `lxd_host` (Step 2);
-* §13.3 `lxd_project` (Step 3);
+* §13.3 `lxd_project` (Step 3 + Step 4 substrate расширение);
 * §13.4 `lxd_storage_pools` (Step 3);
 * §13.5 `lxd_network_int_managed` (Step 3);
-* §13.6 `lxd_profiles` (Step 3 — lean baseline);
-* §13.7 `lxd_bootstrap_instance` (Step 3 — первая роль Phase 3).
+* §13.6 `lxd_profiles` (Step 3 lean baseline + Step 4 full CAPN unprivileged kubeadm baseline);
+* §13.7 `lxd_bootstrap_instance` (Step 3 — первая роль Phase 3);
+* §13.8 `binary_fetch` (Step 4 — отложенная Phase 1.5 / §16.1);
+* §13.9 `bootstrap_k3s` (Step 4 — первая роль Phase 4).
 
 Ещё не выполненные Stage-1-роли живут в последующих шардах (§15..§20)
 вместе со своими phases.
@@ -181,6 +183,35 @@ LXD project restrictions support exactly this model. ([Ubuntu Documentation][4])
   задокументировано в `roles/lxd_project/tasks/project.yml`
   header-комментарии и в role README caveats.
 
+### Step 4 расширения (2026-04-22)
+
+Driver: подъём `bootstrap_k3s` в unprivileged LXC потребовал двух
+дополнительных restricted-ключей в проекте + перерефактора публичного
+интерфейса по правилу «role-required values are hardcoded» (memory
+`feedback_required_values_hardcoded.md`).
+
+* **`restricted.containers.interception=allow`** — без этого ключа
+  LXD отбивает `security.syscalls.intercept.mknod` /
+  `security.syscalls.intercept.setxattr` на профилях с "Container
+  syscall interception is forbidden". Эти intercepts требуются
+  containerd внутри bootstrap-LXC (см. §13.6 deviation для деталей).
+* **`restricted.devices.unix-char=allow`** — без этого LXD отбивает
+  `kmsg` device на capi-bootstrap/controlplane/worker профилях с
+  "Unix character devices are forbidden". `/dev/kmsg` passthrough в
+  контейнер нужен kubelet'овскому oomWatcher; security trade-off
+  обсуждается в §13.6 deviation.
+* **Refactor: substrate baseline → `vars/main.yml`.** Раньше
+  `lxd_project_features`, `lxd_project_restricted` и
+  `lxd_project_restrictions` были user-overridable defaults. Это
+  позволяло consumer'у «случайно» убрать обязательный ключ и
+  получить нерабочую substrate. Step 4 переносит весь baseline в
+  `_lxd_project_required_features` / `_lxd_project_required_restricted`
+  / `_lxd_project_required_restrictions` (role-internal,
+  не-public). Defaults теперь экспонируют только
+  `lxd_project_extra_restrictions: {}` для consumer'ских
+  *дополнительных* restrictions поверх baseline. Tasks мержат
+  required + extras в один payload.
+
 ## 13.4. `lxd_storage_pools`
 
 **Статус: выполнено в Step 3 (2026-04-22).**
@@ -252,10 +283,12 @@ LXD managed bridge provides DHCP, IPv6 RAs and DNS via dnsmasq and does NAT by d
 
 ## 13.6. `lxd_profiles`
 
-**Статус: выполнено в Step 3 (2026-04-22) — lean subset baseline.
-Полный CAPN-tuning (`raw.lxc.*`, `security.syscalls.intercept.*`,
-`boot-dir` disk mapping `/boot`) отложен до phase 3–4, когда inner
-Kubernetes определит точные requirements.**
+**Статус: выполнено в Step 3 (2026-04-22) — lean subset baseline;
+доведено до полного CAPN unprivileged kubeadm baseline в Step 4
+(2026-04-22) после того как `bootstrap_k3s` (§13.9) определил
+точные requirements. `boot-dir` disk mapping `/boot` всё ещё отложен
+до Phase 5+ (CAPN reference profile упоминает его для kubeadm-init,
+но `bootstrap_k3s` его не требует).**
 
 Обязательные profiles:
 
@@ -297,6 +330,76 @@ Kubernetes определит точные requirements.**
   иногда нормализует optional keys (`security.devlxd`, hwaddr), full
   dict-equality давал бы ложный drift.
 
+### Step 4 расширения (2026-04-22)
+
+Driver: `bootstrap_k3s` (§13.9) на debian/13 LXD image потребовал
+полного CAPN unprivileged baseline + специфичных для k3s расширений.
+
+* **`capi-bootstrap` baseline расширен** до того же набора, что
+  `capi-controlplane` / `capi-worker`: `security.syscalls.intercept.mknod=true`,
+  `security.syscalls.intercept.setxattr=true` (containerd внутри без
+  них не unpack'ит images и не создаёт device nodes — symptom:
+  `poststarthook/rbac/bootstrap-roles failed` + endless k3s
+  crashloop), `linux.kernel_modules=br_netfilter,ip_vs,nf_conntrack,overlay`
+  (kube-proxy / containerd / overlayfs). `capi-controlplane` и
+  `capi-worker` так же получили эти ключи (планом было «отложено до
+  inner Kubernetes»; inner Kubernetes — это k3s — теперь
+  определил).
+* **`raw.lxc: lxc.apparmor.profile=unconfined`** на всех трёх
+  kubeadm-профилях. Default LXD apparmor profile в unprivileged
+  containers блокирует доступ к `/dev/kmsg` и часть iptables/netlink
+  ops kube-proxy'а. Документированный recipe для k3s-в-LXC (Proxmox
+  forum, discuss.linuxcontainers.org/t/7539, triangletodd gist).
+  Plan §2.8 hard-lock unprivileged по-прежнему держится — снимается
+  только AppArmor-confinement, не сами user-namespace boundaries.
+* **`/dev/kmsg` device passthrough (`unix-char`)** на всех трёх
+  kubeadm-профилях. Без него kubelet's oomWatcher падает на
+  `open /dev/kmsg: no such file or directory` (даже с
+  `--kubelet-arg=feature-gates=KubeletInUserNamespace=true`,
+  потому что файл физически не создан в unprivileged LXC). Source
+  read-only по сути: write в /dev/kmsg блокируется host-kernel
+  CAP_SYSLOG check, который у unprivileged container нет в
+  host-namespace. Risk model: information disclosure (host kernel
+  log виден контейнеру) — для local lab acceptable; production
+  consumer должен пере-оценить (см. ресерч в conversation log).
+* **Refactor: substrate baseline → `vars/main.yml`.** Раньше
+  `lxd_profiles_profiles` был user-overridable list со всем содержимым
+  каждого из 4 профилей. Permissive override → consumer мог "случайно"
+  убрать substrate-required ключ. Step 4 переносит полный per-profile
+  спек в `_lxd_profiles_catalog` (vars/main.yml, role-internal).
+  Defaults экспонируют только shared inputs (storage_pool, ifnames)
+  + per-profile `lxd_profiles_capi_<role>_extra_config / _extra_devices`
+  для тюнинга поверх baseline. Новый `tasks/compose.yml` строит
+  `_lxd_profiles_effective` из catalog + extras; profiles.yml и
+  healthchecks.yml итерируют над ним.
+* **Restart-on-profile-change**. По LXD docs ([instance_options ref][lxd-options])
+  большинство substrate-required keys (`security.privileged`,
+  `security.idmap.isolated`, `security.syscalls.intercept.*`,
+  `raw.lxc`) имеют `Live update: no` — LXD принимает PATCH профиля
+  но не propagate-ит на running instances. Без рестарта profile
+  changes молча drift'ят. Step 4 добавляет в `tasks/profiles.yml`
+  логику: после apply вычисляется список изменившихся профилей,
+  list'ятся running instances в проекте, рестартятся те, у которых
+  изменившийся профиль в `profiles[]`. Restart через
+  `community.general.lxd_container state=restarted`. Caveat
+  (документирован в README): если первый apply прошёл (changed=true)
+  но restart упал, на re-run профиль уже matches (changed=false) →
+  restart не повторяется → instance остаётся в drift до операторского
+  вмешательства. Robust drift detector (сравнение
+  `expanded_config` instance vs profile baseline) отложен.
+* **Verify scenario доказывает restart-on-change** end-to-end:
+  `tests/molecule/bootstrap-k3s/verify.yml` после основных assert'ов
+  захватывает init PID контейнера, дёргает `lxd_profiles` с
+  `lxd_profiles_capi_bootstrap_extra_config: {user.k8slab-restart-test: ...}`
+  (марker заставляет `lxd_profile` отчитать `changed=true`),
+  захватывает PID после, ассертит PID changed. После теста marker
+  снимается через `ansible.builtin.uri` PUT (PUT — единственный
+  способ удалить config key в LXD; PATCH с `merge_profile=true`
+  только добавляет/обновляет, удалить нельзя), чтобы downstream
+  scenarios на той же VM не видели pollution.
+
+[lxd-options]: https://documentation.ubuntu.com/lxd/latest/reference/instance_options/
+
 ## 13.7. `lxd_bootstrap_instance`
 
 **Статус: выполнено в Step 3 (2026-04-22) — Phase 3 первая роль.**
@@ -337,17 +440,134 @@ Kubernetes определит точные requirements.**
   `state.network` (host-side bridge port bound), а parent/nictype
   корректность остаётся в `lxd_profiles`-scenario verify.
 
+## 13.8. `binary_fetch`
+
+**Статус: выполнено в Step 4 (2026-04-22) — Phase 3.5 (отложенная
+из Phase 1, см. §14.2 / §16.7).**
+
+Скачивает в `/opt/capi-lab/bin` (host-side):
+
+* `kubectl`
+* `clusterctl`
+* `k3s`
+
+Каждый бинарь — pinned version (трекает §8a verified version log) +
+checksum verification через `ansible.builtin.get_url checksum:
+sha256:<digest>`. Owner/group/mode деривируются от
+`base_system`-owned `/opt/capi-lab/bin` (root:root 0755).
+
+### Implementation notes (Step 4)
+
+* **Три checksum styles**, по одному на upstream:
+  * `plain` (kubectl) — GET `<url>.sha256`, файл = одна строка hex.
+  * `manifest` (k3s) — GET `sha256sum-<arch>.txt` в `sha256sum(1)`
+    формате (`<hex>  <name>` per line), парсим через
+    `regex_findall(multiline=true)` по `checksum_entry` =
+    имя ассета.
+  * `pinned` (clusterctl) — upstream cluster-api releases НЕ
+    публикуют sha256-файл (verified 2026-04-22 на v1.12.5 — release
+    asset list содержит только raw clusterctl-*-* binaries и yaml
+    манифесты, никаких sha256). Hash хранится прямо в
+    `defaults/main.yml` рядом с version pin
+    (`binary_fetch_clusterctl_checksum_sha256`); audit'ится через
+    `sha256sum` на control node при каждом version-bump'е.
+    Пометка даты проверки идёт inline там же.
+* **`ansible.builtin.get_url` идемпотентный**: при повторном
+  прогоне сравнивает sha256 destination'а с тем что в `checksum:`,
+  пропускает download если совпало.
+* **Native-first путь** (плана §2.6.1) — никаких shell wrappers,
+  никаких `install.sh` от upstream'а. `uri` для checksum file +
+  `get_url` для binary.
+* Healthchecks запускают каждый бинарь через `--version` (или
+  `version --client --output=yaml` для kubectl, `version --output=yaml`
+  для clusterctl) и матчат self-reported version против pinned —
+  отлавливает silent download corruption.
+
+## 13.9. `bootstrap_k3s`
+
+**Статус: выполнено в Step 4 (2026-04-22) — Phase 4 первая роль.**
+
+Внутри bootstrap LXC:
+
+* раскладывает `k3s` (host `/opt/capi-lab/bin/k3s` → container
+  `/usr/local/bin/k3s`);
+* рендерит и пушит systemd unit + env file;
+* запускает `k3s.service` с `--disable=traefik --disable=servicelb`
+  + substrate-required hardcoded флагами (см. ниже);
+* поллит kube-apiserver через `kubectl get nodes` до Ready.
+
+### Implementation notes (Step 4)
+
+* **Execution model: shell-via-`lxc exec` / `lxc file push`,
+  не `community.general.lxd` connection plugin.** В Molecule harness
+  controller (моя dev-машина) НЕ является LXD host'ом — host это
+  Vagrant VM. `community.general.lxd` connection plugin shell'ит
+  `lxc` локально на controller'е, что не подходит. Pure SSH→host→`lxc`
+  shell — та же boundary, что `lxd_bootstrap_instance` использует
+  через REST. Документированный shell fallback (плана §2.6.1).
+* **`lxc` CLI — абсолютным путём `/snap/bin/lxc`** через
+  `bootstrap_k3s_lxc_cli`. Snap LXD кладёт `lxc` в `/snap/bin/`,
+  который не на default PATH в non-interactive SSH session'ах.
+* **Идемпотентный binary push**: stat host k3s → sha256sum через
+  `lxc exec` внутри контейнера → push только если digests различаются.
+* **Идемпотентный unit/env push**: render через `template` в
+  persistent staging path (`/opt/capi-lab/etc/bootstrap_k3s/`),
+  read in-container content через `lxc exec cat`, compute drift
+  flag, push только при drift. Persistent staging path (а не /tmp)
+  чтобы template сам по себе был idempotent на rerun.
+* **Hardcoded substrate-required флаги в `templates/k3s.service.j2`**
+  (правило memory `feedback_required_values_hardcoded.md` —
+  «если без этого роль не работает, hardcode in template, не
+  переменная»):
+  * **`--disable-cloud-controller`** — k3s embedded
+    cloud-controller-manager в unprivileged LXC попадает в RBAC
+    race condition (k3s-io/k3s#7328): CCM пытается прочитать
+    `extension-apiserver-authentication` configmap до того как
+    `poststarthook/rbac/bootstrap-roles` создаст для него
+    RoleBinding. CCM exits → k3s shutdown → systemd Restart=always
+    → endless crashloop. У k3s-lab нет cloud integration to lose, так
+    что CCM выключен полностью.
+  * **`--kubelet-arg=feature-gates=KubeletInUserNamespace=true`** —
+    kubelet в unprivileged container открывает `/dev/kmsg` из
+    oomWatcher; без этого gate (или физически смонтированного
+    `/dev/kmsg`, который мы тоже добавили в profile §13.6)
+    kubelet падает на старте. Defense-in-depth — мы делаем оба
+    fix'а.
+  * Consumer'ы могут добавлять *дополнительные* kubelet feature
+    gates через `bootstrap_k3s_extra_kubelet_feature_gates: []`
+    (rendered в тот же `--kubelet-arg=feature-gates=<csv>` поверх
+    required gate, нельзя его убрать).
+* **`Type=notify` оставлен**, как в upstream
+  `github.com/k3s-io/k3s/blob/master/k3s.service`. После всех
+  substrate-fix'ов k3s корректно доставляет sd_notify READY=1 и
+  systemd переходит в `active` (раньше с broken substrate висел в
+  `activating`); тесты строго требуют `active`.
+* **Healthcheck — `kubectl get nodes` retry-loop**, не systemd
+  state. Real cluster readiness = node Ready, не systemd transition.
+  Defaults: 60 retries × 4s = 240s; в Molecule scenario разогнан до
+  90 × 4 = 360s на cold-image-pull.
+* **Verify scenario** проверяет: container Running, in-container
+  k3s sha256 == host k3s sha256, `systemctl is-active k3s.service ==
+  "active"`, `kubectl get nodes` ready, `/etc/rancher/k3s/k3s.yaml`
+  existing + non-empty. Плюс end-to-end test для restart-on-profile-change
+  поведения `lxd_profiles` (см. §13.6 Step 4 deviation).
+
 ---
 
 # 14. Выполненные phases
 
 Этот раздел перечисляет phases, уже прошедшие end-to-end в локальном
-Vagrant/libvirt-контуре по состоянию на Step 3 (2026-04-22):
+Vagrant/libvirt-контуре по состоянию на Step 4 (2026-04-22):
 
 * §14.1 Phase 0 — repo skeleton и local harness (Step 1);
-* §14.2 Phase 1 — host bootstrap (Steps 1–2; `binary_fetch` отложен к §16.7);
+* §14.2 Phase 1 — host bootstrap (Steps 1–2; `binary_fetch` отложен и
+  выполнен в Phase 3.5 / §14.5);
 * §14.3 Phase 2 — LXD substrate (Step 3);
-* §14.4 Phase 3 — bootstrap instance (Step 3).
+* §14.4 Phase 3 — bootstrap instance (Step 3);
+* §14.5 Phase 3.5 — `binary_fetch` (Step 4);
+* §14.6 Phase 4 — bootstrap management cluster (Step 4 — частично:
+  `bootstrap_k3s` готов; `bootstrap_clusterctl` / `bootstrap_capn_secret`
+  / `bootstrap_api_publish` остаются в §16.3..§16.5).
 
 Ещё не выполненные phases живут в §15..§20.
 
@@ -429,6 +649,58 @@ Acceptance:
 * `capi-bootstrap-0` exists
 * proper profile attached
 * starts cleanly
+
+## 14.5. Phase 3.5 — `binary_fetch` (отложенная из Phase 1)
+
+**Статус: выполнено в Step 4 (2026-04-22). Соответствует §16.7.**
+
+Роль:
+
+* `binary_fetch` (см. §13.8).
+
+Acceptance:
+
+* `kubectl`, `clusterctl`, `k3s` в `/opt/capi-lab/bin` с
+  deterministic owner/group/mode `root:root 0755`;
+* sha256 каждого бинаря сходится с upstream-published checksum
+  (для clusterctl — с pinned digest рядом с version pin, см.
+  §13.8 implementation note);
+* каждый бинарь runs и self-reports версию, совпадающую с pinned
+  значением из §8a.
+
+## 14.6. Phase 4 — bootstrap management cluster (частично)
+
+**Статус: частично выполнено в Step 4 (2026-04-22) — `bootstrap_k3s`
+готов; `bootstrap_clusterctl` / `bootstrap_capn_secret` /
+`bootstrap_api_publish` / `export_artifacts` остаются в §16.3..§16.6
+и будут реализованы в следующих Step'ах.**
+
+Сделано в Step 4:
+
+* `bootstrap_k3s` (см. §13.9) поднимает single-node k3s server в
+  `capi-bootstrap-0` LXC. Это потребовало substrate-расширений в
+  §13.3 (`restricted.containers.interception`,
+  `restricted.devices.unix-char`) и §13.6 (полный CAPN unprivileged
+  kubeadm baseline + `/dev/kmsg` passthrough + `raw.lxc` apparmor
+  override + restart-on-profile-change).
+
+Acceptance Step 4 части (доказано verify scenario'ями):
+
+* `k3s.service` достигает `active` (не `activating`) — substrate
+  правильный;
+* `kubectl get nodes` reports `capi-bootstrap-0` Ready;
+* `/etc/rancher/k3s/k3s.yaml` существует и непустой;
+* in-container k3s sha256 == host k3s sha256 (push без corruption);
+* restart-on-profile-change поведение в `lxd_profiles` срабатывает
+  (init PID контейнера меняется при profile-mod) — см. §13.6 Step 4
+  verify deviation.
+
+Acceptance целой Phase 4 (после остальных ролей §16.3..§16.6):
+
+* bootstrap API reachable from runner
+* `clusterctl init` done
+* providers healthy
+* LXD identity secret present
 
 ---
 

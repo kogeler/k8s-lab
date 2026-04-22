@@ -1,0 +1,50 @@
+{{ ansible_managed | comment }}
+# Mirrors upstream github.com/k3s-io/k3s/blob/master/k3s.service. Type=notify,
+# KillMode=process, Delegate=yes, TimeoutStartSec=0, Restart=always — all carry
+# over unchanged. Two substrate-required flags (`--disable-cloud-controller`
+# and `--kubelet-arg=feature-gates=KubeletInUserNamespace=true`) are hardcoded
+# in ExecStart below — see the rationale in defaults/main.yml + role README.
+
+[Unit]
+Description=Lightweight Kubernetes (k3s-server)
+Documentation=https://k3s.io
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=notify
+EnvironmentFile=-{{ bootstrap_k3s_env_path }}
+KillMode=process
+Delegate=yes
+LimitNOFILE=1048576
+LimitNPROC=infinity
+LimitCORE=infinity
+TasksMax=infinity
+TimeoutStartSec=0
+Restart=always
+RestartSec=5s
+ExecStart={{ bootstrap_k3s_container_bin_path }} server \
+    --write-kubeconfig-mode={{ bootstrap_k3s_write_kubeconfig_mode }} \
+    --disable-cloud-controller \
+    --kubelet-arg=feature-gates={{ (['KubeletInUserNamespace=true'] + bootstrap_k3s_extra_kubelet_feature_gates) | join(',') }} \
+{% for component in bootstrap_k3s_disable_components %}
+    --disable={{ component }} \
+{% endfor %}
+{% for san in bootstrap_k3s_tls_san %}
+    --tls-san={{ san }} \
+{% endfor %}
+{% if bootstrap_k3s_cluster_cidr | length > 0 %}
+    --cluster-cidr={{ bootstrap_k3s_cluster_cidr }} \
+{% endif %}
+{% if bootstrap_k3s_service_cidr | length > 0 %}
+    --service-cidr={{ bootstrap_k3s_service_cidr }} \
+{% endif %}
+{% if bootstrap_k3s_token | length > 0 %}
+    --token={{ bootstrap_k3s_token }} \
+{% endif %}
+{% for arg in bootstrap_k3s_extra_args %}
+    {{ arg }} \
+{% endfor %}
+
+[Install]
+WantedBy=multi-user.target

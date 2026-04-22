@@ -1,0 +1,245 @@
+---
+# bootstrap_k3s verify — plan §9.4 real-runtime assertions.
+# We do NOT just trust the role's own healthchecks: this playbook
+# re-probes the live container state from the host, using the LXD
+# REST API for coarse facts and `lxc exec` for inside-container
+# inspection.
+
+- name: "Verify | bootstrap_k3s"
+  hosts: all
+  gather_facts: true
+  become: true
+  vars_files:
+    - "../shared/vars/common.yml"
+  vars:
+    _project:  "capi-lab"
+    _instance: "capi-bootstrap-0"
+    _socket:   "/var/snap/lxd/common/lxd/unix.socket"
+  tasks:
+    # ---- Container is still Running ---------------------------------
+    - name: "Verify | bootstrap_k3s | fetch live instance state"
+      ansible.builtin.uri:
+        url: >-
+          http://localhost/1.0/instances/{{ _instance }}?project={{ _project }}&recursion=1
+        unix_socket: "{{ _socket }}"
+        method:      GET
+        status_code: 200
+        return_content: true
+      register: _verify_instance_register
+
+    - name: "Verify | bootstrap_k3s | assert container Running"
+      ansible.builtin.assert:
+        that:
+          - (_verify_instance_register.json.metadata.status | default('')) == 'Running'
+        fail_msg: >-
+          container "{{ _instance }}" is in status
+          "{{ _verify_instance_register.json.metadata.status | default('?') }}".
+
+    # ---- k3s binary present in container with expected sha256 -------
+    - name: "Verify | bootstrap_k3s | host k3s sha256"
+      ansible.builtin.stat:
+        path: "/opt/capi-lab/bin/k3s"
+        checksum_algorithm: sha256
+      register: _verify_host_k3s_stat
+
+    - name: "Verify | bootstrap_k3s | container k3s sha256"
+      ansible.builtin.command:
+        argv:
+          - "/snap/bin/lxc"
+          - "exec"
+          - "--project={{ _project }}"
+          - "{{ _instance }}"
+          - "--"
+          - "sha256sum"
+          - "/usr/local/bin/k3s"
+      register: _verify_container_k3s_sha_register
+      changed_when: false
+
+    - name: "Verify | bootstrap_k3s | assert host + container k3s match"
+      ansible.builtin.assert:
+        that:
+          - _verify_host_k3s_stat.stat.exists
+          - (_verify_host_k3s_stat.stat.checksum | lower) ==
+            (((_verify_container_k3s_sha_register.stdout | split())[0]) | lower)
+        fail_msg: >-
+          k3s sha256 drift between host and container:
+          host={{ _verify_host_k3s_stat.stat.checksum | default('?') }},
+          container={{ (_verify_container_k3s_sha_register.stdout | split())[0] | default('?') }}.
+
+    # ---- systemd reports k3s.service active -------------------------
+    - name: "Verify | bootstrap_k3s | systemctl is-active k3s inside container"
+      ansible.builtin.command:
+        argv:
+          - "/snap/bin/lxc"
+          - "exec"
+          - "--project={{ _project }}"
+          - "{{ _instance }}"
+          - "--"
+          - "systemctl"
+          - "is-active"
+          - "k3s.service"
+      register: _verify_is_active_register
+      changed_when: false
+      failed_when: false
+
+    - name: "Verify | bootstrap_k3s | assert k3s.service active"
+      ansible.builtin.assert:
+        that:
+          - (_verify_is_active_register.stdout | trim) == 'active'
+        fail_msg: >-
+          k3s.service is "{{ _verify_is_active_register.stdout | default('?') | trim }}"
+          (rc={{ _verify_is_active_register.rc }})
+          — expected "active".
+
+    # ---- k3s reports its own bootstrap node Ready -------------------
+    - name: "Verify | bootstrap_k3s | k3s kubectl get nodes"
+      ansible.builtin.command:
+        argv:
+          - "/snap/bin/lxc"
+          - "exec"
+          - "--project={{ _project }}"
+          - "--env"
+          - "KUBECONFIG=/etc/rancher/k3s/k3s.yaml"
+          - "{{ _instance }}"
+          - "--"
+          - "/usr/local/bin/k3s"
+          - "kubectl"
+          - "get"
+          - "nodes"
+          - "--no-headers"
+          - "-o"
+          - "custom-columns=NAME:.metadata.name,READY:.status.conditions[?(@.type=='Ready')].status"
+      register: _verify_nodes_register
+      changed_when: false
+
+    - name: "Verify | bootstrap_k3s | assert at least one Ready node"
+      ansible.builtin.assert:
+        that:
+          - _verify_nodes_register.rc == 0
+          - (_verify_nodes_register.stdout_lines | default([])) | length >= 1
+          - ('True' in _verify_nodes_register.stdout_lines | map('trim') | map('split') | map('last') | list)
+        fail_msg: >-
+          no Ready node reported by k3s kubectl. stdout:
+          {{ _verify_nodes_register.stdout | default('<empty>') }}
+
+    # ---- kubeconfig exists + non-empty ------------------------------
+    - name: "Verify | bootstrap_k3s | stat in-container kubeconfig"
+      ansible.builtin.command:
+        argv:
+          - "/snap/bin/lxc"
+          - "exec"
+          - "--project={{ _project }}"
+          - "{{ _instance }}"
+          - "--"
+          - "sh"
+          - "-c"
+          - "test -s /etc/rancher/k3s/k3s.yaml && wc -c < /etc/rancher/k3s/k3s.yaml"
+      register: _verify_kubeconfig_register
+      changed_when: false
+
+    - name: "Verify | bootstrap_k3s | assert kubeconfig is non-empty"
+      ansible.builtin.assert:
+        that:
+          - _verify_kubeconfig_register.rc == 0
+          - (_verify_kubeconfig_register.stdout | trim | int) > 100
+        fail_msg: >-
+          /etc/rancher/k3s/k3s.yaml is missing or too small:
+          rc={{ _verify_kubeconfig_register.rc }},
+          size={{ _verify_kubeconfig_register.stdout | default('?') | trim }}.
+
+    # ---- lxd_profiles restart-on-change behaviour --------------------
+    # Substrate config keys (security.syscalls.intercept.*, raw.lxc, ...)
+    # are non-live-update per LXD reference. lxd_profiles is supposed to
+    # restart any running instance attached to a profile it just
+    # modified — without that, profile drift never reaches the
+    # container. Verify that path: capture the container's init PID,
+    # re-apply lxd_profiles with an extra user.* config key on the
+    # capi-bootstrap profile (which makes the apply report changed=true),
+    # capture the init PID again, assert it changed (i.e. the container
+    # was restarted by the role).
+
+    - name: "Verify | bootstrap_k3s | capture init PID before profile change"
+      ansible.builtin.uri:
+        url:         "http://localhost/1.0/instances/{{ _instance }}/state?project={{ _project }}"
+        unix_socket: "{{ _socket }}"
+        method:      GET
+        status_code: 200
+        return_content: true
+      register: _verify_state_before_register
+
+    - name: "Verify | bootstrap_k3s | record initial PID"
+      ansible.builtin.set_fact:
+        _verify_pid_before: "{{ _verify_state_before_register.json.metadata.pid | int }}"
+
+    - name: "Verify | bootstrap_k3s | trigger profile change via lxd_profiles role"
+      ansible.builtin.include_role:
+        name: lxd_profiles
+      vars:
+        # `user.*` keys are arbitrary metadata LXD ignores at runtime;
+        # adding one marks the profile dirty so apply reports
+        # `changed=true` and the role enters its restart branch. The
+        # actual VALUE of the key is irrelevant to the assertion below.
+        lxd_profiles_capi_bootstrap_extra_config:
+          user.k8slab-restart-test: "step4-verify-{{ ansible_date_time.iso8601 | default('marker') }}"
+
+    - name: "Verify | bootstrap_k3s | capture init PID after profile change"
+      ansible.builtin.uri:
+        url:         "http://localhost/1.0/instances/{{ _instance }}/state?project={{ _project }}"
+        unix_socket: "{{ _socket }}"
+        method:      GET
+        status_code: 200
+        return_content: true
+      register: _verify_state_after_register
+
+    - name: "Verify | bootstrap_k3s | assert init PID changed (restart-on-profile-change fired)"
+      ansible.builtin.assert:
+        that:
+          - (_verify_state_after_register.json.metadata.pid | int) != (_verify_pid_before | int)
+          - (_verify_state_after_register.json.metadata.status | default('')) == 'Running'
+        fail_msg: >-
+          lxd_profiles did not restart "{{ _instance }}" after the
+          capi-bootstrap profile changed. PID before={{ _verify_pid_before }},
+          PID after={{ _verify_state_after_register.json.metadata.pid | default('?') }},
+          status={{ _verify_state_after_register.json.metadata.status | default('?') }}.
+
+    # ---- Clean up the test marker -----------------------------------
+    # community.general.lxd_profile.merge_profile=true cannot remove a
+    # key, only add — so a follow-up `lxd_profiles` converge against
+    # the same VM (e.g. the dedicated lxd-profiles scenario) would see
+    # the leftover `user.k8slab-restart-test` and report changed=true
+    # for every profile apply. Strip the marker via direct REST PATCH
+    # so the profile returns to the documented baseline.
+    - name: "Verify | bootstrap_k3s | fetch capi-bootstrap profile config"
+      ansible.builtin.uri:
+        url:         "http://localhost/1.0/profiles/capi-bootstrap?project={{ _project }}"
+        unix_socket: "{{ _socket }}"
+        method:      GET
+        status_code: 200
+        return_content: true
+      register: _verify_profile_register
+
+    - name: "Verify | bootstrap_k3s | strip restart-test marker from capi-bootstrap"
+      ansible.builtin.uri:
+        url:         "http://localhost/1.0/profiles/capi-bootstrap?project={{ _project }}"
+        unix_socket: "{{ _socket }}"
+        # PUT replaces the whole profile body — using PUT (not PATCH)
+        # is the only LXD REST way to *remove* a config key.
+        # 202 Accepted is the normal LXD response when a profile change
+        # spawns a background operation (e.g. applying the diff to a
+        # running instance); 200 OK is the synchronous-completion path.
+        # Either is fine for cleanup.
+        method:      PUT
+        status_code: [200, 202]
+        body_format: json
+        body:
+          description: "{{ _verify_profile_register.json.metadata.description }}"
+          devices:     "{{ _verify_profile_register.json.metadata.devices }}"
+          config: >-
+            {{
+              (_verify_profile_register.json.metadata.config | default({}))
+              | dict2items
+              | rejectattr('key', 'equalto', 'user.k8slab-restart-test')
+              | items2dict
+            }}
+      register: _verify_strip_register
+      changed_when: false

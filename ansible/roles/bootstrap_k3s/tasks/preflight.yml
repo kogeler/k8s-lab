@@ -1,0 +1,98 @@
+---
+# Input validation + substrate assertions (plan §2.6.2).
+
+- name: "bootstrap-k3s | preflight | gather facts"
+  ansible.builtin.setup:
+    gather_subset:
+      - "!all"
+      - "!any"
+      - min
+  when: ansible_facts['os_family'] is not defined
+
+- name: "bootstrap-k3s | preflight | target OS is Debian 13+"
+  ansible.builtin.assert:
+    that:
+      - ansible_facts['os_family'] == 'Debian'
+      - ansible_facts['distribution'] == 'Debian'
+      - (ansible_facts['distribution_major_version'] | int) >= 13
+    fail_msg: >-
+      bootstrap_k3s targets Debian 13 Trixie or newer on the LXD host
+      (the container OS is independent).
+
+- name: "bootstrap-k3s | preflight | validate identifiers"
+  ansible.builtin.assert:
+    that:
+      - bootstrap_k3s_project is string
+      - bootstrap_k3s_project is match('^[a-z][a-z0-9_-]{0,62}$')
+      - bootstrap_k3s_instance_name is string
+      - bootstrap_k3s_instance_name is match('^[a-z][a-z0-9-]{0,62}$')
+      - bootstrap_k3s_service_name is match('^[a-z][a-z0-9_-]{0,62}$')
+    fail_msg: >-
+      bootstrap_k3s: project / instance_name / service_name must be
+      lowercase alnum (+ '-'/'_'), start with a letter, ≤63 chars.
+
+- name: "bootstrap-k3s | preflight | validate paths + modes"
+  ansible.builtin.assert:
+    that:
+      - bootstrap_k3s_host_bin_dir is match('^/')
+      - bootstrap_k3s_host_staging_dir is match('^/')
+      - bootstrap_k3s_container_bin_path is match('^/')
+      - bootstrap_k3s_unit_path is match('^/')
+      - bootstrap_k3s_env_path is match('^/')
+      - bootstrap_k3s_bin_mode is match('^0[0-7]{3}$')
+      - bootstrap_k3s_unit_mode is match('^0[0-7]{3}$')
+      - bootstrap_k3s_write_kubeconfig_mode is match('^0[0-7]{3}$')
+    fail_msg: >-
+      bootstrap_k3s: paths must be absolute, modes must be 4-digit
+      octal strings.
+
+- name: "bootstrap-k3s | preflight | validate k3s server flags"
+  ansible.builtin.assert:
+    that:
+      - bootstrap_k3s_disable_components is sequence
+      - bootstrap_k3s_tls_san is sequence
+      - bootstrap_k3s_extra_kubelet_feature_gates is sequence
+      - bootstrap_k3s_extra_args is sequence
+      - bootstrap_k3s_wait_retries | int > 0
+      - bootstrap_k3s_wait_delay | int > 0
+    fail_msg: >-
+      bootstrap_k3s: disable_components / tls_san / extra_args must be
+      sequences; wait_retries + wait_delay must be positive integers.
+
+- name: "bootstrap-k3s | preflight | assert host k3s binary exists"
+  ansible.builtin.stat:
+    path: "{{ bootstrap_k3s_host_bin_dir }}/{{ bootstrap_k3s_host_k3s_filename }}"
+    checksum_algorithm: sha256
+  register: _bootstrap_k3s_host_k3s_stat
+  changed_when: false
+
+- name: "bootstrap-k3s | preflight | assert host k3s binary is a regular file"
+  ansible.builtin.assert:
+    that:
+      - _bootstrap_k3s_host_k3s_stat.stat.exists
+      - not _bootstrap_k3s_host_k3s_stat.stat.isdir
+      - _bootstrap_k3s_host_k3s_stat.stat.size > 1048576
+    fail_msg: >-
+      bootstrap_k3s: expected {{ bootstrap_k3s_host_bin_dir }}/{{ bootstrap_k3s_host_k3s_filename }}
+      to be a k3s binary. Normally delivered by binary_fetch — check
+      that meta-dep resolution brought it in.
+
+- name: "bootstrap-k3s | preflight | fetch live instance state via LXD REST"
+  ansible.builtin.uri:
+    url: >-
+      http://localhost/1.0/instances/{{ bootstrap_k3s_instance_name }}?project={{ bootstrap_k3s_project }}&recursion=1
+    unix_socket: "/var/snap/lxd/common/lxd/unix.socket"
+    method:      GET
+    status_code: 200
+    return_content: true
+  register: _bootstrap_k3s_instance_register
+  changed_when: false
+
+- name: "bootstrap-k3s | preflight | assert container running"
+  ansible.builtin.assert:
+    that:
+      - (_bootstrap_k3s_instance_register.json.metadata.status | default('')) == 'Running'
+    fail_msg: >-
+      bootstrap_k3s: instance {{ bootstrap_k3s_instance_name }} is not
+      Running — status={{ _bootstrap_k3s_instance_register.json.metadata.status | default('?') }}.
+      lxd_bootstrap_instance must run first (meta-dep).

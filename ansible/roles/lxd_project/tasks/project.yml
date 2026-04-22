@@ -5,10 +5,9 @@
 
 # ---------------------------------------------------------------------------
 # Step 1: normalise feature flags to the `features.<axis>` wire shape
-# LXD expects, with string "true"/"false" values. Defaults keep the
-# short axis names (`images`, `profiles`, …) for readability and we
-# prefix at wire time — it also lets callers drop an `axis: false` into
-# `lxd_project_features` without worrying about the exact API path.
+# LXD expects, with string "true"/"false" values. The role-internal
+# baseline keeps the short axis names (`images`, `profiles`, …) for
+# readability; we prefix at wire time.
 # ---------------------------------------------------------------------------
 
 - name: "lxd-project | project | normalise features to wire shape"
@@ -18,16 +17,18 @@
         _lxd_project_features_cfg | default({})
         | combine({('features.' + item.key): (item.value | ternary('true', 'false'))})
       }}
-  loop: "{{ lxd_project_features | dict2items }}"
+  loop: "{{ _lxd_project_required_features | dict2items }}"
   loop_control:
     label: "features.{{ item.key }}"
 
 # ---------------------------------------------------------------------------
-# Step 2: assemble the full config dict. Order of combine() matters: the
-# last source wins on key collision, so any restriction the caller sets
-# explicitly in `lxd_project_restrictions` overrides both features and
-# the `restricted` master flag (which cannot itself collide but keep the
-# order consistent with caller intent).
+# Step 2: assemble the full config dict. Order of combine() matters:
+# substrate-required restrictions land first, then user extras can layer
+# additional restrictions on top. Extras CANNOT remove or weaken a
+# required restriction (a key collision would override the required
+# value, but in practice the extras dict is reserved for *additional*
+# restrictions, not for re-tuning the substrate baseline — see
+# `defaults/main.yml` for the policy on this).
 # ---------------------------------------------------------------------------
 
 - name: "lxd-project | project | compose final config dict"
@@ -35,8 +36,9 @@
     _lxd_project_config: >-
       {{
         _lxd_project_features_cfg
-        | combine({'restricted': (lxd_project_restricted | ternary('true', 'false'))})
-        | combine(lxd_project_restrictions)
+        | combine({'restricted': (_lxd_project_required_restricted | ternary('true', 'false'))})
+        | combine(_lxd_project_required_restrictions)
+        | combine(lxd_project_extra_restrictions)
       }}
 
 # ---------------------------------------------------------------------------

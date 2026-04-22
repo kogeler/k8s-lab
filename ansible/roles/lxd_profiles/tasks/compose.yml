@@ -1,0 +1,38 @@
+---
+# Compose `_lxd_profiles_effective` — the list of profile dicts the
+# apply + healthcheck steps iterate over. Each entry is the
+# role-internal substrate baseline (vars/main.yml) with the
+# user-supplied extras for that profile merged on top.
+#
+# Keeping the merge here (not inline at every call site) means:
+#   * tasks/profiles.yml and tasks/healthchecks.yml share the same
+#     "effective" view — drift between them is impossible;
+#   * user-extra handling lives in one place, so new extension fields
+#     only require touching this file + defaults.
+
+- name: "lxd-profiles | compose | accumulate effective profiles"
+  ansible.builtin.set_fact:
+    _lxd_profiles_effective: >-
+      {{
+        (_lxd_profiles_effective | default([])) + [
+          {
+            'name':        item.name,
+            'description': item.description,
+            'config':      (item.config | default({}))
+                             | combine(
+                                 lookup('vars',
+                                        'lxd_profiles_' ~ (item.name | replace('-', '_')) ~ '_extra_config',
+                                        default={})
+                               ),
+            'devices':     (item.devices | default({}))
+                             | combine(
+                                 lookup('vars',
+                                        'lxd_profiles_' ~ (item.name | replace('-', '_')) ~ '_extra_devices',
+                                        default={})
+                               ),
+          }
+        ]
+      }}
+  loop: "{{ _lxd_profiles_catalog }}"
+  loop_control:
+    label: "{{ item.name }}"
