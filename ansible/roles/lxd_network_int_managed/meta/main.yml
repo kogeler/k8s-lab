@@ -1,0 +1,29 @@
+---
+galaxy_info:
+  role_name: lxd_network_int_managed
+  namespace: k8slab
+  author: k8s-lab contributors
+  description: >-
+    Create and configure LXD managed bridge networks for the k8s-lab
+    internal plane (per plan §13.5). Bridges live in the default LXD
+    project because LXD rejects `bridge` type networks in non-default
+    projects; capi-lab references them via `features.networks=false`
+    inheritance. Host-level Linux bridges are out of scope (owned by
+    lxd_host).
+  license: MIT
+  min_ansible_version: "2.16"
+  platforms:
+    - name: Debian
+      versions:
+        - trixie
+  galaxy_tags:
+    - kubernetes
+    - lxd
+    - networking
+
+dependencies:
+  # lxd_project provides the configured capi-lab project with
+  # features.networks=false; that flag is what lets capi-lab inherit
+  # networks created here in the default project. Plan §2.6.5 forbids
+  # transitive meta deps, so lxd_host / base_system are not re-declared.
+  - role: lxd_project

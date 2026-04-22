@@ -3,16 +3,16 @@
 #
 # These feed role variables for local harness runs. They are NOT suitable
 # for real environments and must not leak into consumer repos (plan §2.5,
-# §10). Scenario-local vars files may override any of them.
+# §8). Scenario-local vars files may override any of them.
 #
 # Version pins follow plan §2.11 (always latest upstream stable at time
-# of update). Verification dates live in PLAN-stage1-progress.md.
+# of update). Verification dates live inline in PLAN-stage1-common.md §8a.
 
 # --- Roots and project identity ---
 opt_root:     "/opt/capi-lab"
 project_name: "capi-lab"
 
-# --- Host policy (consumed by role lxd_host — plan §8.3) ---
+# --- Host policy (consumed by role lxd_host — plan §13.2) ---
 lxd_host_snap_channel:       "6/stable"
 lxd_host_snap_refresh_mode:  "hold"
 lxd_host_snap_refresh_timer: "fri,03:00-04:00"

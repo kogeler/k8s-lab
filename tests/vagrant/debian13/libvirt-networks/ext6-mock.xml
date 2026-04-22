@@ -1,7 +1,7 @@
 <!--
   Mocked provider-facing external IPv6 /64 segment for the local harness.
 
-  Purpose (plan §11.2):
+  Purpose (plan §9.2):
     * emulate a real provider external plane with a routable /64;
     * deliver Router Advertisements and DHCPv6 so the second NIC of the
       test VM receives an IPv6 SLAAC + stateful IPv6 address;

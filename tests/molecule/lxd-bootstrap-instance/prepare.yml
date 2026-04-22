@@ -1,0 +1,30 @@
+---
+# lxd_bootstrap_instance scenario prepare.
+#
+# Two steps:
+#   1. Shared prepare — test deps, opt-root skeleton.
+#   2. Clean pool disk — the transitive meta-dep chain brings in
+#      lxd_storage_pools which hands the dedicated disk to LXD for
+#      mkfs.btrfs. The disk must be signature-free on first converge.
+#
+# Upstream roles (base_system, lxd_host, lxd_project, lxd_storage_pools,
+# lxd_network_int_managed, lxd_profiles) all enter via meta deps when
+# the target role runs on converge (plan §2.6.5) — no role wiring
+# lives in this glue.
+
+- name: "Prepare | lxd_bootstrap_instance"
+  hosts: all
+  gather_facts: true
+  become: true
+  vars:
+    _molecule_project_dir: "{{ lookup('ansible.builtin.env', 'MOLECULE_PROJECT_DIRECTORY') }}"
+  vars_files:
+    - "../shared/vars/common.yml"
+  tasks:
+    - name: "Prepare | lxd_bootstrap_instance | shared base"
+      ansible.builtin.include_tasks:
+        file: "{{ _molecule_project_dir }}/shared/tasks/prepare.yml"
+
+    - name: "Prepare | lxd_bootstrap_instance | clean pool disk"
+      ansible.builtin.include_tasks:
+        file: "{{ _molecule_project_dir }}/shared/tasks/prepare-clean-disk.yml"

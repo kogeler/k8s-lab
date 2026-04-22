@@ -1,0 +1,27 @@
+---
+# Dispatcher-only (plan §2.6.2).
+
+- name: "lxd-network-int-managed | preflight"
+  ansible.builtin.include_tasks:
+    file: preflight.yml
+    apply:
+      tags: [lxd_network_int_managed, lxd-network-int-managed, lxd_network_int_managed_preflight]
+  tags: [lxd_network_int_managed, lxd-network-int-managed, lxd_network_int_managed_preflight]
+
+- name: "lxd-network-int-managed | config | networks"
+  ansible.builtin.include_tasks:
+    file: networks.yml
+    apply:
+      tags: [lxd_network_int_managed, lxd-network-int-managed, lxd_network_int_managed_networks]
+  when:
+    - lxd_network_int_managed_enabled
+    - lxd_network_int_managed_flow_control_networks
+  tags: [lxd_network_int_managed, lxd-network-int-managed, lxd_network_int_managed_networks]
+
+- name: "lxd-network-int-managed | healthchecks"
+  ansible.builtin.include_tasks:
+    file: healthchecks.yml
+    apply:
+      tags: [lxd_network_int_managed, lxd-network-int-managed, lxd_network_int_managed_healthchecks]
+  when: lxd_network_int_managed_enabled
+  tags: [lxd_network_int_managed, lxd-network-int-managed, lxd_network_int_managed_healthchecks]

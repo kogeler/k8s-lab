@@ -22,14 +22,14 @@ base_system_enabled: true
 # that every artefact lands under `/opt/capi-lab/` (plan §2.2).
 base_system_opt_root: "/opt/capi-lab"
 
-# Owner/group/mode for the opt root. Deterministic per plan §8.2.
+# Owner/group/mode for the opt root. Deterministic per plan §16.1.
 base_system_opt_owner: "root"
 base_system_opt_group: "root"
 base_system_opt_mode:  "0755"
 
 # -- Packages --------------------------------------------------------------
 
-# APT packages allowed by plan §8.1. The list is intentionally small —
+# APT packages allowed by plan §13.1. The list is intentionally small —
 # anything outside this set is a bootstrap signal that the role scope is
 # being stretched and needs re-design.
 base_system_packages_required:
@@ -45,7 +45,7 @@ base_system_packages_required:
 # Optional extras, gated per capability. We do not add helpers "just in
 # case" — each flag below is consumed by a later phase.
 #
-# btrfs-progs: required whenever `storage.driver == "btrfs"` (plan §8.5);
+# btrfs-progs: required whenever `storage.driver == "btrfs"` (plan §13.4);
 # toggled explicitly rather than installed unconditionally so the role
 # stays lean on hosts that use ZFS/dir-backed pools.
 base_system_btrfs_enabled: true
@@ -78,7 +78,7 @@ base_system_sysctl_values:
 # -- Kernel modules --------------------------------------------------------
 
 # Modules we need loaded on the host. LXD + kubeadm path in CAPN documents
-# `br_netfilter`, `overlay`, `nf_conntrack` as required (plan §8.7 refs).
+# `br_netfilter`, `overlay`, `nf_conntrack` as required (plan §13.6 refs).
 base_system_kernel_modules:
   - overlay
   - br_netfilter
@@ -102,8 +102,9 @@ base_system_flow_control_modules:  true
 # btrfs filesystem. This keeps downstream roles (lxd_storage_pools) from
 # happily pointing LXD at a path that silently falls back to the OS disk.
 #
-# This is a deliberate, documented deviation from plan §8.1 (which scoped
-# base_system to packages only); see PLAN-stage1-progress.md.
+# This is a deliberate, documented deviation from the original narrow
+# packages-only scope of `base_system`; the Step 1 deviation note lives
+# inline in plan §13.1.
 base_system_btrfs_pool_required:   false
 base_system_btrfs_pool_mountpoint: "/var/lib/k8slab/lxd-pool"
 base_system_btrfs_pool_fstype:     "btrfs"

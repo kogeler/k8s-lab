@@ -5,7 +5,7 @@
 #   * lower bound = currently used stable upstream release at time of pin;
 #   * NO artificial upper bound blocking the next major — we track upstream;
 #   * bump + verify on `curl -sfL https://api.github.com/repos/<o>/<r>/releases/latest`
-#     and record new pins in PLAN-stage1-progress.md.
+#     and record new pins inline in PLAN-stage1-common.md §8 / §8a.
 collections:
   - name: ansible.posix
     version: ">=2.1.0"

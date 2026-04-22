@@ -3,7 +3,7 @@
 Export bootstrap-cluster facts as `.auto.tfvars.json` so Terraform fixtures
 can consume them without hard-coding cluster endpoint / secret name / etc.
 
-Planned outputs (plan §14.1):
+Planned outputs (plan §11.1):
     * bootstrap API endpoint
     * capn-identity secret name
     * infrastructure provider version
@@ -19,7 +19,7 @@ import sys
 def main() -> int:
     print(
         "export_bootstrap_facts.py: not implemented yet. "
-        "See PLAN-stage1.md §12 Phase 4 and §14.1.",
+        "See plan §16.8 (Phase 4) and §11.1 (`.artifacts/` spec).",
         file=sys.stderr,
     )
     return 2

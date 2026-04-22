@@ -1,0 +1,7 @@
+---
+# Handlers contract (plan §2.6.4): reactive only. lxd_project manages a
+# logical LXD object — there is no daemon/service to restart/reload when
+# the project config changes, so this file is intentionally empty of
+# mutating handlers. Kept as a placeholder so future reactive behaviour
+# (for example, notifying a downstream profile refresh) lands in the
+# canonical location rather than being invented in tasks/.

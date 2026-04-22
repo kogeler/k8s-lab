@@ -1,0 +1,106 @@
+---
+# lxd_bootstrap_instance verify — real runtime checks (plan §9.4).
+
+- name: "Verify | lxd_bootstrap_instance"
+  hosts: all
+  gather_facts: true
+  become: true
+  vars_files:
+    - "../shared/vars/common.yml"
+  vars:
+    _socket_path: "/var/snap/lxd/common/lxd/unix.socket"
+    _project:     "capi-lab"
+    _instance:    "capi-bootstrap-0"
+    _profiles_expected:
+      - "capi-base"
+      - "capi-bootstrap"
+  tasks:
+    # ---- Instance existence ----------------------------------------
+    - name: "Verify | lxd_bootstrap_instance | list instances in capi-lab"
+      ansible.builtin.uri:
+        url:         "http://localhost/1.0/instances?project={{ _project }}"
+        unix_socket: "{{ _socket_path }}"
+        method:      GET
+        status_code: 200
+        return_content: true
+      register: _verify_list_register
+
+    - name: "Verify | lxd_bootstrap_instance | derive instance names"
+      ansible.builtin.set_fact:
+        _verify_instance_names: >-
+          {{
+            (_verify_list_register.json.metadata | default([]))
+            | map('urlsplit', 'path') | map('basename') | list
+          }}
+
+    - name: "Verify | lxd_bootstrap_instance | assert instance is present"
+      ansible.builtin.assert:
+        that:
+          - _instance in _verify_instance_names
+        fail_msg: >-
+          expected instance "{{ _instance }}" missing from live list
+          {{ _verify_instance_names }} in project {{ _project }}.
+
+    # ---- Live state fetch (with state/network expansion) -----------
+    - name: "Verify | lxd_bootstrap_instance | fetch live state via REST"
+      ansible.builtin.uri:
+        url:         "http://localhost/1.0/instances/{{ _instance }}?project={{ _project }}&recursion=1"
+        unix_socket: "{{ _socket_path }}"
+        method:      GET
+        status_code: 200
+        return_content: true
+      register: _verify_show_register
+
+    - name: "Verify | lxd_bootstrap_instance | assert identity + profiles + status"
+      ansible.builtin.assert:
+        that:
+          - (_verify_show_register.json.metadata.name | default(''))     == _instance
+          - (_verify_show_register.json.metadata.type | default(''))     == 'container'
+          - (_verify_show_register.json.metadata.project | default(''))  == _project
+          - (_verify_show_register.json.metadata.profiles | default([])) == _profiles_expected
+          - (_verify_show_register.json.metadata.status | default(''))   == 'Running'
+        fail_msg: >-
+          instance "{{ _instance }}" live state wrong:
+          name={{ _verify_show_register.json.metadata.name | default('?') }},
+          type={{ _verify_show_register.json.metadata.type | default('?') }},
+          project={{ _verify_show_register.json.metadata.project | default('?') }},
+          profiles={{ _verify_show_register.json.metadata.profiles | default([]) }},
+          status={{ _verify_show_register.json.metadata.status | default('?') }}.
+
+    - name: "Verify | lxd_bootstrap_instance | assert non-link-local IPv4 on some nic"
+      ansible.builtin.assert:
+        that:
+          - (
+              _verify_show_register.json.metadata.state.network | default({})
+            ) | dict2items
+            | map(attribute='value')
+            | map(attribute='addresses')
+            | map('default', [])
+            | flatten
+            | selectattr('family', 'equalto', 'inet')
+            | rejectattr('scope', 'equalto', 'local')
+            | list
+            | length > 0
+        fail_msg: >-
+          instance "{{ _instance }}" has no non-link-local IPv4 on any
+          nic. state.network:
+          {{ _verify_show_register.json.metadata.state.network | default({}) }}.
+
+    - name: "Verify | lxd_bootstrap_instance | assert eth0 is up and has an address"
+      # eth0 is INHERITED from the capi-base profile; LXD does not
+      # replicate inherited profile devices into instance.devices (only
+      # instance-level overrides appear there). Parent / nictype
+      # correctness is exercised in the lxd_profiles scenario. Here we
+      # only assert that the live runtime state exposes eth0 on the
+      # instance and that LXD has bound it to a host-side bridge port
+      # (host_name != "").
+      ansible.builtin.assert:
+        that:
+          # Leading single-quoted literal confuses YAML scalar parsing
+          # — wrap the expression in double quotes so YAML sees one
+          # scalar and Jinja gets the whole condition.
+          - "'eth0' in ((_verify_show_register.json.metadata.state.network | default({})).keys() | list)"
+          - ((_verify_show_register.json.metadata.state.network.eth0.host_name | default('')) | length) > 0
+        fail_msg: >-
+          instance "{{ _instance }}" eth0 not present or unattached.
+          state.network.eth0={{ _verify_show_register.json.metadata.state.network.eth0 | default('<missing>') }}.

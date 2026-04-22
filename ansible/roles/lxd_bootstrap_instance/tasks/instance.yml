@@ -1,0 +1,37 @@
+---
+# Create and start the bootstrap LXC container. Uses the native
+# community.general.lxd_container module (plan §2.6.1): dedicated LXD
+# instance module that supports project scoping, profiles, image
+# sourcing and state transitions in one declarative call.
+
+- name: "lxd-bootstrap-instance | instance | ensure bootstrap container"
+  community.general.lxd_container:
+    url:      "{{ lxd_bootstrap_instance_lxd_socket_uri }}"
+    snap_url: "{{ lxd_bootstrap_instance_lxd_socket_uri }}"
+    project:  "{{ lxd_bootstrap_instance_project }}"
+    name:     "{{ lxd_bootstrap_instance_name }}"
+    type:     "{{ lxd_bootstrap_instance_type }}"
+    state:    "{{ lxd_bootstrap_instance_state }}"
+    profiles: "{{ lxd_bootstrap_instance_profiles }}"
+    source:
+      type:     "image"
+      mode:     "pull"
+      server:   "{{ lxd_bootstrap_instance_image_server }}"
+      protocol: "{{ lxd_bootstrap_instance_image_protocol }}"
+      alias:    "{{ lxd_bootstrap_instance_image_alias }}"
+    # Overlay keys land on top of profile-provided config / devices.
+    # Defaults are empty — profiles own the baseline.
+    config:  "{{ lxd_bootstrap_instance_config | default({}) }}"
+    devices: "{{ lxd_bootstrap_instance_devices | default({}) }}"
+    # Ignore volatile.* drift — those are LXD-managed (eth0 mac,
+    # last-state timestamps) and would otherwise fire spurious
+    # "changed" reports on every idempotence run.
+    ignore_volatile_options: true
+    # Block until the image pull / start operation actually completes
+    # instead of returning as soon as LXD accepts the request.
+    wait_for_container: true
+    # When asked to start, also wait for an IPv4 address on every nic
+    # so downstream roles can talk to the container immediately.
+    wait_for_ipv4_addresses: "{{ lxd_bootstrap_instance_wait_ipv4 and lxd_bootstrap_instance_state == 'started' }}"
+    timeout: "{{ lxd_bootstrap_instance_wait_timeout }}"
+  register: _lxd_bootstrap_instance_apply_register

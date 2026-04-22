@@ -1,5 +1,5 @@
 ---
-# base_system verify — real runtime checks (plan §11.4).
+# base_system verify — real runtime checks (plan §9.4).
 # Not just converge/idempotence: we assert actual kernel state, package
 # index, sysctl values, filesystem layout, and the btrfs pool contract.
 

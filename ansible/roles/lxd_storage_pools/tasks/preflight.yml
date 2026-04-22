@@ -1,0 +1,78 @@
+---
+# Input validation for lxd_storage_pools (plan §2.6.2). Runs before
+# any mutating task. Keep declarative — use ansible.builtin.assert only.
+
+- name: "lxd-storage-pools | preflight | gather facts"
+  ansible.builtin.setup:
+    gather_subset:
+      - "!all"
+      - "!any"
+      - min
+  when: ansible_facts['os_family'] is not defined
+
+- name: "lxd-storage-pools | preflight | target OS is Debian 13+"
+  ansible.builtin.assert:
+    that:
+      - ansible_facts['os_family'] == 'Debian'
+      - ansible_facts['distribution'] == 'Debian'
+      - (ansible_facts['distribution_major_version'] | int) >= 13
+    fail_msg: >-
+      lxd_storage_pools only targets Debian 13 Trixie or newer;
+      detected {{ ansible_facts['distribution'] | default('?') }}
+      {{ ansible_facts['distribution_version'] | default('?') }}.
+
+- name: "lxd-storage-pools | preflight | validate socket path"
+  ansible.builtin.assert:
+    that:
+      - lxd_storage_pools_lxd_socket_path is string
+      - lxd_storage_pools_lxd_socket_path is match('^/')
+    fail_msg: >-
+      lxd_storage_pools: `lxd_storage_pools_lxd_socket_path` must be an
+      absolute filesystem path (got
+      "{{ lxd_storage_pools_lxd_socket_path | default('') }}").
+
+- name: "lxd-storage-pools | preflight | pools list is a non-empty list"
+  ansible.builtin.assert:
+    that:
+      - lxd_storage_pools_pools is sequence
+      - lxd_storage_pools_pools | length > 0
+    fail_msg: >-
+      lxd_storage_pools: `lxd_storage_pools_pools` must be a non-empty
+      list of pool definitions. Disable the role with
+      `lxd_storage_pools_enabled: false` if you truly do not want any
+      pools.
+
+- name: "lxd-storage-pools | preflight | every pool has a valid shape"
+  # Per-pool checks: required fields and value types. Kept as one assert
+  # so a bad pool reports every defect at once rather than round-tripping.
+  ansible.builtin.assert:
+    that:
+      - item.name is string
+      - item.name | length > 0
+      - item.name is match('^[a-z][a-z0-9_-]{0,62}$')
+      - item.driver is string
+      - item.driver in ['btrfs', 'dir', 'lvm', 'zfs']
+      - item.config is mapping
+      - (item.config.get('source', '') | string) | length > 0
+      # All config values must be strings on the wire — catch non-strings
+      # here so the REST POST does not silently stringify them later.
+      - (item.config.values() | map('string') | list) | length
+          == (item.config | length)
+    fail_msg: >-
+      lxd_storage_pools: pool entry {{ item | default({}) }} is invalid.
+      Each pool must have a non-empty `name` (lowercase alnum / `_` /
+      `-`, start with a letter, ≤63 chars), a `driver` in
+      {btrfs, dir, lvm, zfs}, and a `config` mapping whose `source` is
+      non-empty and every value is a string.
+  loop: "{{ lxd_storage_pools_pools }}"
+  loop_control:
+    label: "{{ item.name | default('<unnamed>') }}"
+
+- name: "lxd-storage-pools | preflight | pool names are unique"
+  ansible.builtin.assert:
+    that:
+      - (lxd_storage_pools_pools | map(attribute='name') | list) | unique | length
+          == lxd_storage_pools_pools | length
+    fail_msg: >-
+      lxd_storage_pools: duplicate pool names in
+      `lxd_storage_pools_pools`. Names must be unique per host.

@@ -1,6 +1,6 @@
 # Molecule wrapper Makefile for k8s-lab.
 #
-# Contract (plan §11.4):
+# Contract (plan §9.4):
 #   * targets follow the scheme `<scenario>-<driver>-<action>`;
 #   * even when a scenario has only one driver, the driver name stays in the
 #     target so the invocation scheme is stable across the repo;

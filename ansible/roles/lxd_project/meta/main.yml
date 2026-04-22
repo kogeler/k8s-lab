@@ -1,0 +1,28 @@
+---
+galaxy_info:
+  role_name: lxd_project
+  namespace: k8slab
+  author: k8s-lab contributors
+  description: >-
+    Create and configure the k8s-lab LXD project (`capi-lab` by default)
+    with feature isolation and restriction policy per plan §2.3 / §13.3.
+    Owns only the project object — storage pools, managed networks,
+    profiles and instances inside the project are owned by dedicated
+    roles.
+  license: MIT
+  min_ansible_version: "2.16"
+  platforms:
+    - name: Debian
+      versions:
+        - trixie
+  galaxy_tags:
+    - kubernetes
+    - lxd
+    - bootstrap
+
+dependencies:
+  # lxd_host provides an installed + waitready LXD daemon on the expected
+  # snap socket; without it `community.general.lxd_project` cannot talk to
+  # the API on converge. base_system is pulled in transitively by lxd_host
+  # (plan §2.6.5 — no transitive meta deps).
+  - role: lxd_host

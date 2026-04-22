@@ -1,0 +1,85 @@
+---
+# Input validation for lxd_project (plan §2.6.2). Runs before any
+# mutating task. Keep declarative — use ansible.builtin.assert only.
+
+- name: "lxd-project | preflight | gather facts"
+  ansible.builtin.setup:
+    gather_subset:
+      - "!all"
+      - "!any"
+      - min
+  when: ansible_facts['os_family'] is not defined
+
+- name: "lxd-project | preflight | target OS is Debian 13+"
+  ansible.builtin.assert:
+    that:
+      - ansible_facts['os_family'] == 'Debian'
+      - ansible_facts['distribution'] == 'Debian'
+      - (ansible_facts['distribution_major_version'] | int) >= 13
+    fail_msg: >-
+      lxd_project only targets Debian 13 Trixie or newer; detected
+      {{ ansible_facts['distribution'] | default('?') }}
+      {{ ansible_facts['distribution_version'] | default('?') }}.
+
+- name: "lxd-project | preflight | validate project identity"
+  ansible.builtin.assert:
+    that:
+      - lxd_project_name is string
+      - lxd_project_name | length > 0
+      # LXD project names: lowercase letters, digits, hyphen, underscore,
+      # starting with a letter. Keep the regex tight to avoid accidental
+      # paths/URLs landing in the name.
+      - lxd_project_name is match('^[a-z][a-z0-9_-]{0,62}$')
+      - lxd_project_description is string
+    fail_msg: >-
+      lxd_project: `lxd_project_name` must be a non-empty LXD project
+      name (lowercase alnum, underscore, hyphen; start with a letter;
+      ≤63 chars).
+
+- name: "lxd-project | preflight | LXD socket path looks sane"
+  ansible.builtin.assert:
+    that:
+      - lxd_project_lxd_socket_path is string
+      - lxd_project_lxd_socket_path is match('^/')
+    fail_msg: >-
+      lxd_project: `lxd_project_lxd_socket_path` must be an absolute
+      filesystem path to the LXD unix socket (got
+      "{{ lxd_project_lxd_socket_path | default('') }}").
+
+- name: "lxd-project | preflight | validate feature flags"
+  ansible.builtin.assert:
+    that:
+      - lxd_project_features is mapping
+      - lxd_project_features | length > 0
+      # Normalise to "True"/"False" strings first so the check fails
+      # cleanly when callers pass e.g. the string "yes" or the int 1.
+      - (lxd_project_features.values() | map('string') | list)
+          | difference(['True', 'False']) | length == 0
+    fail_msg: >-
+      lxd_project: every value in `lxd_project_features` must be a
+      boolean (they are stringified to "true"/"false" when sent to LXD).
+      Current map: {{ lxd_project_features }}.
+
+- name: "lxd-project | preflight | validate restricted flag"
+  ansible.builtin.assert:
+    that:
+      - lxd_project_restricted is boolean
+    fail_msg: >-
+      lxd_project: `lxd_project_restricted` must be a boolean.
+
+- name: "lxd-project | preflight | validate restriction keys + values"
+  ansible.builtin.assert:
+    that:
+      - lxd_project_restrictions is mapping
+      # Every key must start with "restricted." — otherwise it ends up as
+      # a non-restriction config key and silently takes effect somewhere
+      # we did not expect.
+      - (lxd_project_restrictions.keys() | list)
+          | reject('match', '^restricted\\.') | list | length == 0
+      # Every value must be a non-empty string.
+      - (lxd_project_restrictions.values() | map('string') | list)
+          | select('equalto', '') | list | length == 0
+    fail_msg: >-
+      lxd_project: every key in `lxd_project_restrictions` must start
+      with `restricted.` and every value must be a non-empty string.
+      Current map: {{ lxd_project_restrictions }}.

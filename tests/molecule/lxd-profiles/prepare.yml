@@ -1,0 +1,29 @@
+---
+# lxd_profiles scenario prepare.
+#
+# Two steps:
+#   1. Shared prepare — test deps, opt-root skeleton.
+#   2. Clean pool disk — lxd_storage_pools runs in the meta-dep chain
+#      and hands the device to LXD for mkfs.btrfs. The disk must be
+#      free of filesystem signatures on first converge.
+#
+# base_system / lxd_host / lxd_project / lxd_storage_pools /
+# lxd_network_int_managed all come in through meta-dependencies on
+# converge (plan §2.6.5); no role wiring lives in this scenario glue.
+
+- name: "Prepare | lxd_profiles"
+  hosts: all
+  gather_facts: true
+  become: true
+  vars:
+    _molecule_project_dir: "{{ lookup('ansible.builtin.env', 'MOLECULE_PROJECT_DIRECTORY') }}"
+  vars_files:
+    - "../shared/vars/common.yml"
+  tasks:
+    - name: "Prepare | lxd_profiles | shared base"
+      ansible.builtin.include_tasks:
+        file: "{{ _molecule_project_dir }}/shared/tasks/prepare.yml"
+
+    - name: "Prepare | lxd_profiles | clean pool disk"
+      ansible.builtin.include_tasks:
+        file: "{{ _molecule_project_dir }}/shared/tasks/prepare-clean-disk.yml"

@@ -1,0 +1,26 @@
+---
+galaxy_info:
+  role_name: lxd_storage_pools
+  namespace: k8slab
+  author: k8s-lab contributors
+  description: >-
+    Create and configure LXD storage pools (per plan §13.4). Owns the
+    pool object only — volumes, profile device references and consumer
+    workloads are managed by dedicated roles.
+  license: MIT
+  min_ansible_version: "2.16"
+  platforms:
+    - name: Debian
+      versions:
+        - trixie
+  galaxy_tags:
+    - kubernetes
+    - lxd
+    - bootstrap
+
+dependencies:
+  # lxd_project provides the configured capi-lab project and, through its
+  # own meta chain, an installed + waitready LXD daemon on the snap
+  # socket. Listing only the direct dep keeps this graph flat — plan
+  # §2.6.5 forbids transitive meta deps.
+  - role: lxd_project

@@ -1,0 +1,135 @@
+---
+# lxd_network_int_managed verify — real runtime checks (plan §9.4).
+
+- name: "Verify | lxd_network_int_managed"
+  hosts: all
+  gather_facts: true
+  become: true
+  vars_files:
+    - "../shared/vars/common.yml"
+  vars:
+    _socket_path: "/var/snap/lxd/common/lxd/unix.socket"
+    # Mirror the role's declared defaults so verify does not drift.
+    _expected_networks:
+      - name:        "capi-int"
+        type:        "bridge"
+        description: "k8s-lab internal managed bridge (dual-stack, NAT, DHCPv4, RAv6)"
+        config:
+          ipv4.address: "10.77.0.1/24"
+          ipv4.nat:     "true"
+          ipv4.dhcp:    "true"
+          ipv6.address: "fd42:77:1::1/64"
+          ipv6.nat:     "true"
+          ipv6.dhcp:    "true"
+  tasks:
+    # ---- Pool existence ---------------------------------------------
+    - name: "Verify | lxd_network_int_managed | list networks via REST"
+      ansible.builtin.uri:
+        url:         "http://localhost/1.0/networks"
+        unix_socket: "{{ _socket_path }}"
+        method:      GET
+        status_code: 200
+        return_content: true
+      register: _verify_list_register
+
+    - name: "Verify | lxd_network_int_managed | derive network names"
+      ansible.builtin.set_fact:
+        _verify_network_names: >-
+          {{
+            (_verify_list_register.json.metadata | default([]))
+            | map('basename') | list
+          }}
+
+    - name: "Verify | lxd_network_int_managed | assert every expected network is present"
+      ansible.builtin.assert:
+        that:
+          - item.name in _verify_network_names
+        fail_msg: >-
+          expected network "{{ item.name }}" missing from live list
+          {{ _verify_network_names }}.
+      loop: "{{ _expected_networks }}"
+      loop_control:
+        label: "{{ item.name }}"
+
+    # ---- Live state fetch ------------------------------------------
+    - name: "Verify | lxd_network_int_managed | fetch live state per network"
+      ansible.builtin.uri:
+        url:         "http://localhost/1.0/networks/{{ item.name }}"
+        unix_socket: "{{ _socket_path }}"
+        method:      GET
+        status_code: 200
+        return_content: true
+      loop: "{{ _expected_networks }}"
+      loop_control:
+        label: "{{ item.name }}"
+      register: _verify_show_register
+
+    - name: "Verify | lxd_network_int_managed | assert type + status + managed"
+      ansible.builtin.assert:
+        that:
+          - (item.json.metadata.type | default('')) == item.item.type
+          - (item.json.metadata.status | default('')) == 'Created'
+          - (item.json.metadata.managed | default(false)) == true
+          - (item.json.metadata.description | default('')) == item.item.description
+        fail_msg: >-
+          network "{{ item.item.name }}" live state wrong:
+          type={{ item.json.metadata.type | default('?') }},
+          status={{ item.json.metadata.status | default('?') }},
+          managed={{ item.json.metadata.managed | default('?') }}.
+      loop: "{{ _verify_show_register.results }}"
+      loop_control:
+        label: "{{ item.item.name }}"
+
+    # Flatten (net, key, value) triples for config assertions.
+    - name: "Verify | lxd_network_int_managed | build triples for config assertions"
+      ansible.builtin.set_fact:
+        _verify_triples: >-
+          {{
+            _verify_triples | default([])
+            + (
+              item.item.config | dict2items
+              | map('combine', {'net': item.item.name,
+                                'live': item.json.metadata.config | default({})})
+              | list
+            )
+          }}
+      loop: "{{ _verify_show_register.results }}"
+      loop_control:
+        label: "{{ item.item.name }}"
+
+    - name: "Verify | lxd_network_int_managed | assert every config key matches"
+      ansible.builtin.assert:
+        that:
+          - (item.live.get(item.key) | string) == (item.value | string)
+        fail_msg: >-
+          network "{{ item.net }}" config key "{{ item.key }}"
+          expected "{{ item.value }}" but LXD reports
+          "{{ item.live.get(item.key) | default('<unset>') }}".
+      loop: "{{ _verify_triples | default([]) }}"
+      loop_control:
+        label: "{{ item.net }}:{{ item.key }}"
+
+    # ---- Host-side interface sanity --------------------------------
+    #
+    # LXD creates a host interface for every managed bridge. The name
+    # matches the LXD network name exactly. /sys/class/net/<name> is
+    # the simplest kernel-level truth.
+    - name: "Verify | lxd_network_int_managed | bridge interface exists on host"
+      ansible.builtin.stat:
+        path: "/sys/class/net/{{ item.name }}"
+      loop: "{{ _expected_networks }}"
+      loop_control:
+        label: "{{ item.name }}"
+      register: _verify_host_iface_register
+
+    - name: "Verify | lxd_network_int_managed | assert host iface is present"
+      ansible.builtin.assert:
+        that:
+          - item.stat.exists
+        fail_msg: >-
+          bridge "{{ item.item.name }}" was created inside LXD but the
+          host interface /sys/class/net/{{ item.item.name }} is
+          missing.
+      loop: "{{ _verify_host_iface_register.results }}"
+      loop_control:
+        label: "{{ item.item.name }}"

@@ -1,0 +1,153 @@
+---
+# Create / update LXD storage pools through the native LXD REST API
+# over the snap unix socket (plan §2.6.1 — no CREATE module exists in
+# community.general for storage pools, but ansible.builtin.uri is a
+# native module, so this is not a shell fallback).
+#
+# LXD API reference:
+#   GET    /1.0/storage-pools
+#   POST   /1.0/storage-pools       body: {name, driver, description, config}
+#   GET    /1.0/storage-pools/<n>
+#   PATCH  /1.0/storage-pools/<n>   body: {description, config}
+
+# ---------------------------------------------------------------------------
+# Step 1: fetch the current pool list. The REST endpoint returns a list
+# of URLs of the form `/1.0/storage-pools/<name>`; we strip the prefix
+# to get a flat list of names.
+# ---------------------------------------------------------------------------
+
+- name: "lxd-storage-pools | pools | fetch existing pool list"
+  ansible.builtin.uri:
+    url:         "http://localhost/1.0/storage-pools"
+    unix_socket: "{{ lxd_storage_pools_lxd_socket_path }}"
+    method:      GET
+    status_code: 200
+    return_content: true
+  register: _lxd_storage_pools_list_register
+  changed_when: false
+
+- name: "lxd-storage-pools | pools | derive existing pool names"
+  # LXD returns `metadata` as a list of endpoint URLs
+  # (`/1.0/storage-pools/<name>`). `basename` is the path-tail filter,
+  # stable across Jinja versions and immune to the backslash-escape
+  # quirks that affect `regex_replace` inside YAML folded scalars.
+  ansible.builtin.set_fact:
+    _lxd_storage_pools_existing: >-
+      {{
+        (_lxd_storage_pools_list_register.json.metadata | default([]))
+        | map('basename') | list
+      }}
+
+# ---------------------------------------------------------------------------
+# Step 2: create missing pools. Every value in `config` is stringified
+# first — LXD stores config as strings on the wire. Pools that already
+# exist are left untouched here; drift correction happens in Step 3.
+# ---------------------------------------------------------------------------
+
+- name: "lxd-storage-pools | pools | create missing pool"
+  ansible.builtin.uri:
+    url:         "http://localhost/1.0/storage-pools"
+    unix_socket: "{{ lxd_storage_pools_lxd_socket_path }}"
+    method:      POST
+    status_code: [200, 201]
+    body_format: json
+    body:
+      name:        "{{ item.name }}"
+      driver:      "{{ item.driver }}"
+      description: "{{ item.description | default('') }}"
+      # Force string values everywhere — LXD rejects JSON booleans / ints
+      # on config keys it expects as strings.
+      config: >-
+        {{
+          dict(
+            item.config | dict2items | map(attribute='key') | list
+            | zip(item.config | dict2items | map(attribute='value') | map('string') | list)
+          )
+        }}
+  loop: "{{ lxd_storage_pools_pools }}"
+  loop_control:
+    label: "{{ item.name }}"
+  when: item.name not in _lxd_storage_pools_existing
+  # uri does not auto-mark POST as changed in newer ansible-core. A
+  # successful create-when-missing is always a change.
+  changed_when: true
+  register: _lxd_storage_pools_create_register
+
+# ---------------------------------------------------------------------------
+# Step 3: drift correction for already-existing pools.
+#
+# For each declared pool that already existed at Step 1, fetch its
+# current config from LXD and PATCH the keys this role owns. We do NOT
+# touch `volatile.*` keys (LXD-managed). We also skip `source` — it is
+# a one-time creation parameter and LXD replaces it with a UUID after
+# first mount, so comparing desired==live would always spuriously
+# trigger a PATCH. A source-drift situation is a hard error and
+# healthchecks catches it.
+# ---------------------------------------------------------------------------
+
+- name: "lxd-storage-pools | pools | fetch live config for existing pools"
+  ansible.builtin.uri:
+    url:         "http://localhost/1.0/storage-pools/{{ item.name }}"
+    unix_socket: "{{ lxd_storage_pools_lxd_socket_path }}"
+    method:      GET
+    status_code: 200
+    return_content: true
+  loop: "{{ lxd_storage_pools_pools }}"
+  loop_control:
+    label: "{{ item.name }}"
+  when: item.name in _lxd_storage_pools_existing
+  register: _lxd_storage_pools_show_register
+  changed_when: false
+
+- name: "lxd-storage-pools | pools | compute drift set"
+  # For each existing pool, collect the desired-vs-live diff over the
+  # keys this role owns (every key in `item.config` except `source`).
+  ansible.builtin.set_fact:
+    _lxd_storage_pools_drift: >-
+      {{
+        _lxd_storage_pools_drift | default([])
+        + [{
+            'name': item.item.name,
+            'driver': item.item.driver,
+            'description': item.item.description | default(''),
+            'desired_config': dict(
+              (item.item.config | dict2items
+                | rejectattr('key', 'equalto', 'source')
+                | list
+                | map(attribute='key') | list)
+              | zip(
+                (item.item.config | dict2items
+                  | rejectattr('key', 'equalto', 'source')
+                  | list
+                  | map(attribute='value') | map('string') | list)
+              )
+            ),
+            'live_config': item.json.metadata.config | default({}),
+          }]
+      }}
+  loop: "{{ _lxd_storage_pools_show_register.results | default([]) }}"
+  loop_control:
+    label: "{{ item.item.name }}"
+  when: not (item.skipped | default(false))
+
+- name: "lxd-storage-pools | pools | patch drifted pools"
+  ansible.builtin.uri:
+    url:         "http://localhost/1.0/storage-pools/{{ item.name }}"
+    unix_socket: "{{ lxd_storage_pools_lxd_socket_path }}"
+    method:      PATCH
+    status_code: [200]
+    body_format: json
+    body:
+      description: "{{ item.description }}"
+      config:      "{{ item.desired_config }}"
+  loop: "{{ _lxd_storage_pools_drift | default([]) }}"
+  loop_control:
+    label: "{{ item.name }}"
+  when: >-
+    (item.desired_config.items() | list)
+    | difference((item.live_config.items() | list))
+    | length > 0
+  # Firing a PATCH means we detected drift. Not-firing (when: false)
+  # keeps the task skipped — no changed report in that branch.
+  changed_when: true
+  register: _lxd_storage_pools_patch_register

@@ -1,0 +1,68 @@
+---
+# ==========================================================================
+# lxd_network_int_managed — role defaults
+# ==========================================================================
+#
+# Purpose (plan §13.5): create and configure the k8s-lab internal
+# managed bridge (`capi-int` by default) — a LXD-managed bridge that
+# provides dual-stack DHCPv4 / IPv6 RA + DHCPv6 and NAT egress for
+# instances attached via profiles' internal nic device.
+#
+# Scope:
+#   * managed-bridge networks only — LXD rejects `bridge` type
+#     networks in non-default projects (error "Network type does not
+#     support non-default projects"), so they are created in the
+#     default project and referenced by capi-lab profiles through the
+#     project's `features.networks=false` inheritance chain
+#     (owned by lxd_project).
+#   * this role does NOT create host-level Linux bridges; the external
+#     bridge `br-ext6` is owned by lxd_host.
+#
+# Public contract (plan §2.6.2): variables exposed to callers use the
+# `lxd_network_int_managed_*` prefix. Internal / derived facts use
+# `_lxd_network_int_managed_*` and must stay inside the role.
+
+# -- General ---------------------------------------------------------------
+
+# Whole-role toggle. When false, preflight still runs (to catch
+# inconsistent inputs) but no mutating task is applied.
+lxd_network_int_managed_enabled: true
+
+# Path to the LXD unix socket used by ansible.builtin.uri to talk the
+# LXD REST API directly. Bare filesystem path (not a `unix:` URI).
+lxd_network_int_managed_lxd_socket_path: "/var/snap/lxd/common/lxd/unix.socket"
+
+# -- Networks to manage ---------------------------------------------------
+#
+# List of managed-network definitions. Each entry:
+#   name:        (required) network name — also the resulting host
+#                bridge interface name (LXD creates
+#                lxdbr-<something> in reality but the device visible
+#                to profiles is the declared name).
+#   type:        (optional) defaults to "bridge". Only `bridge` is
+#                supported by this role's scope.
+#   description: (optional) free-form description stored in LXD.
+#   config:      (required) dict of LXD network config keys. All
+#                values must be strings — LXD stores config as strings
+#                on the wire.
+#
+# Plan §8 dual-stack defaults:
+#   ipv4: 10.77.0.0/24 → bridge holds 10.77.0.1/24, NAT+DHCPv4 on.
+#   ipv6: fd42:77:1::/64 → bridge holds fd42:77:1::1/64, NAT+DHCPv6 on
+#         (RAs are always emitted by LXD when `ipv6.address` is set).
+lxd_network_int_managed_networks:
+  - name:        "capi-int"
+    type:        "bridge"
+    description: "k8s-lab internal managed bridge (dual-stack, NAT, DHCPv4, RAv6)"
+    config:
+      ipv4.address: "10.77.0.1/24"
+      ipv4.nat:     "true"
+      ipv4.dhcp:    "true"
+      ipv6.address: "fd42:77:1::1/64"
+      ipv6.nat:     "true"
+      ipv6.dhcp:    "true"
+
+# -- Flow control (plan §2.6.3) -------------------------------------------
+#
+# Coarse-grained only.
+lxd_network_int_managed_flow_control_networks: true

@@ -3,7 +3,7 @@
 # lxd_host — role defaults
 # ==========================================================================
 #
-# Purpose (plan §8.3): owns everything host-side that prepares the Debian
+# Purpose (plan §13.2): owns everything host-side that prepares the Debian
 # machine to run LXD. That means two things the previous draft separated:
 #
 #   1. install LXD via snap, pin channel, control auto-refresh policy;
@@ -28,7 +28,7 @@ lxd_host_enabled: true
 
 # Snap pinning per plan §2.11 — track current upstream stable. Feature-
 # stable track is used (not 5.21 LTS) as a deliberate deviation already
-# recorded in PLAN-stage1-progress.md.
+# recorded inline in plan §8a (deviation note).
 lxd_host_snap_name:      "lxd"
 lxd_host_snap_channel:   "6/stable"
 
@@ -42,7 +42,7 @@ lxd_host_snap_seed_wait_timeout: 180
 
 # -- Snap refresh policy ---------------------------------------------------
 #
-# Plan §8.3 allows two shapes: indefinite hold, OR explicit refresh window.
+# Plan §13.2 allows two shapes: indefinite hold, OR explicit refresh window.
 # Both are implemented system-wide via `snap set system refresh.*` because
 # on this host LXD is the only meaningful snap — a per-snap hold adds
 # complexity without a real benefit here.

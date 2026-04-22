@@ -1,0 +1,145 @@
+---
+# lxd_storage_pools verify — real runtime checks (plan §9.4, §2.6.5).
+# Goes back to the LXD REST API and asserts the pool state from LXD's
+# point of view, not just "role converged".
+
+- name: "Verify | lxd_storage_pools"
+  hosts: all
+  gather_facts: true
+  become: true
+  vars_files:
+    - "../shared/vars/common.yml"
+  vars:
+    _socket_path: "/var/snap/lxd/common/lxd/unix.socket"
+    # Mirror the scenario's pool declaration so verify does not drift
+    # from what was converged.
+    _expected_pools:
+      - name:        "capi-fast"
+        driver:      "btrfs"
+        source:      "/dev/disk/by-id/virtio-k8slab-lxdpool"
+        config_extra:
+          btrfs.mount_options: "user_subvol_rm_allowed"
+  tasks:
+    # ---- Pool existence ---------------------------------------------
+    - name: "Verify | lxd_storage_pools | list pools via REST"
+      ansible.builtin.uri:
+        url:         "http://localhost/1.0/storage-pools"
+        unix_socket: "{{ _socket_path }}"
+        method:      GET
+        status_code: 200
+        return_content: true
+      register: _verify_pools_list_register
+
+    - name: "Verify | lxd_storage_pools | derive pool names from URLs"
+      # `basename` is the path-tail filter; stable across Jinja
+      # versions and immune to backslash-escape quirks that affect
+      # `regex_replace` inside YAML folded scalars.
+      ansible.builtin.set_fact:
+        _verify_pool_names: >-
+          {{
+            (_verify_pools_list_register.json.metadata | default([]))
+            | map('basename') | list
+          }}
+
+    - name: "Verify | lxd_storage_pools | assert every expected pool is present"
+      ansible.builtin.assert:
+        that:
+          - item.name in _verify_pool_names
+        fail_msg: >-
+          expected pool "{{ item.name }}" missing from live list
+          {{ _verify_pool_names }}.
+      loop: "{{ _expected_pools }}"
+      loop_control:
+        label: "{{ item.name }}"
+
+    # ---- Fetch live state -------------------------------------------
+    - name: "Verify | lxd_storage_pools | fetch live state per expected pool"
+      ansible.builtin.uri:
+        url:         "http://localhost/1.0/storage-pools/{{ item.name }}"
+        unix_socket: "{{ _socket_path }}"
+        method:      GET
+        status_code: 200
+        return_content: true
+      loop: "{{ _expected_pools }}"
+      loop_control:
+        label: "{{ item.name }}"
+      register: _verify_pool_show_register
+
+    - name: "Verify | lxd_storage_pools | assert driver + status"
+      ansible.builtin.assert:
+        that:
+          - (item.json.metadata.driver | default('')) == item.item.driver
+          - (item.json.metadata.status | default('')) == 'Created'
+        fail_msg: >-
+          pool "{{ item.item.name }}" live state wrong:
+          driver={{ item.json.metadata.driver | default('?') }},
+          status={{ item.json.metadata.status | default('?') }}.
+      loop: "{{ _verify_pool_show_register.results }}"
+      loop_control:
+        label: "{{ item.item.name }}"
+
+    - name: "Verify | lxd_storage_pools | assert volatile.initial_source matches expected"
+      ansible.builtin.assert:
+        that:
+          - (item.json.metadata.config['volatile.initial_source'] | default(''))
+              == item.item.source
+        fail_msg: >-
+          pool "{{ item.item.name }}" volatile.initial_source is
+          "{{ item.json.metadata.config['volatile.initial_source'] | default('?') }}"
+          — expected "{{ item.item.source }}".
+      loop: "{{ _verify_pool_show_register.results }}"
+      loop_control:
+        label: "{{ item.item.name }}"
+
+    # Flatten (pool, key, value) triples first — `subelements` does not
+    # traverse dicts, and building a flat list here keeps the assert
+    # itself simple.
+    - name: "Verify | lxd_storage_pools | build (pool, key, value) triples for extra config"
+      ansible.builtin.set_fact:
+        _verify_extra_triples: >-
+          {{
+            _verify_extra_triples | default([])
+            + (
+              item.item.config_extra | default({}) | dict2items
+              | map('combine', {'pool': item.item.name,
+                                'live': item.json.metadata.config | default({})})
+              | list
+            )
+          }}
+      loop: "{{ _verify_pool_show_register.results }}"
+      loop_control:
+        label: "{{ item.item.name }}"
+
+    - name: "Verify | lxd_storage_pools | assert extra config keys match"
+      ansible.builtin.assert:
+        that:
+          - (item.live.get(item.key) | string) == (item.value | string)
+        fail_msg: >-
+          pool "{{ item.pool }}" config key "{{ item.key }}" expected
+          "{{ item.value }}" but LXD reports
+          "{{ item.live.get(item.key) | default('<unset>') }}".
+      loop: "{{ _verify_extra_triples | default([]) }}"
+      loop_control:
+        label: "{{ item.pool }}:{{ item.key }}"
+
+    # ---- Block device sanity (not via LXD) --------------------------
+    - name: "Verify | lxd_storage_pools | stat pool backing device"
+      ansible.builtin.stat:
+        path: "{{ item.source }}"
+        follow: true
+      loop: "{{ _expected_pools }}"
+      loop_control:
+        label: "{{ item.name }}"
+      register: _verify_pool_devstat_register
+
+    - name: "Verify | lxd_storage_pools | assert backing device is a block device"
+      ansible.builtin.assert:
+        that:
+          - item.stat.exists
+          - item.stat.isblk | default(false)
+        fail_msg: >-
+          pool "{{ item.item.name }}" backing source
+          "{{ item.item.source }}" is not a block device on this host.
+      loop: "{{ _verify_pool_devstat_register.results }}"
+      loop_control:
+        label: "{{ item.item.name }}"

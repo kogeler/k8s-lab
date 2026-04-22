@@ -1,0 +1,28 @@
+---
+# Dispatcher-only (plan §2.6.2). Every thematic block goes into its own
+# task file; this one only orders them.
+
+- name: "lxd-project | preflight"
+  ansible.builtin.include_tasks:
+    file: preflight.yml
+    apply:
+      tags: [lxd_project, lxd-project, lxd_project_preflight]
+  tags: [lxd_project, lxd-project, lxd_project_preflight]
+
+- name: "lxd-project | config | project"
+  ansible.builtin.include_tasks:
+    file: project.yml
+    apply:
+      tags: [lxd_project, lxd-project, lxd_project_project]
+  when:
+    - lxd_project_enabled
+    - lxd_project_flow_control_project
+  tags: [lxd_project, lxd-project, lxd_project_project]
+
+- name: "lxd-project | healthchecks"
+  ansible.builtin.include_tasks:
+    file: healthchecks.yml
+    apply:
+      tags: [lxd_project, lxd-project, lxd_project_healthchecks]
+  when: lxd_project_enabled
+  tags: [lxd_project, lxd-project, lxd_project_healthchecks]

@@ -1,0 +1,28 @@
+---
+# Dispatcher-only (plan §2.6.2). Every thematic block goes into its own
+# task file; this one only orders them.
+
+- name: "lxd-storage-pools | preflight"
+  ansible.builtin.include_tasks:
+    file: preflight.yml
+    apply:
+      tags: [lxd_storage_pools, lxd-storage-pools, lxd_storage_pools_preflight]
+  tags: [lxd_storage_pools, lxd-storage-pools, lxd_storage_pools_preflight]
+
+- name: "lxd-storage-pools | config | pools"
+  ansible.builtin.include_tasks:
+    file: pools.yml
+    apply:
+      tags: [lxd_storage_pools, lxd-storage-pools, lxd_storage_pools_pools]
+  when:
+    - lxd_storage_pools_enabled
+    - lxd_storage_pools_flow_control_pools
+  tags: [lxd_storage_pools, lxd-storage-pools, lxd_storage_pools_pools]
+
+- name: "lxd-storage-pools | healthchecks"
+  ansible.builtin.include_tasks:
+    file: healthchecks.yml
+    apply:
+      tags: [lxd_storage_pools, lxd-storage-pools, lxd_storage_pools_healthchecks]
+  when: lxd_storage_pools_enabled
+  tags: [lxd_storage_pools, lxd-storage-pools, lxd_storage_pools_healthchecks]

@@ -1,0 +1,88 @@
+---
+# ==========================================================================
+# lxd_bootstrap_instance — role defaults
+# ==========================================================================
+#
+# Purpose (plan §13.7): create and start the LXC bootstrap container —
+# `capi-bootstrap-0` by default — inside the capi-lab project. The
+# container hosts single-node k3s + clusterctl in later phases
+# (bootstrap_k3s / bootstrap_clusterctl); this role only owns the
+# instance object + its lifecycle.
+#
+# Scope:
+#   * one container per role run (default list has exactly one entry).
+#   * applies the `capi-base` + `capi-bootstrap` profiles by default
+#     — nesting, unprivileged, root disk on capi-fast, eth0 on capi-int.
+#   * does NOT install k3s / kubectl / clusterctl — those land via
+#     binary_fetch (Phase 3.5) and bootstrap_k3s / bootstrap_clusterctl
+#     (Phase 4) into an already-running container.
+#
+# Public contract (plan §2.6.2): every variable exposed to callers is
+# prefixed `lxd_bootstrap_instance_*`. Internal / derived facts use
+# the `_lxd_bootstrap_instance_*` prefix.
+
+# -- General ---------------------------------------------------------------
+
+# Whole-role toggle. When false, preflight still runs (to catch
+# inconsistent inputs) but no mutating task is applied.
+lxd_bootstrap_instance_enabled: true
+
+# LXD daemon socket URI consumed by community.general.lxd_container
+# (URI form, not bare path — the module expects the `unix:` prefix).
+lxd_bootstrap_instance_lxd_socket_uri: "unix:/var/snap/lxd/common/lxd/unix.socket"
+
+# LXD project the instance lives in. Must match lxd_project_name on
+# the host. Cross-role coupling is by value — plan §2.6.5 bans reading
+# another role's `<other_role>_*` prefix directly.
+lxd_bootstrap_instance_project: "capi-lab"
+
+# -- Instance identity + shape --------------------------------------------
+
+lxd_bootstrap_instance_name: "capi-bootstrap-0"
+lxd_bootstrap_instance_type: "container"   # container | virtual-machine
+
+# Profiles to apply. Stage 1 uses capi-base (root disk, internal nic)
+# + capi-bootstrap (nesting, unprivileged). Consumers can append extra
+# profiles by overriding the list; keep the two defaults present.
+lxd_bootstrap_instance_profiles:
+  - "capi-base"
+  - "capi-bootstrap"
+
+# -- Image source ---------------------------------------------------------
+#
+# Default uses Canonical's LXD-curated simplestreams remote — that is
+# the `images:` remote on a stock LXD snap (URL changed from
+# `linuxcontainers.org` to `images.lxd.canonical.com` in LXD 5.x+
+# after the Canonical/Incus split). The `debian/13` alias matches the
+# host OS (plan §2.1 Debian 13 Trixie) so k3s bootstrap inherits
+# predictable kernel semantics. Consumers can pin to a specific
+# fingerprint or switch to the UBC remote
+# (https://cloud-images.ubuntu.com/releases/ + `24.04` / etc).
+lxd_bootstrap_instance_image_server:   "https://images.lxd.canonical.com"
+lxd_bootstrap_instance_image_protocol: "simplestreams"
+lxd_bootstrap_instance_image_alias:    "debian/13"
+
+# -- Per-instance overlays -----------------------------------------------
+#
+# Merged on top of whatever the applied profiles provide. Keep empty
+# by default — profile contract covers every Stage 1 requirement.
+lxd_bootstrap_instance_config: {}
+lxd_bootstrap_instance_devices: {}
+
+# -- Lifecycle -----------------------------------------------------------
+
+# Desired LXD state. `started` creates + launches the container;
+# `stopped` ensures it exists but is offline; `absent` deletes it.
+lxd_bootstrap_instance_state: "started"
+
+# After start, wait until every nic inside the container reports an
+# IPv4 address. Bootstrap phases (k3s) need a reachable eth0 before
+# they can even run; failing early here is better than a timeout deep
+# inside bootstrap_k3s.
+lxd_bootstrap_instance_wait_ipv4: true
+lxd_bootstrap_instance_wait_timeout: 120
+
+# -- Flow control (plan §2.6.3) -------------------------------------------
+#
+# Coarse-grained only.
+lxd_bootstrap_instance_flow_control_instance: true

@@ -1,0 +1,19 @@
+---
+# lxd_network_int_managed scenario prepare.
+#
+# Only test-harness bootstrap (apt cache, test deps, opt-root skeleton).
+# Upstream roles (base_system, lxd_host, lxd_project) come in through
+# meta-deps when the target role runs on converge (plan §2.6.5).
+
+- name: "Prepare | lxd_network_int_managed"
+  hosts: all
+  gather_facts: true
+  become: true
+  vars:
+    _molecule_project_dir: "{{ lookup('ansible.builtin.env', 'MOLECULE_PROJECT_DIRECTORY') }}"
+  vars_files:
+    - "../shared/vars/common.yml"
+  tasks:
+    - name: "Prepare | lxd_network_int_managed | shared base"
+      ansible.builtin.include_tasks:
+        file: "{{ _molecule_project_dir }}/shared/tasks/prepare.yml"

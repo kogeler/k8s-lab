@@ -1,0 +1,75 @@
+---
+# Input validation (plan §2.6.2). Runs before any mutating task.
+
+- name: "lxd-network-int-managed | preflight | gather facts"
+  ansible.builtin.setup:
+    gather_subset:
+      - "!all"
+      - "!any"
+      - min
+  when: ansible_facts['os_family'] is not defined
+
+- name: "lxd-network-int-managed | preflight | target OS is Debian 13+"
+  ansible.builtin.assert:
+    that:
+      - ansible_facts['os_family'] == 'Debian'
+      - ansible_facts['distribution'] == 'Debian'
+      - (ansible_facts['distribution_major_version'] | int) >= 13
+    fail_msg: >-
+      lxd_network_int_managed only targets Debian 13 Trixie or newer;
+      detected {{ ansible_facts['distribution'] | default('?') }}
+      {{ ansible_facts['distribution_version'] | default('?') }}.
+
+- name: "lxd-network-int-managed | preflight | validate socket path"
+  ansible.builtin.assert:
+    that:
+      - lxd_network_int_managed_lxd_socket_path is string
+      - lxd_network_int_managed_lxd_socket_path is match('^/')
+    fail_msg: >-
+      lxd_network_int_managed: `lxd_network_int_managed_lxd_socket_path`
+      must be an absolute filesystem path (got
+      "{{ lxd_network_int_managed_lxd_socket_path | default('') }}").
+
+- name: "lxd-network-int-managed | preflight | networks list is a non-empty list"
+  ansible.builtin.assert:
+    that:
+      - lxd_network_int_managed_networks is sequence
+      - lxd_network_int_managed_networks | length > 0
+    fail_msg: >-
+      lxd_network_int_managed: `lxd_network_int_managed_networks` must
+      be a non-empty list. Disable the role with
+      `lxd_network_int_managed_enabled: false` if no networks are
+      desired.
+
+- name: "lxd-network-int-managed | preflight | every network has a valid shape"
+  ansible.builtin.assert:
+    that:
+      - item.name is string
+      - item.name | length > 0
+      - item.name is match('^[a-z][a-z0-9_-]{0,14}$')
+      - (item.type | default('bridge')) in ['bridge']
+      - item.config is mapping
+      - (item.config.keys() | list) | select('equalto', 'ipv4.address') | list | length > 0
+        or (item.config.keys() | list) | select('equalto', 'ipv6.address') | list | length > 0
+      - (item.config.values() | map('string') | list) | length == (item.config | length)
+    fail_msg: >-
+      lxd_network_int_managed: network entry
+      {{ item | default({}) }} is invalid. Each entry must have a
+      non-empty `name` (lowercase alnum / `_` / `-`, start with a
+      letter, ≤15 chars — Linux IFNAMSIZ), a `type` of `bridge` (this
+      role's scope), a `config` mapping with at least one of
+      ipv4.address / ipv6.address set, and every config value a
+      string.
+  loop: "{{ lxd_network_int_managed_networks }}"
+  loop_control:
+    label: "{{ item.name | default('<unnamed>') }}"
+
+- name: "lxd-network-int-managed | preflight | network names are unique"
+  ansible.builtin.assert:
+    that:
+      - (lxd_network_int_managed_networks | map(attribute='name') | list) | unique | length
+          == lxd_network_int_managed_networks | length
+    fail_msg: >-
+      lxd_network_int_managed: duplicate network names in
+      `lxd_network_int_managed_networks`. Names must be unique per
+      host.

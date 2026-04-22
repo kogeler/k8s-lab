@@ -1,0 +1,42 @@
+---
+# Role-internal healthchecks. Read the live project state from LXD and
+# assert every key this role owns actually landed. Catches a silent
+# no-op (wrong socket, stale LXD version, API diff regression) at
+# converge time rather than inside a downstream entity role.
+#
+# Scenario-level verify.yml remains the canonical acceptance surface.
+
+- name: "lxd-project | healthchecks | read live project config via REST"
+  ansible.builtin.uri:
+    url:         "http://localhost/1.0/projects/{{ lxd_project_name }}"
+    unix_socket: "{{ lxd_project_lxd_socket_path }}"
+    method:      GET
+    status_code: 200
+    return_content: true
+  register: _lxd_project_health_show_register
+  changed_when: false
+
+- name: "lxd-project | healthchecks | assert project name matches"
+  ansible.builtin.assert:
+    that:
+      - (_lxd_project_health_show_register.json.metadata.name | default('')) == lxd_project_name
+    fail_msg: >-
+      GET /1.0/projects/{{ lxd_project_name }} returned name
+      "{{ _lxd_project_health_show_register.json.metadata.name | default('') }}"
+      — expected "{{ lxd_project_name }}".
+
+- name: "lxd-project | healthchecks | assert every declared config key matches"
+  # Every key we intended to set must appear in live config with the
+  # string value we sent. Extra keys (operator-set or LXD-default) are
+  # allowed — we only police what this role owns.
+  ansible.builtin.assert:
+    that:
+      - ((_lxd_project_health_show_register.json.metadata.config | default({})).get(item.key)
+          | string) == (item.value | string)
+    fail_msg: >-
+      project "{{ lxd_project_name }}" config key "{{ item.key }}"
+      expected "{{ item.value }}" but LXD reports
+      "{{ (_lxd_project_health_show_register.json.metadata.config | default({})).get(item.key) | default('<unset>') }}".
+  loop: "{{ _lxd_project_config | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"

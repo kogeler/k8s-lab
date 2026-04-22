@@ -33,7 +33,7 @@
     group: root
     mode: "0644"
     content: |
-      # Managed by Ansible role lxd_host (plan §8.3). Do not edit by hand.
+      # Managed by Ansible role lxd_host (plan §13.2). Do not edit by hand.
       [NetDev]
       Name={{ lxd_host_ext_bridge_name }}
       Kind=bridge
@@ -51,7 +51,7 @@
     group: root
     mode: "0644"
     content: |
-      # Managed by Ansible role lxd_host (plan §8.3). Do not edit by hand.
+      # Managed by Ansible role lxd_host (plan §13.2). Do not edit by hand.
       # The host intentionally holds no IP on this bridge — external IPv6
       # addressing belongs to containers attached via the bridge (plan §5).
       [Match]
@@ -70,7 +70,7 @@
     group: root
     mode: "0644"
     content: |
-      # Managed by Ansible role lxd_host (plan §8.3). Do not edit by hand.
+      # Managed by Ansible role lxd_host (plan §13.2). Do not edit by hand.
       # Uplink = {{ lxd_host_ext_bridge_uplink }}. Matching on explicit
       # Name= keeps systemd-networkd from touching unrelated interfaces.
       [Match]

@@ -1,0 +1,138 @@
+---
+# ==========================================================================
+# lxd_profiles — role defaults
+# ==========================================================================
+#
+# Purpose (plan §13.6): create and configure the four k8s-lab LXD
+# profiles — `capi-base`, `capi-bootstrap`, `capi-controlplane`,
+# `capi-worker` — inside the capi-lab project. Profiles encode the
+# cross-instance contract: storage pool / network devices on the base
+# profile, nesting and kernel modules / external NIC on the kubeadm
+# profiles. CAPN consumes them by name at machine-template creation
+# time (owned by Terraform modules, plan §17.3).
+#
+# Scope:
+#   * LXD profiles only. Instances are owned by lxd_bootstrap_instance
+#     and by CAPN machine templates.
+#   * `capi-controlplane` / `capi-worker` track the CAPN Canonical LXD
+#     unprivileged kubeadm profile baseline (plan §2.8, §13.6). This
+#     role ships a lean subset — nesting, idmap isolation, required
+#     kernel modules, both NICs — enough to satisfy the contract for
+#     Stage 1 acceptance. The full raw.lxc / security.syscalls.* tuning
+#     lands when bootstrap_instance + bootstrap_k3s are built in a
+#     later phase.
+#
+# Public contract (plan §2.6.2): variables exposed to callers use the
+# `lxd_profiles_*` prefix. Internal / derived facts use
+# `_lxd_profiles_*` and must stay inside the role.
+
+# -- General ---------------------------------------------------------------
+
+# Whole-role toggle. When false, preflight still runs (to catch input
+# drift) but no mutating task is applied.
+lxd_profiles_enabled: true
+
+# LXD daemon socket URI consumed by community.general.lxd_profile.
+# Note the `unix:` prefix — the community module expects a URI, unlike
+# ansible.builtin.uri which wants a bare filesystem path.
+lxd_profiles_lxd_socket_uri: "unix:/var/snap/lxd/common/lxd/unix.socket"
+
+# Project the profiles live in. Must match lxd_project_name on the
+# host — cross-role coupling is by value, not by reading the other
+# role's prefixed variable (plan §2.6.5 bans `<other_role>_*` reads).
+lxd_profiles_project: "capi-lab"
+
+# -- Shared device targets ------------------------------------------------
+#
+# Profiles reference these by name. Kept as top-level variables so the
+# defaults list below stays readable and a consumer can re-point every
+# profile at a different pool / bridge with three overrides instead of
+# editing each profile entry.
+lxd_profiles_storage_pool:       "capi-fast"
+lxd_profiles_internal_network:   "capi-int"
+lxd_profiles_external_bridge:    "br-ext6"
+lxd_profiles_internal_ifname:    "eth0"
+lxd_profiles_external_ifname:    "eth1"
+
+# -- Profile catalogue ----------------------------------------------------
+#
+# Each entry:
+#   name:        (required) profile name.
+#   description: (optional) stored on the profile.
+#   config:      (optional) dict of LXD config keys → string values.
+#   devices:     (optional) dict of device name → device config dict.
+#
+# Profiles are applied additively by LXD when an instance references
+# multiple profiles. Keep the roles cleanly separated so
+# `capi-base + capi-controlplane` composes without collisions: base
+# owns root disk + internal NIC, kubeadm profiles add nesting + kernel
+# modules + external NIC.
+# Note on device dict keys: Ansible's Jinja resolver does NOT template
+# dict keys when data is loaded from YAML (only values). Device-dict
+# keys are therefore written as static strings. The LXD convention is
+# that the dict key is the LXD-side device name (arbitrary label) and
+# the `name:` attribute is the guest-side interface name — we keep
+# them equal here for clarity and use fixed `eth0` / `eth1` literals
+# that match the typical in-guest ifnames. If a consumer needs to
+# rename the LXD-side device name, they override the whole
+# `lxd_profiles_profiles` list.
+lxd_profiles_profiles:
+  - name:        "capi-base"
+    description: "k8s-lab base profile — root disk on the primary pool + internal nic."
+    config: {}
+    devices:
+      root:
+        type: "disk"
+        path: "/"
+        pool: "{{ lxd_profiles_storage_pool }}"
+      eth0:
+        type:    "nic"
+        nictype: "bridged"
+        parent:  "{{ lxd_profiles_internal_network }}"
+        name:    "{{ lxd_profiles_internal_ifname }}"
+
+  - name:        "capi-bootstrap"
+    description: "k8s-lab bootstrap container — unprivileged + nesting for inner k3s."
+    config:
+      # Nesting is required for k3s' embedded containerd / iptables /
+      # cgroup writes. Plan §2.8 hard-forbids privileged containers.
+      security.nesting:        "true"
+      security.privileged:     "false"
+      security.idmap.isolated: "true"
+    devices: {}
+
+  - name:        "capi-controlplane"
+    description: "k8s-lab CAPI control-plane — CAPN unprivileged kubeadm baseline + external nic."
+    config:
+      security.nesting:        "true"
+      security.privileged:     "false"
+      security.idmap.isolated: "true"
+      # Minimum CAPN unprivileged kernel modules: bridged forwarding
+      # filter, ipvs for kube-proxy ipvs mode, conntrack for kube-proxy
+      # iptables mode, overlayfs for containerd's default snapshotter.
+      linux.kernel_modules: "br_netfilter,ip_vs,nf_conntrack,overlay"
+    devices:
+      eth1:
+        type:    "nic"
+        nictype: "bridged"
+        parent:  "{{ lxd_profiles_external_bridge }}"
+        name:    "{{ lxd_profiles_external_ifname }}"
+
+  - name:        "capi-worker"
+    description: "k8s-lab CAPI worker — CAPN unprivileged kubeadm baseline + external nic."
+    config:
+      security.nesting:        "true"
+      security.privileged:     "false"
+      security.idmap.isolated: "true"
+      linux.kernel_modules: "br_netfilter,ip_vs,nf_conntrack,overlay"
+    devices:
+      eth1:
+        type:    "nic"
+        nictype: "bridged"
+        parent:  "{{ lxd_profiles_external_bridge }}"
+        name:    "{{ lxd_profiles_external_ifname }}"
+
+# -- Flow control (plan §2.6.3) -------------------------------------------
+#
+# Coarse-grained only.
+lxd_profiles_flow_control_profiles: true

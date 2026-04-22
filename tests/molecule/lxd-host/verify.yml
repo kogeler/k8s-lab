@@ -1,5 +1,5 @@
 ---
-# lxd_host verify — real runtime checks (plan §11.4, §2.6.5).
+# lxd_host verify — real runtime checks (plan §9.4, §2.6.5).
 # Not just "role converged" — we exercise the actual state on the host.
 
 - name: "Verify | lxd_host"

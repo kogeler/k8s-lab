@@ -1,0 +1,108 @@
+---
+# Role-internal healthchecks. Read each managed profile from LXD and
+# assert name / description / every declared config key / every
+# declared device match the desired contract. Catches silent no-ops
+# (including the community-module diff regression that bit lxd_project)
+# at converge time rather than inside a downstream role.
+
+- name: "lxd-profiles | healthchecks | fetch each managed profile via REST"
+  # Using ansible.builtin.uri instead of a shell pipe to `lxc profile
+  # show`. The _info family does not cover profiles in the current
+  # community.general, and uri is still a native module (plan §2.6.1).
+  ansible.builtin.uri:
+    url:         "http://localhost/1.0/profiles/{{ item.name }}?project={{ lxd_profiles_project }}"
+    unix_socket: "/var/snap/lxd/common/lxd/unix.socket"
+    method:      GET
+    status_code: 200
+    return_content: true
+  loop: "{{ lxd_profiles_profiles }}"
+  loop_control:
+    label: "{{ item.name }}"
+  register: _lxd_profiles_health_show_register
+  changed_when: false
+
+- name: "lxd-profiles | healthchecks | assert name + description match"
+  ansible.builtin.assert:
+    that:
+      - (item.json.metadata.name | default('')) == item.item.name
+      - (item.json.metadata.description | default('')) == (item.item.description | default(''))
+    fail_msg: >-
+      profile "{{ item.item.name }}" identity mismatch:
+      name={{ item.json.metadata.name | default('?') }},
+      desc="{{ item.json.metadata.description | default('?') }}".
+  loop: "{{ _lxd_profiles_health_show_register.results }}"
+  loop_control:
+    label: "{{ item.item.name }}"
+
+# Flatten (profile, key, value) triples for config assertions.
+- name: "lxd-profiles | healthchecks | build (profile, key, value) triples"
+  ansible.builtin.set_fact:
+    _lxd_profiles_health_config_triples: >-
+      {{
+        _lxd_profiles_health_config_triples | default([])
+        + (
+          (item.item.config | default({})) | dict2items
+          | map('combine', {'profile': item.item.name,
+                            'live':    item.json.metadata.config | default({})})
+          | list
+        )
+      }}
+  loop: "{{ _lxd_profiles_health_show_register.results }}"
+  loop_control:
+    label: "{{ item.item.name }}"
+
+- name: "lxd-profiles | healthchecks | assert every declared config key matches live"
+  ansible.builtin.assert:
+    that:
+      - (item.live.get(item.key) | string) == (item.value | string)
+    fail_msg: >-
+      profile "{{ item.profile }}" config key "{{ item.key }}"
+      expected "{{ item.value }}" but LXD reports
+      "{{ item.live.get(item.key) | default('<unset>') }}".
+  loop: "{{ _lxd_profiles_health_config_triples | default([]) }}"
+  loop_control:
+    label: "{{ item.profile }}:{{ item.key }}"
+
+# Device checks are coarser: we assert every declared device name
+# exists in the live profile and that its `type` + selected keys
+# (path/pool for disks, parent/nictype for nics) match. Full device
+# equality would be too brittle because LXD occasionally normalises
+# optional keys.
+- name: "lxd-profiles | healthchecks | build (profile, device_name, desired) triples"
+  ansible.builtin.set_fact:
+    _lxd_profiles_health_device_triples: >-
+      {{
+        _lxd_profiles_health_device_triples | default([])
+        + (
+          (item.item.devices | default({})) | dict2items
+          | map('combine', {'profile':      item.item.name,
+                            'live_devices': item.json.metadata.devices | default({})})
+          | list
+        )
+      }}
+  loop: "{{ _lxd_profiles_health_show_register.results }}"
+  loop_control:
+    label: "{{ item.item.name }}"
+
+- name: "lxd-profiles | healthchecks | assert every declared device is present with the right shape"
+  ansible.builtin.assert:
+    that:
+      - item.key in (item.live_devices.keys() | list)
+      - item.live_devices[item.key].get('type', '') == item.value.get('type', '')
+      # For disks: path + pool must match exactly.
+      - (item.value.get('type') != 'disk')
+        or (item.live_devices[item.key].get('path', '') == item.value.get('path', ''))
+      - (item.value.get('type') != 'disk')
+        or (item.live_devices[item.key].get('pool', '') == item.value.get('pool', ''))
+      # For nics: nictype + parent must match.
+      - (item.value.get('type') != 'nic')
+        or (item.live_devices[item.key].get('nictype', '') == item.value.get('nictype', ''))
+      - (item.value.get('type') != 'nic')
+        or (item.live_devices[item.key].get('parent', '') == item.value.get('parent', ''))
+    fail_msg: >-
+      profile "{{ item.profile }}" device "{{ item.key }}" mismatch.
+      desired={{ item.value }}
+      live={{ item.live_devices[item.key] | default('<missing>') }}.
+  loop: "{{ _lxd_profiles_health_device_triples | default([]) }}"
+  loop_control:
+    label: "{{ item.profile }}:{{ item.key }}"

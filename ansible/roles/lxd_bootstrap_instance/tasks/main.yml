@@ -1,0 +1,29 @@
+---
+# Dispatcher-only (plan §2.6.2).
+
+- name: "lxd-bootstrap-instance | preflight"
+  ansible.builtin.include_tasks:
+    file: preflight.yml
+    apply:
+      tags: [lxd_bootstrap_instance, lxd-bootstrap-instance, lxd_bootstrap_instance_preflight]
+  tags: [lxd_bootstrap_instance, lxd-bootstrap-instance, lxd_bootstrap_instance_preflight]
+
+- name: "lxd-bootstrap-instance | config | instance"
+  ansible.builtin.include_tasks:
+    file: instance.yml
+    apply:
+      tags: [lxd_bootstrap_instance, lxd-bootstrap-instance, lxd_bootstrap_instance_instance]
+  when:
+    - lxd_bootstrap_instance_enabled
+    - lxd_bootstrap_instance_flow_control_instance
+  tags: [lxd_bootstrap_instance, lxd-bootstrap-instance, lxd_bootstrap_instance_instance]
+
+- name: "lxd-bootstrap-instance | healthchecks"
+  ansible.builtin.include_tasks:
+    file: healthchecks.yml
+    apply:
+      tags: [lxd_bootstrap_instance, lxd-bootstrap-instance, lxd_bootstrap_instance_healthchecks]
+  when:
+    - lxd_bootstrap_instance_enabled
+    - lxd_bootstrap_instance_state == 'started'
+  tags: [lxd_bootstrap_instance, lxd-bootstrap-instance, lxd_bootstrap_instance_healthchecks]

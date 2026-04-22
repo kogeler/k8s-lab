@@ -1,0 +1,30 @@
+---
+galaxy_info:
+  role_name: lxd_profiles
+  namespace: k8slab
+  author: k8s-lab contributors
+  description: >-
+    Create and configure k8s-lab LXD profiles (capi-base,
+    capi-bootstrap, capi-controlplane, capi-worker) inside the
+    capi-lab project (plan §13.6). Profiles are consumed by CAPN
+    machine templates at Terraform plan/apply time.
+  license: MIT
+  min_ansible_version: "2.16"
+  platforms:
+    - name: Debian
+      versions:
+        - trixie
+  galaxy_tags:
+    - kubernetes
+    - lxd
+    - bootstrap
+
+dependencies:
+  # lxd_storage_pools creates the capi-fast pool referenced by the
+  # base profile's root disk device.
+  - role: lxd_storage_pools
+  # lxd_network_int_managed creates the capi-int bridge referenced by
+  # the base profile's internal nic. It also brings in lxd_project via
+  # its own meta chain (plan §2.6.5 bans transitive meta deps, so we
+  # declare both direct deps here because neither implies the other).
+  - role: lxd_network_int_managed

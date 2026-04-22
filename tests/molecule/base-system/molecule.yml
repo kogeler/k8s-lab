@@ -3,7 +3,7 @@
 #
 # Driver: delegated — the shared Vagrant/libvirt VM under
 # tests/vagrant/debian13 is the single managed host across scenarios
-# (plan §11.1). Lifecycle is handled by thin YAML wrappers that shell out
+# (plan §9.1). Lifecycle is handled by thin YAML wrappers that shell out
 # to scripts/molecule_{create,destroy}.sh so a single VM survives many
 # scenario runs.
 

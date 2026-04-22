@@ -122,7 +122,7 @@ def main(argv: list[str]) -> int:
     if molecule_bin is None:
         sys.exit(
             "[molecule_run] molecule not on PATH — activate the project "
-            "venv first (see PLAN-stage1-progress.md)"
+            "venv first (see repo README / Makefile `deps` target)"
         )
 
     print(f"[molecule_run] scenario={scenario} action={action}")

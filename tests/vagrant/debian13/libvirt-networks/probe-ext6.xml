@@ -2,7 +2,7 @@
   External-plane L2 segment used by the optional `probe` VM (enabled with
   `K8SLAB_PROBE=1 vagrant up probe`).
 
-  Purpose (plan §11.3):
+  Purpose (plan §9.3):
     * give the probe VM an "external client" vantage point on the same
       emulated IPv6 /64 as `ext6-mock`;
     * let end-to-end tests verify NodePort, MetalLB VIP and NDP from a

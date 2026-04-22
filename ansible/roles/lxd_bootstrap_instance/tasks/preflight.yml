@@ -1,0 +1,79 @@
+---
+# Input validation for lxd_bootstrap_instance (plan §2.6.2).
+
+- name: "lxd-bootstrap-instance | preflight | gather facts"
+  ansible.builtin.setup:
+    gather_subset:
+      - "!all"
+      - "!any"
+      - min
+  when: ansible_facts['os_family'] is not defined
+
+- name: "lxd-bootstrap-instance | preflight | target OS is Debian 13+"
+  ansible.builtin.assert:
+    that:
+      - ansible_facts['os_family'] == 'Debian'
+      - ansible_facts['distribution'] == 'Debian'
+      - (ansible_facts['distribution_major_version'] | int) >= 13
+    fail_msg: >-
+      lxd_bootstrap_instance only targets Debian 13 Trixie or newer.
+
+- name: "lxd-bootstrap-instance | preflight | validate socket URI"
+  ansible.builtin.assert:
+    that:
+      - lxd_bootstrap_instance_lxd_socket_uri is string
+      - lxd_bootstrap_instance_lxd_socket_uri is match('^unix:/')
+    fail_msg: >-
+      lxd_bootstrap_instance: `lxd_bootstrap_instance_lxd_socket_uri`
+      must be a `unix:<absolute path>` URI.
+
+- name: "lxd-bootstrap-instance | preflight | validate project / name / type"
+  ansible.builtin.assert:
+    that:
+      - lxd_bootstrap_instance_project is string
+      - lxd_bootstrap_instance_project | length > 0
+      - lxd_bootstrap_instance_project is match('^[a-z][a-z0-9_-]{0,62}$')
+      - lxd_bootstrap_instance_name is string
+      - lxd_bootstrap_instance_name | length > 0
+      # LXD instance names: lowercase alnum / hyphen, ≤63 chars.
+      - lxd_bootstrap_instance_name is match('^[a-z][a-z0-9-]{0,62}$')
+      - lxd_bootstrap_instance_type in ['container', 'virtual-machine']
+    fail_msg: >-
+      lxd_bootstrap_instance: project / name / type are malformed.
+      Project and name must be lowercase alnum (plus `-`/`_` for
+      project, `-` for name), start with a letter, ≤63 chars.
+
+- name: "lxd-bootstrap-instance | preflight | validate profiles list"
+  ansible.builtin.assert:
+    that:
+      - lxd_bootstrap_instance_profiles is sequence
+      - lxd_bootstrap_instance_profiles | length > 0
+      - (lxd_bootstrap_instance_profiles | map('string') | list)
+          | select('equalto', '') | list | length == 0
+    fail_msg: >-
+      lxd_bootstrap_instance: `lxd_bootstrap_instance_profiles` must
+      be a non-empty list of non-empty profile names.
+
+- name: "lxd-bootstrap-instance | preflight | validate image source"
+  ansible.builtin.assert:
+    that:
+      - lxd_bootstrap_instance_image_server is string
+      - lxd_bootstrap_instance_image_server is match('^https?://')
+      - lxd_bootstrap_instance_image_protocol in ['simplestreams', 'lxd']
+      - lxd_bootstrap_instance_image_alias is string
+      - lxd_bootstrap_instance_image_alias | length > 0
+    fail_msg: >-
+      lxd_bootstrap_instance: image source is malformed. Expect
+      http(s) server URL, protocol in {simplestreams, lxd}, non-empty
+      alias.
+
+- name: "lxd-bootstrap-instance | preflight | validate desired state + wait contract"
+  ansible.builtin.assert:
+    that:
+      - lxd_bootstrap_instance_state in ['started', 'stopped', 'absent']
+      - lxd_bootstrap_instance_wait_ipv4 is boolean
+      - lxd_bootstrap_instance_wait_timeout | int > 0
+    fail_msg: >-
+      lxd_bootstrap_instance: desired_state must be one of
+      {started, stopped, absent}; wait_ipv4 boolean;
+      wait_timeout positive integer.

@@ -1,0 +1,117 @@
+---
+# Create / patch LXD managed networks through the native REST API over
+# the snap unix socket. Networks live in the default project because
+# LXD refuses `bridge` type networks in non-default projects
+# ("Network type does not support non-default projects").
+#
+# LXD REST API reference:
+#   GET    /1.0/networks
+#   POST   /1.0/networks              body: {name, type, description, config}
+#   GET    /1.0/networks/<name>
+#   PATCH  /1.0/networks/<name>       body: {description, config}
+
+# ---------------------------------------------------------------------------
+# Step 1: fetch existing networks.
+# ---------------------------------------------------------------------------
+
+- name: "lxd-network-int-managed | networks | fetch existing network list"
+  ansible.builtin.uri:
+    url:         "http://localhost/1.0/networks"
+    unix_socket: "{{ lxd_network_int_managed_lxd_socket_path }}"
+    method:      GET
+    status_code: 200
+    return_content: true
+  register: _lxd_network_int_managed_list_register
+  changed_when: false
+
+- name: "lxd-network-int-managed | networks | derive existing network names"
+  # basename is the path-tail filter — stable across Jinja versions.
+  ansible.builtin.set_fact:
+    _lxd_network_int_managed_existing: >-
+      {{
+        (_lxd_network_int_managed_list_register.json.metadata | default([]))
+        | map('basename') | list
+      }}
+
+# ---------------------------------------------------------------------------
+# Step 2: create missing networks. All config values are stringified —
+# LXD rejects JSON booleans / ints on keys it expects as strings.
+# ---------------------------------------------------------------------------
+
+- name: "lxd-network-int-managed | networks | create missing network"
+  ansible.builtin.uri:
+    url:         "http://localhost/1.0/networks"
+    unix_socket: "{{ lxd_network_int_managed_lxd_socket_path }}"
+    method:      POST
+    status_code: [200, 201]
+    body_format: json
+    body:
+      name:        "{{ item.name }}"
+      type:        "{{ item.type | default('bridge') }}"
+      description: "{{ item.description | default('') }}"
+      config: >-
+        {{
+          dict(
+            item.config | dict2items | map(attribute='key') | list
+            | zip(item.config | dict2items | map(attribute='value') | map('string') | list)
+          )
+        }}
+  loop: "{{ lxd_network_int_managed_networks }}"
+  loop_control:
+    label: "{{ item.name }}"
+  when: item.name not in _lxd_network_int_managed_existing
+  changed_when: true
+  register: _lxd_network_int_managed_create_register
+
+# ---------------------------------------------------------------------------
+# Step 3: drift correction on already-existing networks. Unlike storage
+# pools, network config is safe to PATCH in place (LXD re-applies RA /
+# DHCP settings without a hard reset of attached instances as long as
+# IPAM does not change).
+# ---------------------------------------------------------------------------
+
+- name: "lxd-network-int-managed | networks | fetch live config for existing networks"
+  ansible.builtin.uri:
+    url:         "http://localhost/1.0/networks/{{ item.name }}"
+    unix_socket: "{{ lxd_network_int_managed_lxd_socket_path }}"
+    method:      GET
+    status_code: 200
+    return_content: true
+  loop: "{{ lxd_network_int_managed_networks }}"
+  loop_control:
+    label: "{{ item.name }}"
+  when: item.name in _lxd_network_int_managed_existing
+  register: _lxd_network_int_managed_show_register
+  changed_when: false
+
+- name: "lxd-network-int-managed | networks | patch drifted networks"
+  ansible.builtin.uri:
+    url:         "http://localhost/1.0/networks/{{ item.item.name }}"
+    unix_socket: "{{ lxd_network_int_managed_lxd_socket_path }}"
+    method:      PATCH
+    status_code: [200]
+    body_format: json
+    body:
+      description: "{{ item.item.description | default('') }}"
+      config: >-
+        {{
+          dict(
+            item.item.config | dict2items | map(attribute='key') | list
+            | zip(item.item.config | dict2items | map(attribute='value') | map('string') | list)
+          )
+        }}
+  loop: "{{ _lxd_network_int_managed_show_register.results | default([]) }}"
+  loop_control:
+    label: "{{ item.item.name }}"
+  when:
+    - not (item.skipped | default(false))
+    - (
+        dict(
+          item.item.config | dict2items | map(attribute='key') | list
+          | zip(item.item.config | dict2items | map(attribute='value') | map('string') | list)
+        ) | dict2items
+      )
+      | difference((item.json.metadata.config | default({})) | dict2items)
+      | length > 0
+  changed_when: true
+  register: _lxd_network_int_managed_patch_register

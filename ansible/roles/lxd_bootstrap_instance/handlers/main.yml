@@ -1,0 +1,7 @@
+---
+# Handlers contract (plan §2.6.4): reactive only. Profile / image /
+# config changes through community.general.lxd_container propagate via
+# the module itself (start/stop/restart lifecycle is parametrised as
+# `state:` inputs, not handler fires). Placeholder so future reactive
+# behaviour lands in the canonical location rather than being invented
+# in tasks/.

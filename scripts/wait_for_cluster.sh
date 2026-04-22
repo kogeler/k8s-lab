@@ -2,7 +2,7 @@
 #
 # Wait for a Kubernetes API endpoint to become usable.
 #
-# Consumed by later phases (plan §12, Phase 5.05 and §13.2 local E2E) after
+# Consumed by later phases (plan §16.8+ (Phase 4+), §17.8 (Phase 5.05), §10.2 (local E2E)) after
 # a target workload/management cluster kubeconfig has been materialized.
 #
 # Usage:

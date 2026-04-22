@@ -1,0 +1,89 @@
+---
+# Input validation for lxd_profiles (plan §2.6.2).
+
+- name: "lxd-profiles | preflight | gather facts"
+  ansible.builtin.setup:
+    gather_subset:
+      - "!all"
+      - "!any"
+      - min
+  when: ansible_facts['os_family'] is not defined
+
+- name: "lxd-profiles | preflight | target OS is Debian 13+"
+  ansible.builtin.assert:
+    that:
+      - ansible_facts['os_family'] == 'Debian'
+      - ansible_facts['distribution'] == 'Debian'
+      - (ansible_facts['distribution_major_version'] | int) >= 13
+    fail_msg: >-
+      lxd_profiles only targets Debian 13 Trixie or newer; detected
+      {{ ansible_facts['distribution'] | default('?') }}
+      {{ ansible_facts['distribution_version'] | default('?') }}.
+
+- name: "lxd-profiles | preflight | validate socket URI"
+  ansible.builtin.assert:
+    that:
+      - lxd_profiles_lxd_socket_uri is string
+      - lxd_profiles_lxd_socket_uri is match('^unix:/')
+    fail_msg: >-
+      lxd_profiles: `lxd_profiles_lxd_socket_uri` must be a
+      `unix:<absolute path>` URI — the community.general.lxd_profile
+      module expects this form (got
+      "{{ lxd_profiles_lxd_socket_uri | default('') }}").
+
+- name: "lxd-profiles | preflight | validate project name"
+  ansible.builtin.assert:
+    that:
+      - lxd_profiles_project is string
+      - lxd_profiles_project | length > 0
+      - lxd_profiles_project is match('^[a-z][a-z0-9_-]{0,62}$')
+    fail_msg: >-
+      lxd_profiles: `lxd_profiles_project` must be a non-empty LXD
+      project name.
+
+- name: "lxd-profiles | preflight | validate shared targets"
+  ansible.builtin.assert:
+    that:
+      - lxd_profiles_storage_pool is string and lxd_profiles_storage_pool | length > 0
+      - lxd_profiles_internal_network is string and lxd_profiles_internal_network | length > 0
+      - lxd_profiles_external_bridge is string and lxd_profiles_external_bridge | length > 0
+      - lxd_profiles_internal_ifname is string and lxd_profiles_internal_ifname | length > 0
+      - lxd_profiles_external_ifname is string and lxd_profiles_external_ifname | length > 0
+    fail_msg: >-
+      lxd_profiles: storage_pool / internal_network / external_bridge
+      / internal_ifname / external_ifname must all be non-empty
+      strings.
+
+- name: "lxd-profiles | preflight | profiles list is a non-empty list"
+  ansible.builtin.assert:
+    that:
+      - lxd_profiles_profiles is sequence
+      - lxd_profiles_profiles | length > 0
+    fail_msg: >-
+      lxd_profiles: `lxd_profiles_profiles` must be a non-empty list.
+
+- name: "lxd-profiles | preflight | every profile has a valid shape"
+  ansible.builtin.assert:
+    that:
+      - item.name is string
+      - item.name | length > 0
+      - item.name is match('^[a-z][a-z0-9_-]{0,62}$')
+      - (item.config | default({})) is mapping
+      - (item.devices | default({})) is mapping
+    fail_msg: >-
+      lxd_profiles: profile entry {{ item | default({}) }} is invalid.
+      Each profile must have a non-empty `name` (lowercase alnum / `_`
+      / `-`, start with a letter) and optional `config` / `devices`
+      mappings.
+  loop: "{{ lxd_profiles_profiles }}"
+  loop_control:
+    label: "{{ item.name | default('<unnamed>') }}"
+
+- name: "lxd-profiles | preflight | profile names are unique"
+  ansible.builtin.assert:
+    that:
+      - (lxd_profiles_profiles | map(attribute='name') | list) | unique | length
+          == lxd_profiles_profiles | length
+    fail_msg: >-
+      lxd_profiles: duplicate profile names in
+      `lxd_profiles_profiles`. Names must be unique per project.

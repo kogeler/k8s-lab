@@ -1,0 +1,108 @@
+---
+# ==========================================================================
+# lxd_project — role defaults
+# ==========================================================================
+#
+# Purpose (plan §13.3): create and configure the k8s-lab LXD project
+# (`capi-lab` by default). Owns only the project object — storage pools,
+# managed networks, profiles and instances inside the project are managed
+# by dedicated roles.
+#
+# Public contract (plan §2.6.2): every variable exposed to callers is
+# prefixed `lxd_project_*`. Internal / derived facts use `_lxd_project_*`
+# and must stay inside the role.
+
+# -- General ---------------------------------------------------------------
+
+# Whole-role toggle. When false, preflight still runs (to catch inputs
+# that are coherent across roles) but no mutating task is applied.
+lxd_project_enabled: true
+
+# Project identity. The name is part of the inter-role contract (plan §8
+# `global.project_name`) — lxd_storage_pools, lxd_network_int_managed and
+# lxd_profiles all consume it via `lxd_project_name` to stay pinned to the
+# same scope.
+lxd_project_name:        "capi-lab"
+lxd_project_description: "k8s-lab — CAPN substrate project"
+
+# Path to the LXD unix socket used by ansible.builtin.uri to talk the
+# LXD REST API directly. Bare filesystem path (not a `unix:` URI);
+# overridable for non-snap hosts without touching the tasks.
+lxd_project_lxd_socket_path: "/var/snap/lxd/common/lxd/unix.socket"
+
+# -- Feature isolation -----------------------------------------------------
+#
+# Per plan §2.3, lab assets must not leak into the host's `default`
+# project. LXD projects isolate resources per-feature: when a feature is
+# "true" the project owns its own copy, when "false" the project shares
+# the `default` project's copy (read-only).
+#
+# `networks`/`networks.zones` are intentionally FALSE, not true. LXD
+# only supports `physical` and `ovn` network types in non-default
+# projects — a `bridge` type network (which is what lxd_network_int_managed
+# creates) simply cannot live inside capi-lab and is rejected at the API
+# layer with "Network type does not support non-default projects". With
+# features.networks=false, capi-lab inherits the default project's
+# networks read-only, which is enough for profiles / instances inside
+# capi-lab to reference `capi-int` even though the bridge itself is
+# scoped to default. `features.networks.zones` must track
+# `features.networks` (LXD requires the pair to be consistent).
+lxd_project_features:
+  images:             true
+  profiles:           true
+  networks:           false
+  networks.zones:     false
+  storage.volumes:    true
+  storage.buckets:    true
+
+# -- Project restrictions --------------------------------------------------
+#
+# `restricted=true` turns on a positive allow-list for sensitive features
+# (plan §2.3). Unrestricted projects can do anything the host can — we
+# want explicit opt-in for nesting and managed disk devices only.
+lxd_project_restricted: true
+
+# Keys MUST begin with `restricted.` (preflight asserts this). Values are
+# strings because the LXD API stores config as strings.
+#
+# - restricted.containers.nesting=allow
+#     Kubernetes nodes need nesting for kubelet/containerd/CRI; the
+#     unprivileged kubeadm profile (plan §13.6) does not work without it.
+# - restricted.containers.privilege=unprivileged
+#     Hard-block privileged containers in this project — plan §2.8
+#     fixes `v1.0` on the unprivileged path only.
+# - restricted.devices.disk=managed
+#     Allow disk devices pointed at LXD-managed storage pool volumes
+#     (capi-fast). Host-path bind-mounts would be `allow`; we do not
+#     want that in lab substrate.
+# - restricted.devices.nic=allow
+#     Deliberately NOT "managed". LXD defines "managed nic" as one
+#     that references a LXD-managed network via `network:`. The k8s
+#     external plane (plan §4–5) attaches through a host-level Linux
+#     bridge (`br-ext6` owned by lxd_host), which LXD classifies as
+#     "unmanaged" — using "managed" here rejects the `capi-controlplane`
+#     / `capi-worker` profiles' eth1 device with "Only managed network
+#     devices are allowed". Wrapping br-ext6 in a LXD-managed bridge
+#     via bridge.external_interfaces is an option for a later iteration
+#     but adds non-trivial complexity; for Stage 1 we trade nic-level
+#     restriction for the straight host-bridge path and rely on the
+#     other restrictions (privilege, disk) plus project isolation to
+#     keep the lab contained.
+lxd_project_restrictions:
+  restricted.containers.nesting:   "allow"
+  restricted.containers.privilege: "unprivileged"
+  restricted.devices.disk:         "managed"
+  restricted.devices.nic:          "allow"
+  # Allow "low-level" config on profiles / instances. Without this,
+  # a restricted project rejects `linux.kernel_modules` (capi-
+  # controlplane / capi-worker), `raw.lxc.*` (CAPN kubeadm full
+  # tuning), and a handful of security.syscalls.intercept.* keys.
+  # Setting to "allow" lets Kubernetes-node profiles carry the kernel
+  # module list and the lxc overrides they need. `managed` is not a
+  # valid value here — LXD accepts only `allow` or `block`.
+  restricted.containers.lowlevel:  "allow"
+
+# -- Flow control (plan §2.6.3) -------------------------------------------
+#
+# Coarse-grained only. No per-task switches.
+lxd_project_flow_control_project: true

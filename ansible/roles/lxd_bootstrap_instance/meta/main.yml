@@ -1,0 +1,26 @@
+---
+galaxy_info:
+  role_name: lxd_bootstrap_instance
+  namespace: k8slab
+  author: k8s-lab contributors
+  description: >-
+    Create and start the LXC bootstrap container (capi-bootstrap-0 by
+    default) inside the capi-lab project (plan §13.7). Applies the
+    base + bootstrap profiles; k3s / clusterctl / capn secrets are
+    owned by dedicated Phase 4 roles.
+  license: MIT
+  min_ansible_version: "2.16"
+  platforms:
+    - name: Debian
+      versions:
+        - trixie
+  galaxy_tags:
+    - kubernetes
+    - lxd
+    - bootstrap
+
+dependencies:
+  # lxd_profiles brings the full substrate chain (lxd_storage_pools,
+  # lxd_network_int_managed, lxd_project, lxd_host, base_system) in
+  # transitively — plan §2.6.5 bans restating them here.
+  - role: lxd_profiles

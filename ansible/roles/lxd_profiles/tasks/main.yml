@@ -1,0 +1,27 @@
+---
+# Dispatcher-only (plan §2.6.2).
+
+- name: "lxd-profiles | preflight"
+  ansible.builtin.include_tasks:
+    file: preflight.yml
+    apply:
+      tags: [lxd_profiles, lxd-profiles, lxd_profiles_preflight]
+  tags: [lxd_profiles, lxd-profiles, lxd_profiles_preflight]
+
+- name: "lxd-profiles | config | profiles"
+  ansible.builtin.include_tasks:
+    file: profiles.yml
+    apply:
+      tags: [lxd_profiles, lxd-profiles, lxd_profiles_profiles]
+  when:
+    - lxd_profiles_enabled
+    - lxd_profiles_flow_control_profiles
+  tags: [lxd_profiles, lxd-profiles, lxd_profiles_profiles]
+
+- name: "lxd-profiles | healthchecks"
+  ansible.builtin.include_tasks:
+    file: healthchecks.yml
+    apply:
+      tags: [lxd_profiles, lxd-profiles, lxd_profiles_healthchecks]
+  when: lxd_profiles_enabled
+  tags: [lxd_profiles, lxd-profiles, lxd_profiles_healthchecks]

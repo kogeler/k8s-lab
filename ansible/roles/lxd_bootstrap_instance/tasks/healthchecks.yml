@@ -1,0 +1,68 @@
+---
+# Role-internal healthchecks: read the live instance state from LXD
+# via the native REST API and assert name / status / profiles / IP
+# presence. Catches silent module no-ops at converge time.
+
+- name: "lxd-bootstrap-instance | healthchecks | fetch live instance via REST"
+  ansible.builtin.uri:
+    url:         "http://localhost/1.0/instances/{{ lxd_bootstrap_instance_name }}?project={{ lxd_bootstrap_instance_project }}&recursion=1"
+    unix_socket: "/var/snap/lxd/common/lxd/unix.socket"
+    method:      GET
+    status_code: 200
+    return_content: true
+  register: _lxd_bootstrap_instance_health_show_register
+  changed_when: false
+
+- name: "lxd-bootstrap-instance | healthchecks | assert identity"
+  ansible.builtin.assert:
+    that:
+      - (_lxd_bootstrap_instance_health_show_register.json.metadata.name | default(''))
+          == lxd_bootstrap_instance_name
+      - (_lxd_bootstrap_instance_health_show_register.json.metadata.type | default(''))
+          == lxd_bootstrap_instance_type
+      - (_lxd_bootstrap_instance_health_show_register.json.metadata.project | default(''))
+          == lxd_bootstrap_instance_project
+      - (_lxd_bootstrap_instance_health_show_register.json.metadata.profiles | default([]))
+          == lxd_bootstrap_instance_profiles
+    fail_msg: >-
+      bootstrap instance identity mismatch —
+      name={{ _lxd_bootstrap_instance_health_show_register.json.metadata.name | default('?') }},
+      type={{ _lxd_bootstrap_instance_health_show_register.json.metadata.type | default('?') }},
+      project={{ _lxd_bootstrap_instance_health_show_register.json.metadata.project | default('?') }},
+      profiles={{ _lxd_bootstrap_instance_health_show_register.json.metadata.profiles | default([]) }}.
+
+- name: "lxd-bootstrap-instance | healthchecks | assert runtime status matches desired"
+  ansible.builtin.assert:
+    that:
+      - (_lxd_bootstrap_instance_health_show_register.json.metadata.status | default('')) == 'Running'
+    fail_msg: >-
+      bootstrap instance "{{ lxd_bootstrap_instance_name }}" is in
+      status
+      "{{ _lxd_bootstrap_instance_health_show_register.json.metadata.status | default('?') }}"
+      — expected "Running" when desired_state=started.
+  when: lxd_bootstrap_instance_state == 'started'
+
+- name: "lxd-bootstrap-instance | healthchecks | assert at least one IPv4 is present on any nic"
+  # Plan §4–5 requires a usable internal-plane IPv4 on the bootstrap
+  # container: bootstrap_k3s publishes the k3s API that way. state.network
+  # is keyed by guest ifname (eth0 for our base profile).
+  ansible.builtin.assert:
+    that:
+      - (
+          _lxd_bootstrap_instance_health_show_register.json.metadata.state.network | default({})
+        ) | dict2items
+        | map(attribute='value')
+        | map(attribute='addresses')
+        | map('default', [])
+        | flatten
+        | selectattr('family', 'equalto', 'inet')
+        | rejectattr('scope', 'equalto', 'local')
+        | list
+        | length > 0
+    fail_msg: >-
+      bootstrap instance "{{ lxd_bootstrap_instance_name }}" has no
+      non-link-local IPv4 on any nic. LXD state.network:
+      {{ _lxd_bootstrap_instance_health_show_register.json.metadata.state.network | default({}) }}.
+  when:
+    - lxd_bootstrap_instance_state == 'started'
+    - lxd_bootstrap_instance_wait_ipv4

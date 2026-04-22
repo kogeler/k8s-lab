@@ -1,0 +1,38 @@
+---
+# Create / update the k8s-lab LXD profiles inside the capi-lab project.
+# Uses the native community.general.lxd_profile module — unlike projects
+# (where the community module's diff logic silently dropped
+# features.* transitions, see lxd_project caveats), profile updates
+# are a simple PATCH of config + devices and the module propagates
+# them reliably.
+
+- name: "lxd-profiles | profiles | ensure profile present with config/devices"
+  community.general.lxd_profile:
+    # Pass the same URI in both slots: the module picks `url` first,
+    # then falls back to `snap_url`; setting both explicitly avoids
+    # surprises if the default of either changes upstream.
+    url:           "{{ lxd_profiles_lxd_socket_uri }}"
+    snap_url:      "{{ lxd_profiles_lxd_socket_uri }}"
+    project:       "{{ lxd_profiles_project }}"
+    name:          "{{ item.name }}"
+    description:   "{{ item.description | default('') }}"
+    state:         present
+    # LXD stores config values as strings on the wire. Stringify every
+    # value so the defaults list can use natural types if it ever adds
+    # non-string keys; today they are all strings already.
+    config: >-
+      {{
+        dict(
+          (item.config | default({})) | dict2items | map(attribute='key') | list
+          | zip(
+              (item.config | default({})) | dict2items
+              | map(attribute='value') | map('string') | list
+            )
+        )
+      }}
+    devices: "{{ item.devices | default({}) }}"
+    merge_profile: true
+  loop: "{{ lxd_profiles_profiles }}"
+  loop_control:
+    label: "{{ item.name }}"
+  register: _lxd_profiles_apply_register

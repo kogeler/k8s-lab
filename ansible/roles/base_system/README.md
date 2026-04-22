@@ -10,7 +10,7 @@ assumes — and nothing beyond it. It:
 * installs only the APT packages allowed by [plan §2.2][plan-22] — no
   custom APT repositories are added;
 * optionally installs `btrfs-progs` when the downstream storage pool
-  uses Btrfs (plan §8.5);
+  uses Btrfs (plan §13.4);
 * loads and persists the kernel modules needed by LXD/kubeadm node
   containers (`overlay`, `br_netfilter`, `nf_conntrack`);
 * applies a small set of sysctl knobs tuned for Kubernetes on LXD
@@ -87,9 +87,9 @@ a directory that silently falls back to the OS disk.
 | `base_system_btrfs_pool_fstype` | `btrfs` | Filesystem type expected at the mountpoint. |
 | `base_system_btrfs_pool_label` | `k8slab-lxdpool` | Filesystem label used by the canonical prepare step. |
 
-This is a deliberate, documented deviation from plan §8.1 (which scoped
-`base_system` to packages only). The deviation is logged in
-`PLAN-stage1-progress.md`.
+This is a deliberate, documented deviation from the original narrow
+packages-only scope of `base_system`. The deviation is logged inline in
+plan §13.1 (Step 1 notes).
 
 ## Tags
 
@@ -147,4 +147,4 @@ make -C tests/molecule base-system-delegated-test
   shim — the apt module already suppresses prompts and we do not want to
   normalise a shell-based pattern elsewhere.
 
-[plan-22]: ../../../PLAN-stage1.md
+[plan-22]: ../../../PLAN-stage1-common.md

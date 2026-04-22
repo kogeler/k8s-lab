@@ -1,0 +1,122 @@
+---
+# lxd_project verify — real runtime checks (plan §9.4, §2.6.5).
+# Reads the live project state from LXD and asserts every contract
+# the role owns actually took effect.
+
+- name: "Verify | lxd_project"
+  hosts: all
+  gather_facts: true
+  become: true
+  vars_files:
+    - "../shared/vars/common.yml"
+  vars:
+    # Pull expected values from the same inventory host_vars the role
+    # consumed. Defaults mirror the role's own defaults so a plain
+    # converge-without-overrides still has something to assert against.
+    _expected_project: "{{ lxd_project_name | default('capi-lab') }}"
+    # Features that must be isolated (project owns its own copy).
+    _expected_features_true:
+      - images
+      - profiles
+      - storage.volumes
+      - storage.buckets
+    # Features that must be inherited from default (project does not
+    # own them) — LXD rejects `bridge` networks in non-default projects,
+    # so networks live globally and capi-lab reads them through the
+    # inheritance chain.
+    _expected_features_false:
+      - networks
+      - networks.zones
+    _expected_restrictions:
+      restricted.containers.nesting:   "allow"
+      restricted.containers.privilege: "unprivileged"
+      restricted.devices.disk:         "managed"
+      # `nic: allow` not `managed` — see lxd_project defaults for why.
+      restricted.devices.nic:          "allow"
+      # Low-level config needed for kubeadm profiles
+      # (linux.kernel_modules, raw.lxc).
+      restricted.containers.lowlevel:  "allow"
+  tasks:
+    # ---- Project existence -----------------------------------------
+    - name: "Verify | lxd_project | lxc project list (json)"
+      ansible.builtin.command:
+        cmd: "/snap/bin/lxc project list --format json"
+      register: _verify_projlist_register
+      changed_when: false
+
+    - name: "Verify | lxd_project | parse project list"
+      ansible.builtin.set_fact:
+        _verify_projects: "{{ _verify_projlist_register.stdout | from_json }}"
+
+    - name: "Verify | lxd_project | assert project is in list"
+      ansible.builtin.assert:
+        that:
+          - _expected_project in (_verify_projects | map(attribute='name') | list)
+        fail_msg: >-
+          project "{{ _expected_project }}" missing from `lxc project
+          list`: {{ _verify_projects | map(attribute='name') | list }}.
+
+    # ---- Feature isolation ------------------------------------------
+    - name: "Verify | lxd_project | lxc project show (yaml)"
+      ansible.builtin.command:
+        cmd: "/snap/bin/lxc project show {{ _expected_project }}"
+      register: _verify_projshow_register
+      changed_when: false
+
+    - name: "Verify | lxd_project | parse project yaml"
+      ansible.builtin.set_fact:
+        _verify_project: "{{ _verify_projshow_register.stdout | from_yaml }}"
+
+    - name: "Verify | lxd_project | assert isolated features are true"
+      ansible.builtin.assert:
+        that:
+          - ((_verify_project.config | default({})).get('features.' + item) | string) == 'true'
+        fail_msg: >-
+          project feature `features.{{ item }}` expected "true" but LXD
+          reports
+          "{{ (_verify_project.config | default({})).get('features.' + item) | default('<unset>') }}".
+      loop: "{{ _expected_features_true }}"
+      loop_control:
+        label: "features.{{ item }}"
+
+    - name: "Verify | lxd_project | assert inherited features are false"
+      ansible.builtin.assert:
+        that:
+          - ((_verify_project.config | default({})).get('features.' + item) | string) == 'false'
+        fail_msg: >-
+          project feature `features.{{ item }}` expected "false" but
+          LXD reports
+          "{{ (_verify_project.config | default({})).get('features.' + item) | default('<unset>') }}".
+      loop: "{{ _expected_features_false }}"
+      loop_control:
+        label: "features.{{ item }}"
+
+    # ---- Restrictions ------------------------------------------------
+    - name: "Verify | lxd_project | assert restricted=true master flag"
+      ansible.builtin.assert:
+        that:
+          - ((_verify_project.config | default({})).get('restricted') | string) == 'true'
+        fail_msg: >-
+          project `restricted` master flag is not "true" — actual
+          "{{ (_verify_project.config | default({})).get('restricted') | default('<unset>') }}".
+
+    - name: "Verify | lxd_project | assert every restriction key matches"
+      ansible.builtin.assert:
+        that:
+          - ((_verify_project.config | default({})).get(item.key) | string) == item.value
+        fail_msg: >-
+          project restriction `{{ item.key }}` expected "{{ item.value }}"
+          but LXD reports
+          "{{ (_verify_project.config | default({})).get(item.key) | default('<unset>') }}".
+      loop: "{{ _expected_restrictions | dict2items }}"
+      loop_control:
+        label: "{{ item.key }}"
+
+    # ---- Ensure we did not damage the default project ---------------
+    - name: "Verify | lxd_project | assert default project still exists"
+      ansible.builtin.assert:
+        that:
+          - "'default' in (_verify_projects | map(attribute='name') | list)"
+        fail_msg: >-
+          default LXD project missing — role must not touch foreign
+          projects (plan §13.3 scope guard).

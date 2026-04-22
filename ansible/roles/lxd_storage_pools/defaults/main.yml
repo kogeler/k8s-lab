@@ -1,0 +1,59 @@
+---
+# ==========================================================================
+# lxd_storage_pools — role defaults
+# ==========================================================================
+#
+# Purpose (plan §13.4): create and configure LXD storage pools. Pools
+# themselves are global LXD objects; projects consume them through
+# restricted.devices.disk=managed (owned by lxd_project). This role
+# owns only the pool object — volumes, containers using the pool and
+# profile device references are owned by their respective roles.
+#
+# Public contract (plan §2.6.2): variables exposed to callers use the
+# `lxd_storage_pools_*` prefix. Internal / derived facts use the
+# `_lxd_storage_pools_*` prefix and must stay inside the role.
+
+# -- General ---------------------------------------------------------------
+
+# Whole-role toggle. When false, preflight still runs (to catch
+# inconsistent inputs) but no mutating task is applied.
+lxd_storage_pools_enabled: true
+
+# Path to the LXD unix socket used by ansible.builtin.uri to talk the
+# LXD REST API directly. Default points at the snap install path because
+# lxd_host installs LXD via snap. Note the form differs from
+# lxd_project's URI-style variable: `ansible.builtin.uri` expects a bare
+# filesystem path in its `unix_socket` option.
+lxd_storage_pools_lxd_socket_path: "/var/snap/lxd/common/lxd/unix.socket"
+
+# -- Pools to manage -------------------------------------------------------
+#
+# List of pool definitions. Each entry:
+#   name:        (required) pool name.
+#   driver:      (required) btrfs | dir | lvm | zfs.
+#   description: (optional) free-form description stored in LXD.
+#   config:      (required) dict of LXD storage pool config keys. `source`
+#                must be set to a block device, path or empty (loop-back)
+#                depending on driver semantics. All values must be strings
+#                — LXD stores config as strings on the wire.
+#
+# Default list is intentionally source-less: plan §8 marks
+# `storage.source` as required input, and a bad default would silently
+# point at the wrong host disk. Preflight fails the role when any pool
+# entry is missing a `config.source`.
+lxd_storage_pools_pools:
+  - name:        "capi-fast"
+    driver:      "btrfs"
+    description: "k8s-lab primary pool (btrfs on dedicated block device)"
+    config:
+      # Caller MUST override — preflight rejects empty `source`.
+      source: ""
+      # User-visible btrfs mount options. `user_subvol_rm_allowed` lets
+      # unprivileged namespaces delete their own subvolumes — needed for
+      # kubelet garbage collection inside CAPN nodes.
+      btrfs.mount_options: "user_subvol_rm_allowed"
+
+# -- Flow control (plan §2.6.3) -------------------------------------------
+#
+# Coarse-grained only.
+lxd_storage_pools_flow_control_pools: true

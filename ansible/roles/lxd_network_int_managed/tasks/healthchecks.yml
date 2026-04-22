@@ -1,0 +1,63 @@
+---
+# Role-internal healthchecks. Re-read each managed network from LXD
+# and assert type / status / every declared config key match the
+# desired contract. Catches silent no-ops at converge time.
+# Scenario verify.yml is the canonical acceptance surface.
+
+- name: "lxd-network-int-managed | healthchecks | fetch each managed network"
+  ansible.builtin.uri:
+    url:         "http://localhost/1.0/networks/{{ item.name }}"
+    unix_socket: "{{ lxd_network_int_managed_lxd_socket_path }}"
+    method:      GET
+    status_code: 200
+    return_content: true
+  loop: "{{ lxd_network_int_managed_networks }}"
+  loop_control:
+    label: "{{ item.name }}"
+  register: _lxd_network_int_managed_health_show_register
+  changed_when: false
+
+- name: "lxd-network-int-managed | healthchecks | assert type + status + managed"
+  ansible.builtin.assert:
+    that:
+      - (item.json.metadata.type | default('')) == (item.item.type | default('bridge'))
+      - (item.json.metadata.status | default('')) == 'Created'
+      - (item.json.metadata.managed | default(false)) == true
+    fail_msg: >-
+      network "{{ item.item.name }}" live state wrong:
+      type={{ item.json.metadata.type | default('?') }},
+      status={{ item.json.metadata.status | default('?') }},
+      managed={{ item.json.metadata.managed | default('?') }}.
+  loop: "{{ _lxd_network_int_managed_health_show_register.results }}"
+  loop_control:
+    label: "{{ item.item.name }}"
+
+# Flatten (network, key, value) triples — `subelements` does not
+# traverse dicts, so a pre-flatten keeps the assert itself simple.
+- name: "lxd-network-int-managed | healthchecks | build (net, key, value) triples"
+  ansible.builtin.set_fact:
+    _lxd_network_int_managed_health_triples: >-
+      {{
+        _lxd_network_int_managed_health_triples | default([])
+        + (
+          item.item.config | dict2items
+          | map('combine', {'net': item.item.name,
+                            'live': item.json.metadata.config | default({})})
+          | list
+        )
+      }}
+  loop: "{{ _lxd_network_int_managed_health_show_register.results }}"
+  loop_control:
+    label: "{{ item.item.name }}"
+
+- name: "lxd-network-int-managed | healthchecks | assert every declared config key matches live"
+  ansible.builtin.assert:
+    that:
+      - (item.live.get(item.key) | string) == (item.value | string)
+    fail_msg: >-
+      network "{{ item.net }}" config key "{{ item.key }}" expected
+      "{{ item.value }}" but LXD reports
+      "{{ item.live.get(item.key) | default('<unset>') }}".
+  loop: "{{ _lxd_network_int_managed_health_triples | default([]) }}"
+  loop_control:
+    label: "{{ item.net }}:{{ item.key }}"

@@ -1,0 +1,128 @@
+---
+# Create / update the LXD project and apply feature + restriction
+# policy. Native-first (plan §2.6.1): everything goes through
+# community.general.lxd_project.
+
+# ---------------------------------------------------------------------------
+# Step 1: normalise feature flags to the `features.<axis>` wire shape
+# LXD expects, with string "true"/"false" values. Defaults keep the
+# short axis names (`images`, `profiles`, …) for readability and we
+# prefix at wire time — it also lets callers drop an `axis: false` into
+# `lxd_project_features` without worrying about the exact API path.
+# ---------------------------------------------------------------------------
+
+- name: "lxd-project | project | normalise features to wire shape"
+  ansible.builtin.set_fact:
+    _lxd_project_features_cfg: >-
+      {{
+        _lxd_project_features_cfg | default({})
+        | combine({('features.' + item.key): (item.value | ternary('true', 'false'))})
+      }}
+  loop: "{{ lxd_project_features | dict2items }}"
+  loop_control:
+    label: "features.{{ item.key }}"
+
+# ---------------------------------------------------------------------------
+# Step 2: assemble the full config dict. Order of combine() matters: the
+# last source wins on key collision, so any restriction the caller sets
+# explicitly in `lxd_project_restrictions` overrides both features and
+# the `restricted` master flag (which cannot itself collide but keep the
+# order consistent with caller intent).
+# ---------------------------------------------------------------------------
+
+- name: "lxd-project | project | compose final config dict"
+  ansible.builtin.set_fact:
+    _lxd_project_config: >-
+      {{
+        _lxd_project_features_cfg
+        | combine({'restricted': (lxd_project_restricted | ternary('true', 'false'))})
+        | combine(lxd_project_restrictions)
+      }}
+
+# ---------------------------------------------------------------------------
+# Step 3: apply.
+#
+# Implementation drops the community.general.lxd_project module in
+# favour of ansible.builtin.uri against the LXD REST API:
+#
+#   POST   /1.0/projects         (create missing)
+#   PATCH  /1.0/projects/<name>  (merge config for existing)
+#
+# Rationale: the community module's diff logic between old / desired
+# config silently drops feature-flag transitions in our test (e.g.
+# flipping `features.networks` from true to false is accepted by LXD
+# when invoked via `lxc project set` but the module returns changed=0
+# without actually PATCHing). `uri` + REST gives us exact control over
+# the wire payload, matches how the rest of this repo talks to LXD
+# (lxd_storage_pools, lxd_network_int_managed) and is still a native
+# ansible module (plan §2.6.1).
+# ---------------------------------------------------------------------------
+
+- name: "lxd-project | project | fetch existing project list"
+  ansible.builtin.uri:
+    url:         "http://localhost/1.0/projects"
+    unix_socket: "{{ lxd_project_lxd_socket_path }}"
+    method:      GET
+    status_code: 200
+    return_content: true
+  register: _lxd_project_list_register
+  changed_when: false
+
+- name: "lxd-project | project | derive existing project names"
+  ansible.builtin.set_fact:
+    _lxd_project_existing: >-
+      {{
+        (_lxd_project_list_register.json.metadata | default([]))
+        | map('basename') | list
+      }}
+
+- name: "lxd-project | project | create when missing"
+  ansible.builtin.uri:
+    url:         "http://localhost/1.0/projects"
+    unix_socket: "{{ lxd_project_lxd_socket_path }}"
+    method:      POST
+    status_code: [200, 201]
+    body_format: json
+    body:
+      name:        "{{ lxd_project_name }}"
+      description: "{{ lxd_project_description }}"
+      config:      "{{ _lxd_project_config }}"
+  when: lxd_project_name not in _lxd_project_existing
+  changed_when: true
+  register: _lxd_project_create_register
+
+- name: "lxd-project | project | fetch live config when project already existed"
+  ansible.builtin.uri:
+    url:         "http://localhost/1.0/projects/{{ lxd_project_name }}"
+    unix_socket: "{{ lxd_project_lxd_socket_path }}"
+    method:      GET
+    status_code: 200
+    return_content: true
+  when: lxd_project_name in _lxd_project_existing
+  register: _lxd_project_show_register
+  changed_when: false
+
+- name: "lxd-project | project | patch when desired keys differ from live"
+  # PATCH only fires when at least one desired (key, value) pair does
+  # not already appear identically in live config. The PATCH body
+  # includes the full desired config — LXD merges on PATCH, so keys
+  # this role does NOT manage (LXD-set defaults, operator extras) are
+  # left alone.
+  ansible.builtin.uri:
+    url:         "http://localhost/1.0/projects/{{ lxd_project_name }}"
+    unix_socket: "{{ lxd_project_lxd_socket_path }}"
+    method:      PATCH
+    status_code: [200]
+    body_format: json
+    body:
+      description: "{{ lxd_project_description }}"
+      config:      "{{ _lxd_project_config }}"
+  when:
+    - lxd_project_name in _lxd_project_existing
+    - (_lxd_project_config | dict2items | list)
+      | difference(
+          (_lxd_project_show_register.json.metadata.config | default({})) | dict2items | list
+        )
+      | length > 0
+  changed_when: true
+  register: _lxd_project_patch_register

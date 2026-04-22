@@ -55,7 +55,7 @@
 
 # ---- LXD btrfs pool contract --------------------------------------------
 # Contract-only — base_system never formats or mounts the pool disk
-# (plan deviation note in PLAN-stage1-progress.md).
+# (deviation note lives inline in plan §13.1).
 
 - name: "base-system | preflight | btrfs pool | gather mounts"
   ansible.builtin.setup:

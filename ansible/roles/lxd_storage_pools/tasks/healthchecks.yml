@@ -1,0 +1,99 @@
+---
+# Role-internal healthchecks. Read each managed pool from LXD and
+# assert driver / config match the declared contract. Catches silent
+# no-ops (wrong socket, module version mismatch, etc.) at converge time.
+# Scenario verify.yml is the canonical acceptance surface.
+
+- name: "lxd-storage-pools | healthchecks | fetch each managed pool"
+  ansible.builtin.uri:
+    url:         "http://localhost/1.0/storage-pools/{{ item.name }}"
+    unix_socket: "{{ lxd_storage_pools_lxd_socket_path }}"
+    method:      GET
+    status_code: 200
+    return_content: true
+  loop: "{{ lxd_storage_pools_pools }}"
+  loop_control:
+    label: "{{ item.name }}"
+  register: _lxd_storage_pools_health_show_register
+  changed_when: false
+
+- name: "lxd-storage-pools | healthchecks | assert driver matches"
+  ansible.builtin.assert:
+    that:
+      - (item.json.metadata.driver | default('')) == item.item.driver
+    fail_msg: >-
+      pool "{{ item.item.name }}" reports driver
+      "{{ item.json.metadata.driver | default('?') }}" but was declared
+      as "{{ item.item.driver }}".
+  loop: "{{ _lxd_storage_pools_health_show_register.results }}"
+  loop_control:
+    label: "{{ item.item.name }}"
+
+- name: "lxd-storage-pools | healthchecks | assert status=Created"
+  ansible.builtin.assert:
+    that:
+      - (item.json.metadata.status | default('')) == 'Created'
+    fail_msg: >-
+      pool "{{ item.item.name }}" is in status
+      "{{ item.json.metadata.status | default('?') }}" — expected
+      "Created". Inspect `lxc storage show {{ item.item.name }}` to
+      debug.
+  loop: "{{ _lxd_storage_pools_health_show_register.results }}"
+  loop_control:
+    label: "{{ item.item.name }}"
+
+- name: "lxd-storage-pools | healthchecks | assert volatile.initial_source matches declared source"
+  # LXD replaces `config.source` with a UUID after first mount but keeps
+  # the original path under `config.volatile.initial_source` — compare
+  # against that to detect pools that got re-created on a different
+  # device since the last converge.
+  ansible.builtin.assert:
+    that:
+      - (item.json.metadata.config['volatile.initial_source'] | default(''))
+          == (item.item.config.source | string)
+    fail_msg: >-
+      pool "{{ item.item.name }}": volatile.initial_source is
+      "{{ item.json.metadata.config['volatile.initial_source'] | default('?') }}"
+      but role declares source "{{ item.item.config.source }}". Source
+      is a one-time creation parameter — if it needs to change, delete
+      and recreate the pool by hand.
+  loop: "{{ _lxd_storage_pools_health_show_register.results }}"
+  loop_control:
+    label: "{{ item.item.name }}"
+
+# Every key the role declares (except `source`, which LXD rewrites to a
+# UUID after first mount) must land unchanged in live config. Extra
+# LXD-set keys (size, volatile.*) are ignored.
+#
+# We flatten each (pool, key, value) triple into a single list first so
+# one loop covers everything — subelements/lookup('nested') work on
+# sub-lists but not on sub-dicts, which is why the pre-flatten step
+# below is explicit rather than inlined.
+- name: "lxd-storage-pools | healthchecks | build (pool, key, value) triples"
+  ansible.builtin.set_fact:
+    _lxd_storage_pools_health_triples: >-
+      {{
+        _lxd_storage_pools_health_triples | default([])
+        + (
+          item.item.config | dict2items
+          | rejectattr('key', 'equalto', 'source')
+          | map('combine', {'pool': item.item.name,
+                            'live': item.json.metadata.config | default({})})
+          | list
+        )
+      }}
+  loop: "{{ _lxd_storage_pools_health_show_register.results }}"
+  loop_control:
+    label: "{{ item.item.name }}"
+
+- name: "lxd-storage-pools | healthchecks | assert every declared config key matches live"
+  ansible.builtin.assert:
+    that:
+      - (item.live.get(item.key) | string) == (item.value | string)
+    fail_msg: >-
+      pool "{{ item.pool }}" config key "{{ item.key }}" expected
+      "{{ item.value }}" but LXD reports
+      "{{ item.live.get(item.key) | default('<unset>') }}".
+  loop: "{{ _lxd_storage_pools_health_triples | default([]) }}"
+  loop_control:
+    label: "{{ item.pool }}:{{ item.key }}"

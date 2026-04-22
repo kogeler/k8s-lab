@@ -5,7 +5,7 @@ Host-side preparation for running LXD on the k8s-lab stack.
 ## Purpose
 
 This role owns everything that lives on the host OS around LXD, but
-nothing that lives inside LXD (plan §8.3). Concretely it:
+nothing that lives inside LXD (plan §13.2). Concretely it:
 
 * installs the `lxd` snap and pins its channel (default `6/stable`,
   verified upstream per plan §2.11);
@@ -140,4 +140,4 @@ make -C tests/molecule lxd-host-delegated-test
   policy (plan §2.6.1).
 * Snap channel `6/stable` is a plan §2.11 deviation from Canonical's
   `5.21/stable` LTS recommendation. Rationale and rollback trigger are
-  recorded in `PLAN-stage1-progress.md`.
+  recorded inline in plan §8a (deviation note).

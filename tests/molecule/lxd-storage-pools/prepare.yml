@@ -1,0 +1,33 @@
+---
+# lxd_storage_pools scenario prepare.
+#
+# Two steps:
+#   1. Shared prepare — test deps, opt-root skeleton.
+#   2. Clean the dedicated LXD-pool disk — LXD formats the device in
+#      place with `mkfs.btrfs` (no -f), so any pre-existing filesystem
+#      signature (left over from e.g. a prior base_system scenario run
+#      that mounted btrfs at /var/lib/k8slab/lxd-pool) aborts the
+#      converge. Test-harness only; production hosts are expected to
+#      supply a clean disk via the installer image.
+#
+# `base_system`, `lxd_host` and `lxd_project` are NOT applied here —
+# they are declared as (transitive) meta dependencies of
+# lxd_storage_pools, so converge's `include_role: lxd_storage_pools`
+# pulls them in automatically (plan §2.6.5).
+
+- name: "Prepare | lxd_storage_pools"
+  hosts: all
+  gather_facts: true
+  become: true
+  vars:
+    _molecule_project_dir: "{{ lookup('ansible.builtin.env', 'MOLECULE_PROJECT_DIRECTORY') }}"
+  vars_files:
+    - "../shared/vars/common.yml"
+  tasks:
+    - name: "Prepare | lxd_storage_pools | shared base"
+      ansible.builtin.include_tasks:
+        file: "{{ _molecule_project_dir }}/shared/tasks/prepare.yml"
+
+    - name: "Prepare | lxd_storage_pools | clean pool disk"
+      ansible.builtin.include_tasks:
+        file: "{{ _molecule_project_dir }}/shared/tasks/prepare-clean-disk.yml"

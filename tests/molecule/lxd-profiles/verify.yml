@@ -1,0 +1,165 @@
+---
+# lxd_profiles verify — real runtime checks (plan §9.4).
+
+- name: "Verify | lxd_profiles"
+  hosts: all
+  gather_facts: true
+  become: true
+  vars_files:
+    - "../shared/vars/common.yml"
+  vars:
+    _socket_path: "/var/snap/lxd/common/lxd/unix.socket"
+    _project:     "capi-lab"
+    # Mirror the role's default contract here so verify asserts
+    # against a known expected surface rather than whatever the role
+    # happened to converge with.
+    _expected_profiles:
+      - name: "capi-base"
+        description_must_contain: "base profile"
+        required_devices:
+          - {name: "root", type: "disk", pool: "capi-fast", path: "/"}
+          - {name: "eth0", type: "nic", nictype: "bridged", parent: "capi-int"}
+        required_config: {}
+      - name: "capi-bootstrap"
+        description_must_contain: "bootstrap"
+        required_devices: []
+        required_config:
+          security.nesting:        "true"
+          security.privileged:     "false"
+          security.idmap.isolated: "true"
+      - name: "capi-controlplane"
+        description_must_contain: "control-plane"
+        required_devices:
+          - {name: "eth1", type: "nic", nictype: "bridged", parent: "br-ext6"}
+        required_config:
+          security.nesting:        "true"
+          security.privileged:     "false"
+          security.idmap.isolated: "true"
+      - name: "capi-worker"
+        description_must_contain: "worker"
+        required_devices:
+          - {name: "eth1", type: "nic", nictype: "bridged", parent: "br-ext6"}
+        required_config:
+          security.nesting:        "true"
+          security.privileged:     "false"
+          security.idmap.isolated: "true"
+  tasks:
+    # ---- Profile existence ------------------------------------------
+    - name: "Verify | lxd_profiles | list profiles in capi-lab"
+      ansible.builtin.uri:
+        url:         "http://localhost/1.0/profiles?project={{ _project }}"
+        unix_socket: "{{ _socket_path }}"
+        method:      GET
+        status_code: 200
+        return_content: true
+      register: _verify_list_register
+
+    - name: "Verify | lxd_profiles | derive profile names"
+      # LXD's /1.0/profiles?project=... returns URLs of the form
+      # `/1.0/profiles/<name>?project=<project>`. `urlsplit('path')`
+      # strips the query string; `basename` then takes the last path
+      # component.
+      ansible.builtin.set_fact:
+        _verify_profile_names: >-
+          {{
+            (_verify_list_register.json.metadata | default([]))
+            | map('urlsplit', 'path') | map('basename') | list
+          }}
+
+    - name: "Verify | lxd_profiles | assert every expected profile is present"
+      ansible.builtin.assert:
+        that:
+          - item.name in _verify_profile_names
+        fail_msg: >-
+          expected profile "{{ item.name }}" missing from live list
+          {{ _verify_profile_names }} (project {{ _project }}).
+      loop: "{{ _expected_profiles }}"
+      loop_control:
+        label: "{{ item.name }}"
+
+    # ---- Live state fetch ------------------------------------------
+    - name: "Verify | lxd_profiles | fetch live state per profile"
+      ansible.builtin.uri:
+        url:         "http://localhost/1.0/profiles/{{ item.name }}?project={{ _project }}"
+        unix_socket: "{{ _socket_path }}"
+        method:      GET
+        status_code: 200
+        return_content: true
+      loop: "{{ _expected_profiles }}"
+      loop_control:
+        label: "{{ item.name }}"
+      register: _verify_show_register
+
+    - name: "Verify | lxd_profiles | assert description contains expected token"
+      ansible.builtin.assert:
+        that:
+          - item.item.description_must_contain in (item.json.metadata.description | default(''))
+        fail_msg: >-
+          profile "{{ item.item.name }}" description should contain
+          "{{ item.item.description_must_contain }}" but LXD reports
+          "{{ item.json.metadata.description | default('') }}".
+      loop: "{{ _verify_show_register.results }}"
+      loop_control:
+        label: "{{ item.item.name }}"
+
+    # Flatten (profile, key, value) triples for config assertions.
+    - name: "Verify | lxd_profiles | build config triples"
+      ansible.builtin.set_fact:
+        _verify_config_triples: >-
+          {{
+            _verify_config_triples | default([])
+            + (
+              (item.item.required_config | default({})) | dict2items
+              | map('combine', {'profile': item.item.name,
+                                'live':    item.json.metadata.config | default({})})
+              | list
+            )
+          }}
+      loop: "{{ _verify_show_register.results }}"
+      loop_control:
+        label: "{{ item.item.name }}"
+
+    - name: "Verify | lxd_profiles | assert required config keys match"
+      ansible.builtin.assert:
+        that:
+          - (item.live.get(item.key) | string) == (item.value | string)
+        fail_msg: >-
+          profile "{{ item.profile }}" config key "{{ item.key }}"
+          expected "{{ item.value }}" but LXD reports
+          "{{ item.live.get(item.key) | default('<unset>') }}".
+      loop: "{{ _verify_config_triples | default([]) }}"
+      loop_control:
+        label: "{{ item.profile }}:{{ item.key }}"
+
+    # Flatten (profile, device_spec) pairs.
+    - name: "Verify | lxd_profiles | build device pair list"
+      ansible.builtin.set_fact:
+        _verify_device_pairs: >-
+          {{
+            _verify_device_pairs | default([])
+            + (
+              (item.item.required_devices | default([]))
+              | map('combine', {'profile':      item.item.name,
+                                'live_devices': item.json.metadata.devices | default({})})
+              | list
+            )
+          }}
+      loop: "{{ _verify_show_register.results }}"
+      loop_control:
+        label: "{{ item.item.name }}"
+
+    - name: "Verify | lxd_profiles | assert required device shape"
+      ansible.builtin.assert:
+        that:
+          - item.name in (item.live_devices.keys() | list)
+          - (item.live_devices[item.name].get('type', '')) == item.type
+          - (item.type != 'disk') or ((item.live_devices[item.name].get('path', '')) == item.path)
+          - (item.type != 'disk') or ((item.live_devices[item.name].get('pool', '')) == item.pool)
+          - (item.type != 'nic')  or ((item.live_devices[item.name].get('nictype', '')) == item.nictype)
+          - (item.type != 'nic')  or ((item.live_devices[item.name].get('parent', '')) == item.parent)
+        fail_msg: >-
+          profile "{{ item.profile }}" device "{{ item.name }}" missing
+          or mismatched. desired={{ item }} live={{ item.live_devices[item.name] | default('<missing>') }}.
+      loop: "{{ _verify_device_pairs | default([]) }}"
+      loop_control:
+        label: "{{ item.profile }}:{{ item.name }}"
