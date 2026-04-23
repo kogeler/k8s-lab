@@ -16,7 +16,7 @@
 #   3) Kubernetes Secret in `capn-system` — keys per CAPN identity-
 #      secret format: `server`, `server-crt`, `client-crt`,
 #      `client-key`, `project` (+ optional `clusterctl.cluster.x-k8s.io/move`
-#      label when `pivot_enabled=true` so `clusterctl move` carries it
+#      label when `k8s_lab_pivot_enabled=true` so `clusterctl move` carries it
 #      across).
 #
 # Public contract (plan §2.6.2): every variable exposed to callers is
@@ -44,7 +44,7 @@ bootstrap_capn_secret_lxd_project: "capi-lab"
 bootstrap_capn_secret_internal_network_name: "capi-int"
 
 # Host-side kubeconfig produced by the bootstrap_clusterctl chain.
-bootstrap_capn_secret_kubeconfig_path: "{{ bootstrap_capn_secret_opt_root | default('/opt/capi-lab') }}/etc/bootstrap_clusterctl/bootstrap.kubeconfig"
+bootstrap_capn_secret_kubeconfig_path: "{{ k8s_lab_opt_root | default('/opt/capi-lab') }}/etc/bootstrap_clusterctl/bootstrap.kubeconfig"
 
 # -- LXD HTTPS listener --------------------------------------------------
 #
@@ -65,7 +65,7 @@ bootstrap_capn_secret_lxd_https_bind_address: ""   # empty → auto
 
 # -- Client cert generation (community.crypto pipeline) -------------------
 
-bootstrap_capn_secret_staging_dir: "{{ bootstrap_capn_secret_opt_root | default('/opt/capi-lab') }}/etc/bootstrap_capn_secret"
+bootstrap_capn_secret_staging_dir: "{{ k8s_lab_opt_root | default('/opt/capi-lab') }}/etc/bootstrap_capn_secret"
 bootstrap_capn_secret_client_key_path:  "{{ bootstrap_capn_secret_staging_dir }}/client.key"
 bootstrap_capn_secret_client_csr_path:  "{{ bootstrap_capn_secret_staging_dir }}/client.csr"
 bootstrap_capn_secret_client_cert_path: "{{ bootstrap_capn_secret_staging_dir }}/client.crt"
@@ -92,20 +92,20 @@ bootstrap_capn_secret_trust_name: "k8slab-capn"
 #
 # Secret name coordinated with the Cluster CR's `identityRef.name` in
 # Phase 5+ (§17.4 / §17.5). Sources from the project-wide contract
-# variable `capi.infrastructure_secret_name` (plan §8) so a single
+# variable `k8s_lab_infrastructure_secret_name` (plan §8) so a single
 # global change keeps both ends — the Secret produced here AND the
 # Cluster CR identityRef downstream — in sync. Falls back to the CAPN
 # docs default ("incus-identity") for standalone runs.
-bootstrap_capn_secret_name: "{{ infrastructure_secret_name | default('incus-identity') }}"
+bootstrap_capn_secret_name: "{{ k8s_lab_infrastructure_secret_name | default('incus-identity') }}"
 
 # Whether `clusterctl.cluster.x-k8s.io/move: "true"` label is added.
-# Sources from the project-wide `global.pivot_enabled` (plan §8) so a
+# Sources from the project-wide `k8s_lab_pivot_enabled` (plan §8) so a
 # single global flag flip propagates: pivot ON → label present →
 # `clusterctl move` (plan §19) carries the Secret across to the
-# post-pivot management cluster. For MVP default (pivot_enabled=false)
+# post-pivot management cluster. For MVP default (k8s_lab_pivot_enabled=false)
 # the label is omitted; flipping the global and re-running the role
 # adds the label idempotently via server-side apply.
-bootstrap_capn_secret_pivot_enabled: "{{ pivot_enabled | default(false) }}"
+bootstrap_capn_secret_pivot_enabled: "{{ k8s_lab_pivot_enabled | default(false) }}"
 
 # Rendered Secret manifest staged on the host for ops audit. The
 # runtime apply path uses the in-memory definition, this file is

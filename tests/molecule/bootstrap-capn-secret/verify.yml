@@ -121,7 +121,7 @@
           Secret value drift. server={{ _verify_secret_data['server'] }},
           project={{ _verify_secret_data['project'] }}.
 
-    # ---- Pivot label discipline (default pivot_enabled=false) -------
+    # ---- Pivot label discipline (default k8s_lab_pivot_enabled=false) -------
     - name: "Verify | bootstrap_capn_secret | assert no pivot label by default"
       ansible.builtin.assert:
         that:
@@ -132,7 +132,7 @@
             ) | length == 0
         fail_msg: >-
           Secret unexpectedly carries `clusterctl.cluster.x-k8s.io/move`
-          label while pivot_enabled defaults to false.
+          label while k8s_lab_pivot_enabled defaults to false.
 
     # ---- TLS round-trip — server cert in Secret matches LXD's ------
     # Catches the foot-gun where someone ran `lxc remote ...` to

@@ -22,7 +22,7 @@
 lxd_project_enabled: true
 
 # Project identity. The name is part of the inter-role contract (plan §8
-# `global.project_name`) — lxd_storage_pools, lxd_network_int_managed and
+# `k8s_lab_project_name`) — lxd_storage_pools, lxd_network_int_managed and
 # lxd_profiles all consume it via `lxd_project_name` to stay pinned to the
 # same scope.
 lxd_project_name:        "capi-lab"

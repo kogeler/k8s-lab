@@ -47,7 +47,7 @@ bootstrap_clusterctl_instance_name: "capi-bootstrap-0"
 
 # Name of the container interface we read the IPv4 from when rewriting
 # the kubeconfig server URL. Matches lxd_bootstrap_instance's readiness
-# nic (plan §5.3 `guest_internal_ifname`).
+# nic (plan §5.3 `k8s_lab_guest_internal_ifname`).
 bootstrap_clusterctl_container_ifname: "eth0"
 
 # -- Host binary location -------------------------------------------------
@@ -64,7 +64,7 @@ bootstrap_clusterctl_clusterctl_path: "{{ bootstrap_clusterctl_host_bin_dir }}/c
 # across reruns: a re-render with unchanged inputs leaves staging files
 # byte-identical, so the role reports `changed=false` on the second
 # converge.
-bootstrap_clusterctl_staging_dir: "{{ bootstrap_clusterctl_opt_root | default('/opt/capi-lab') }}/etc/bootstrap_clusterctl"
+bootstrap_clusterctl_staging_dir: "{{ k8s_lab_opt_root | default('/opt/capi-lab') }}/etc/bootstrap_clusterctl"
 
 # Materialised host-side kubeconfig the role passes to clusterctl /
 # k8s_info via `kubeconfig:`. Mode 0600 — it carries an admin token.
@@ -85,10 +85,10 @@ bootstrap_clusterctl_staging_mode_config:     "0600"
 # -- CAPN provider pinning ------------------------------------------------
 
 # The CAPN release this lab runs. Defaults to the project-wide pin
-# `capn_provider_version` exported by the shared Molecule vars file
+# `k8s_lab_capn_provider_version` exported by the shared Molecule vars file
 # (plan §8a verified version log). Tunable for cherry-picking a
 # different release within the same lab contract.
-bootstrap_clusterctl_capn_version: "{{ capn_provider_version | default('v0.8.5') }}"
+bootstrap_clusterctl_capn_version: "{{ k8s_lab_capn_provider_version | default('v0.8.5') }}"
 
 # Upstream release manifest URL. clusterctl init fetches this on `init`,
 # expands it into Kubernetes objects and applies them. Tunable so an
@@ -100,7 +100,7 @@ bootstrap_clusterctl_capn_provider_url: >-
   https://github.com/lxc/cluster-api-provider-incus/releases/{{ bootstrap_clusterctl_capn_version }}/infrastructure-components.yaml
 
 # Enable the ClusterClass / managed topology workflow (plan §8
-# `capi.cluster_topology_enabled`). Surface as CLUSTER_TOPOLOGY=true on
+# `k8s_lab_cluster_topology_enabled`). Surface as CLUSTER_TOPOLOGY=true on
 # the clusterctl init env so the core controller comes up with the
 # feature gate enabled. Disabling this knob breaks the Phase 5+
 # topology-driven workflow; left tunable so consumers running their

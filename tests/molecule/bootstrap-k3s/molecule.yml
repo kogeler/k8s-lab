@@ -51,6 +51,18 @@ provisioner:
         # k3s first-boot pulls the bundled images; bump the poll budget.
         bootstrap_k3s_wait_retries: 90
         bootstrap_k3s_wait_delay:   4
+        # Publish the bootstrap k3s API on the host via an LXD proxy
+        # device (plan §16.5). Tests end-to-end reach from the VM's
+        # loopback through the userspace LXD proxy to the container's
+        # 127.0.0.1:6443, mirroring how an operator exposes the API to
+        # an off-host Terraform runner. `bind: host` keeps the LXD
+        # daemon as the listener owner — no nftables touched.
+        lxd_bootstrap_instance_devices:
+          k3s-api:
+            type:    "proxy"
+            listen:  "tcp:0.0.0.0:16443"
+            connect: "tcp:127.0.0.1:6443"
+            bind:    "host"
         ansible_host:                 "{{ lookup('env', 'K8SLAB_HOST_ADDR') }}"
         ansible_user:                 "{{ lookup('env', 'K8SLAB_HOST_USER') }}"
         ansible_port:                 "{{ lookup('env', 'K8SLAB_HOST_PORT') | int }}"

@@ -9,8 +9,8 @@
 # of update). Verification dates live inline in PLAN-stage1-common.md §8a.
 
 # --- Roots and project identity ---
-opt_root:     "/opt/capi-lab"
-project_name: "capi-lab"
+k8s_lab_opt_root:     "/opt/capi-lab"
+k8s_lab_project_name: "capi-lab"
 
 # --- Host policy (consumed by role lxd_host — plan §13.2) ---
 lxd_host_snap_channel:       "6/stable"
@@ -18,25 +18,25 @@ lxd_host_snap_refresh_mode:  "hold"
 lxd_host_snap_refresh_timer: "fri,03:00-04:00"
 
 # --- Networking (match libvirt-networks/ext6-mock.xml) ---
-uplink_interface:         "eth1"
-external_bridge_name:     "br-ext6"
-internal_network_name:    "capi-int"
-internal_ipv4_subnet:     "10.77.0.0/24"
-internal_ipv6_subnet:     "fd42:77:1::/64"
-external_ipv6_prefix:     "2001:db8:42:100::/64"
-external_node_ipv6_range: "2001:db8:42:100::10-2001:db8:42:100::3f"
-metallb_vip_range_v6:     "2001:db8:42:100::200-2001:db8:42:100::2ff"
+k8s_lab_uplink_interface:         "eth1"
+k8s_lab_external_bridge_name:     "br-ext6"
+k8s_lab_internal_network_name:    "capi-int"
+k8s_lab_internal_ipv4_subnet:     "10.77.0.0/24"
+k8s_lab_internal_ipv6_subnet:     "fd42:77:1::/64"
+k8s_lab_external_ipv6_prefix:     "2001:db8:42:100::/64"
+k8s_lab_external_node_ipv6_range: "2001:db8:42:100::10-2001:db8:42:100::3f"
+k8s_lab_metallb_vip_range_v6:     "2001:db8:42:100::200-2001:db8:42:100::2ff"
 
 # --- Binary pinning (latest stable, verified 2026-04-21) ---
-k3s_version:           "v1.35.3+k3s1"
-kubectl_version:       "v1.35.3"
-clusterctl_version:    "v1.12.5"
-capn_provider_version: "v0.8.5"
+k8s_lab_k3s_version:           "v1.35.3+k3s1"
+k8s_lab_kubectl_version:       "v1.35.3"
+k8s_lab_clusterctl_version:    "v1.12.5"
+k8s_lab_capn_provider_version: "v0.8.5"
 
 # --- Cluster identity ---
-management_cluster_name: "mgmt-1"
-workload_cluster_name:   "lab-default"
-kubernetes_version:      "v1.35.3"
+k8s_lab_management_cluster_name: "mgmt-1"
+k8s_lab_workload_cluster_name:   "lab-default"
+k8s_lab_kubernetes_version:      "v1.35.3"
 
 # --- LXD btrfs pool contract (shared across prepare + base_system) ---
 #
@@ -44,9 +44,9 @@ kubernetes_version:      "v1.35.3"
 # Molecule shared prepare formats it as btrfs and mounts it at the path
 # below. base_system's preflight then asserts the mount exists and is
 # btrfs when `base_system_btrfs_pool_required: true`.
-lxd_pool_device:     "/dev/disk/by-id/virtio-k8slab-lxdpool"
-lxd_pool_label:      "k8slab-lxdpool"
-lxd_pool_mountpoint: "/var/lib/k8slab/lxd-pool"
-lxd_pool_fstype:     "btrfs"
-lxd_pool_mkfs_opts:  ""
-lxd_pool_mount_opts: "defaults,noatime,space_cache=v2"
+k8s_lab_lxd_pool_device:     "/dev/disk/by-id/virtio-k8slab-lxdpool"
+k8s_lab_lxd_pool_label:      "k8slab-lxdpool"
+k8s_lab_lxd_pool_mountpoint: "/var/lib/k8slab/lxd-pool"
+k8s_lab_lxd_pool_fstype:     "btrfs"
+k8s_lab_lxd_pool_mkfs_opts:  ""
+k8s_lab_lxd_pool_mount_opts: "defaults,noatime,space_cache=v2"

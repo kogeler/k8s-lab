@@ -13,17 +13,17 @@
   vars_files:
     - "../shared/vars/common.yml"
   vars:
-    _bin_dir: "{{ opt_root }}/bin"
+    _bin_dir: "{{ k8s_lab_opt_root }}/bin"
     _binaries:
       - name:           "kubectl"
-        version_pin:    "{{ kubectl_version }}"
-        checksum_url:   "https://dl.k8s.io/release/{{ kubectl_version }}/bin/linux/amd64/kubectl.sha256"
+        version_pin:    "{{ k8s_lab_kubectl_version }}"
+        checksum_url:   "https://dl.k8s.io/release/{{ k8s_lab_kubectl_version }}/bin/linux/amd64/kubectl.sha256"
         checksum_style: "plain"
         checksum_entry: ""
         version_probe:
           argv: ["version", "--client=true", "--output=yaml"]
       - name:           "clusterctl"
-        version_pin:    "{{ clusterctl_version }}"
+        version_pin:    "{{ k8s_lab_clusterctl_version }}"
         # clusterctl releases ship no sha256 file — verify compares the
         # on-disk digest to the same pinned value the role consumes.
         # Keeping the digest in sync with defaults/main.yml is the
@@ -35,8 +35,8 @@
         version_probe:
           argv: ["version", "--output=yaml"]
       - name:           "k3s"
-        version_pin:    "{{ k3s_version }}"
-        checksum_url:   "https://github.com/k3s-io/k3s/releases/download/{{ k3s_version | urlencode }}/sha256sum-amd64.txt"
+        version_pin:    "{{ k8s_lab_k3s_version }}"
+        checksum_url:   "https://github.com/k3s-io/k3s/releases/download/{{ k8s_lab_k3s_version | urlencode }}/sha256sum-amd64.txt"
         checksum_style: "manifest"
         checksum_entry: "k3s"
         version_probe:

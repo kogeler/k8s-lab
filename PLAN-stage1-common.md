@@ -94,7 +94,7 @@ PLAN-stage1-8.md ................. §21..§23 (Stage 1 meta: out-of-scope, self-
   - §16.2. Role: `bootstrap_k3s`
   - §16.3. Role: `bootstrap_clusterctl`
   - §16.4. Role: `bootstrap_capn_secret`
-  - §16.5. Role: `bootstrap_api_publish`
+  - §16.5. Публикация bootstrap API (LXD proxy device, не отдельная роль)
   - §16.6. Role: `export_artifacts`
   - §16.7. Phase 3.5 execution
   - §16.8. Phase 4 execution
@@ -374,9 +374,12 @@ Phase 2):
 * **A role MUST NOT read or condition on variables using another
   role's `<other_role>_*` prefix.** Кросс-ролевая коммуникация идёт
   только через:
-  1. global contract переменные без role-префикса (§8, типа
-     `opt_root`, `uplink_interface`), которые являются stable
-     inter-role interface;
+  1. global contract переменные с проектным префиксом `k8s_lab_*`
+     (§8, напр. `k8s_lab_opt_root`, `k8s_lab_uplink_interface`),
+     которые являются stable inter-role interface. Naked globals без
+     `k8s_lab_` префикса запрещены (memory
+     `feedback_global_var_prefix.md`, 2026-04-23) — см. также §2.6.2;
+
   2. facts, публикуемые через `set_fact` + корректное именование
      `_<role>_<section>_<fact>`, если требуется передать runtime
      значение;
@@ -483,7 +486,7 @@ Phase 2):
 Следствие:
 
 * в этом repo agent должен строить код вокруг prebuilt kubeadm image path;
-* `install_kubeadm` по умолчанию должен быть `false`;
+* `k8s_lab_install_kubeadm` по умолчанию должен быть `false`;
 * риск использования evaluation-oriented CAPN images должен быть явно отмечен и не маскироваться под production-ready supply path.
 
 ## 2.11a. Политика «тестируй до коммита»
@@ -617,7 +620,7 @@ variable). Общие политики / contract / architecture — в
 
 ## 2.12. Политика HA для workload cluster add-ons
 
-`clusters.workload_controlplane_count` и `clusters.workload_worker_count`
+`k8s_lab_workload_controlplane_count` и `k8s_lab_workload_worker_count`
 по умолчанию = `2` именно для того, чтобы workload cluster был
 полноценной HA-площадкой, а не «1+1 расширенным single-node». Из
 этого следует обязательный контракт для всего, что Phase 5.1
@@ -634,7 +637,7 @@ variable). Общие политики / contract / architecture — в
     discovery service;
   * MetalLB speaker (`metallb-speaker`) и Calico node агент
     (`calico-node`), Flannel agent — это `DaemonSet`'ы; их replicas
-    «авто-2» приходит из факта `workload_worker_count = 2`,
+    «авто-2» приходит из факта `k8s_lab_workload_worker_count = 2`,
     отдельный override не нужен;
   * любой ingress-controller / cert-manager / external-dns /
     metrics-server / etc., если будет добавлен в этот pass — `replicas: 2`
@@ -664,7 +667,7 @@ variable). Общие политики / contract / architecture — в
 * **Распространение на mgmt cluster.** Mgmt cluster в default-
   топологии — `1+1`, поэтому HA-контракт там НЕ применяется
   автоматически. Если оператор поднимает mgmt с
-  `management_worker_count >= 2`, тот же replica-contract
+  `k8s_lab_management_worker_count >= 2`, тот же replica-contract
   активируется через Terraform-условие на `var.worker_count >= 2`.
 
 Этот контракт документируется и enforce'ится в §18.4 acceptance, и
@@ -679,7 +682,7 @@ test scope.
 
 ## 3.1. MVP / v1.0
 
-`pivot_enabled = false` по умолчанию.
+`k8s_lab_pivot_enabled = false` по умолчанию.
 
 Схема:
 
@@ -701,7 +704,7 @@ test scope.
 
 ## 3.2. Stage 2 / advanced
 
-`pivot_enabled = true`.
+`k8s_lab_pivot_enabled = true`.
 
 Схема:
 
@@ -962,7 +965,6 @@ repo/
       bootstrap_k3s/
       bootstrap_clusterctl/
       bootstrap_capn_secret/
-      bootstrap_api_publish/
       pivot_clusterctl_move/
       cleanup_bootstrap/
       export_artifacts/
@@ -1088,124 +1090,142 @@ Ansible roles — стандартная reusable единица для orchestr
 * test fixtures внутри этого repo могут использовать synthetic values;
 * concrete values для реальных окружений, secrets, overlays и tfvars должны задаваться в отдельных private consumer repos.
 
+Naming rule (memory `feedback_global_var_prefix.md`, 2026-04-23):
+every project-wide global carries the `k8s_lab_` prefix. Role-scoped
+variables keep their `<role_name>_*` prefix per §2.6.2. There is no
+third naming category — naked globals like `opt_root` or
+`api_publish_port` are banned because they collide silently with
+unrelated vars inherited from wider inventory.
+
+Variables are grouped below by logical section for readability
+(these are NOT namespaces in Ansible — the `_section_` fragment is
+part of the flat variable name; `k8s_lab_storage_pool_name` is a
+single identifier, not `k8s_lab.storage.pool_name`).
+
 ```yaml
-global:
-  opt_root: {type: string, default: "/opt/capi-lab"}
-  project_name: {type: string, default: "capi-lab"}
-  pivot_enabled: {type: bool, default: false}
+# ---- global ----
+k8s_lab_opt_root: {type: string, default: "/opt/capi-lab"}
+k8s_lab_project_name: {type: string, default: "capi-lab"}
+k8s_lab_pivot_enabled: {type: bool, default: false}
 
-capi:
-  infrastructure_secret_name: {type: string, default: "capn-identity"}
-  cluster_topology_enabled: {type: bool, default: true}
-  unprivileged_nodes: {type: bool, default: true}
+# ---- capi ----
+k8s_lab_infrastructure_secret_name: {type: string, default: "capn-identity"}
+k8s_lab_cluster_topology_enabled: {type: bool, default: true}
+k8s_lab_unprivileged_nodes: {type: bool, default: true}
 
-host:
-  distro: {type: string, default: "debian-13"}
-  # host.* lxd_host_* inputs are consumed by role lxd_host (plan §13.2).
-  lxd_host_snap_channel: {type: string, default: "6/stable"}          # verified 2026-04-21; plan §2.11 — newest feature-stable track
-  lxd_host_snap_refresh_mode: {type: string, default: "hold"}         # hold|timer
-  lxd_host_snap_refresh_timer: {type: string, default: "fri,03:00-04:00"}
+# ---- host ----
+k8s_lab_host_distro: {type: string, default: "debian-13"}
+# lxd_host_* inputs are consumed by role lxd_host (plan §13.2) and
+# already carry the role prefix — they are NOT globals and therefore
+# do NOT take a k8s_lab_ prefix.
+lxd_host_snap_channel: {type: string, default: "6/stable"}          # verified 2026-04-21; plan §2.11 — newest feature-stable track
+lxd_host_snap_refresh_mode: {type: string, default: "hold"}         # hold|timer
+lxd_host_snap_refresh_timer: {type: string, default: "fri,03:00-04:00"}
 
-storage:
-  pool_name: {type: string, default: "capi-fast"}
-  driver: {type: string, default: "btrfs"}
-  # `source` это путь к блочному устройству (/dev/disk/by-id/...),
-  # а не к mounted filesystem. LXD snap AppArmor-confined и не имеет
-  # доступа к произвольным host-путям вне /var/snap/lxd/common/.
-  # Для btrfs-driver'а LXD форматирует устройство через mkfs.btrfs
-  # без -f, поэтому device должен быть signature-free на первый
-  # converge — см. §13.4 implementation notes.
-  source: {type: string, required: true}
-  btrfs_mount_options: {type: string, default: "user_subvol_rm_allowed"}
+# ---- storage ----
+k8s_lab_storage_pool_name: {type: string, default: "capi-fast"}
+k8s_lab_storage_driver: {type: string, default: "btrfs"}
+# `source` это путь к блочному устройству (/dev/disk/by-id/...),
+# а не к mounted filesystem. LXD snap AppArmor-confined и не имеет
+# доступа к произвольным host-путям вне /var/snap/lxd/common/.
+# Для btrfs-driver'а LXD форматирует устройство через mkfs.btrfs
+# без -f, поэтому device должен быть signature-free на первый
+# converge — см. §13.4 implementation notes.
+k8s_lab_storage_source: {type: string, required: true}
+k8s_lab_storage_btrfs_mount_options: {type: string, default: "user_subvol_rm_allowed"}
 
-networking:
-  uplink_interface: {type: string, required: true}
-  external_bridge_name: {type: string, default: "br-ext6"}
-  internal_network_name: {type: string, default: "capi-int"}
-  internal_ipv4_subnet: {type: string, default: "10.77.0.0/24"}
-  internal_ipv6_subnet: {type: string, default: "fd42:77:1::/64"}
-  internal_ipv4_nat: {type: bool, default: true}
-  internal_ipv6_nat: {type: bool, default: true}
-  external_ipv6_prefix: {type: string, required: true}
-  external_node_ipv6_range: {type: string, required: true}
-  metallb_vip_range_v6: {type: string, required: true}
-  guest_internal_ifname: {type: string, default: "eth0"}
-  guest_external_ifname: {type: string, default: "eth1"}
-  external_ra_accept: {type: bool, default: true}
-  external_ra_use_gateway: {type: bool, default: false}
-  guest_network_backend: {type: string, default: "systemd-networkd"}
+# ---- networking ----
+k8s_lab_uplink_interface: {type: string, required: true}
+k8s_lab_external_bridge_name: {type: string, default: "br-ext6"}
+k8s_lab_internal_network_name: {type: string, default: "capi-int"}
+k8s_lab_internal_ipv4_subnet: {type: string, default: "10.77.0.0/24"}
+k8s_lab_internal_ipv6_subnet: {type: string, default: "fd42:77:1::/64"}
+k8s_lab_internal_ipv4_nat: {type: bool, default: true}
+k8s_lab_internal_ipv6_nat: {type: bool, default: true}
+k8s_lab_external_ipv6_prefix: {type: string, required: true}
+k8s_lab_external_node_ipv6_range: {type: string, required: true}
+k8s_lab_metallb_vip_range_v6: {type: string, required: true}
+k8s_lab_guest_internal_ifname: {type: string, default: "eth0"}
+k8s_lab_guest_external_ifname: {type: string, default: "eth1"}
+k8s_lab_external_ra_accept: {type: bool, default: true}
+k8s_lab_external_ra_use_gateway: {type: bool, default: false}
+k8s_lab_guest_network_backend: {type: string, default: "systemd-networkd"}
 
-bootstrap:
-  instance_name: {type: string, default: "capi-bootstrap-0"}
-  # Defaults track current upstream stable per plan §2.11; every bump
-  # records its verification date inline next to the pin. See §8a.
-  k3s_version: {type: string, default: "v1.35.3+k3s1"}         # verified 2026-04-21
-  kubectl_version: {type: string, default: "v1.35.3"}          # verified 2026-04-21
-  clusterctl_version: {type: string, default: "v1.12.5"}       # verified 2026-04-21
-  capn_provider_version: {type: string, default: "v0.8.5"}     # verified 2026-04-21
-  api_publish_port: {type: int, default: 16443}
-  api_publish_acl_mode: {type: string, default: "strict"}   # strict|local_harness_auto
-  allowed_source_ips: {type: list(string), default: []}     # required when api_publish_acl_mode=strict
+# ---- bootstrap ----
+k8s_lab_bootstrap_instance_name: {type: string, default: "capi-bootstrap-0"}
+# Defaults track current upstream stable per plan §2.11; every bump
+# records its verification date inline next to the pin. See §8a.
+k8s_lab_k3s_version: {type: string, default: "v1.35.3+k3s1"}         # verified 2026-04-21
+k8s_lab_kubectl_version: {type: string, default: "v1.35.3"}          # verified 2026-04-21
+k8s_lab_clusterctl_version: {type: string, default: "v1.12.5"}       # verified 2026-04-21
+k8s_lab_capn_provider_version: {type: string, default: "v0.8.5"}     # verified 2026-04-21
+# Внешняя публикация bootstrap API cluster'а, если нужна, делается
+# через LXD proxy device на инстансе bootstrap LXC — см. §16.5 + role
+# lxd_bootstrap_instance (parameter `lxd_bootstrap_instance_devices`).
+# Отдельных глобалов для этого не заведено: listen/connect/bind
+# передаются консумером в host_vars той роли, потому что это свойство
+# КОНКРЕТНОГО инстанса, а не project-wide контракт. Source-IP ACL на
+# хостовом файрволе в scope этого repo не входит (§11.4).
 
-images:
-  controlplane: {type: string, default: "capi:kubeadm/VERSION"}
-  worker: {type: string, default: "capi:kubeadm/VERSION"}
-  source_policy: {type: string, default: "capn-prebuilt"}   # capn-prebuilt|consumer-custom
-  controlplane_fingerprint: {type: string, default: ""}
-  worker_fingerprint: {type: string, default: ""}
+# ---- images ----
+k8s_lab_images_controlplane: {type: string, default: "capi:kubeadm/VERSION"}
+k8s_lab_images_worker: {type: string, default: "capi:kubeadm/VERSION"}
+k8s_lab_images_source_policy: {type: string, default: "capn-prebuilt"}   # capn-prebuilt|consumer-custom
+k8s_lab_images_controlplane_fingerprint: {type: string, default: ""}
+k8s_lab_images_worker_fingerprint: {type: string, default: ""}
 
-templates:
-  install_kubeadm: {type: bool, default: false}
-  controlplane_profiles: {type: list(string), default: ["capi-base", "capi-controlplane"]}
-  worker_profiles: {type: list(string), default: ["capi-base", "capi-worker"]}
-  controlplane_devices: {type: map(any), default: {}}
-  worker_devices: {type: map(any), default: {}}
-  idmap_isolated: {type: bool, default: true}
-  network_files_strategy: {type: string, default: "cabpk-files"}
-  patch_delivery_strategy: {type: string, default: "cabpk-files-plus-patches"}
+# ---- templates ----
+k8s_lab_install_kubeadm: {type: bool, default: false}
+k8s_lab_controlplane_profiles: {type: list(string), default: ["capi-base", "capi-controlplane"]}
+k8s_lab_worker_profiles: {type: list(string), default: ["capi-base", "capi-worker"]}
+k8s_lab_controlplane_devices: {type: map(any), default: {}}
+k8s_lab_worker_devices: {type: map(any), default: {}}
+k8s_lab_idmap_isolated: {type: bool, default: true}
+k8s_lab_network_files_strategy: {type: string, default: "cabpk-files"}
+k8s_lab_patch_delivery_strategy: {type: string, default: "cabpk-files-plus-patches"}
 
-cni:
-  workload_default: {type: string, default: "flannel"}   # flannel|calico
-  flannel_backend: {type: string, default: "vxlan"}
-  fallback_allowed: {type: bool, default: true}
+# ---- cni ----
+k8s_lab_cni_workload_default: {type: string, default: "flannel"}     # flannel|calico
+k8s_lab_cni_flannel_backend: {type: string, default: "vxlan"}
+k8s_lab_cni_fallback_allowed: {type: bool, default: true}
 
-addons:
-  # Defaults track current upstream stable per plan §2.11. Verification
-  # dates inline — §8a below compiles a single table.
-  helm_provider_version: {type: string, default: "3.1.1"}                                           # verified 2026-04-21
-  flannel_chart_repository: {type: string, default: "https://flannel-io.github.io/flannel"}
-  flannel_chart_name: {type: string, default: "flannel"}
-  flannel_chart_version: {type: string, default: "v0.28.4"}                                         # verified 2026-04-21
-  calico_chart_repository: {type: string, default: "https://docs.tigera.io/calico/charts"}
-  calico_chart_name: {type: string, default: "tigera-operator"}
-  calico_chart_version: {type: string, default: "v3.31.5"}                                          # verified 2026-04-21
-  metallb_chart_repository: {type: string, default: "https://metallb.github.io/metallb"}
-  metallb_chart_name: {type: string, default: "metallb"}
-  metallb_chart_version: {type: string, default: "0.15.3"}                                          # verified 2026-04-21
-  kube_proxy_nodeport_addresses: {type: list(string), default: []}  # derive from external IPv6 policy if empty
-  metallb_enabled: {type: bool, default: true}
-  metallb_interface: {type: string, default: "eth1"}
-  metallb_node_selector_labels: {type: map(string), default: {}}
-  metallb_wrapper_chart_path: {type: string, default: "charts/metallb-config"}
+# ---- addons ----
+# Defaults track current upstream stable per plan §2.11. Verification
+# dates inline — §8a below compiles a single table.
+k8s_lab_helm_provider_version: {type: string, default: "3.1.1"}                                           # verified 2026-04-21
+k8s_lab_flannel_chart_repository: {type: string, default: "https://flannel-io.github.io/flannel"}
+k8s_lab_flannel_chart_name: {type: string, default: "flannel"}
+k8s_lab_flannel_chart_version: {type: string, default: "v0.28.4"}                                         # verified 2026-04-21
+k8s_lab_calico_chart_repository: {type: string, default: "https://docs.tigera.io/calico/charts"}
+k8s_lab_calico_chart_name: {type: string, default: "tigera-operator"}
+k8s_lab_calico_chart_version: {type: string, default: "v3.31.5"}                                          # verified 2026-04-21
+k8s_lab_metallb_chart_repository: {type: string, default: "https://metallb.github.io/metallb"}
+k8s_lab_metallb_chart_name: {type: string, default: "metallb"}
+k8s_lab_metallb_chart_version: {type: string, default: "0.15.3"}                                          # verified 2026-04-21
+k8s_lab_kube_proxy_nodeport_addresses: {type: list(string), default: []}  # derive from external IPv6 policy if empty
+k8s_lab_metallb_enabled: {type: bool, default: true}
+k8s_lab_metallb_interface: {type: string, default: "eth1"}
+k8s_lab_metallb_node_selector_labels: {type: map(string), default: {}}
+k8s_lab_metallb_wrapper_chart_path: {type: string, default: "charts/metallb-config"}
 
-clusters:
-  management_cluster_name: {type: string, default: "mgmt-1"}
-  workload_cluster_name: {type: string, default: "lab-default"}
-  # Per plan §2.11: latest stable at time of pin. Workload/mgmt K8s version
-  # is separate from k3s bootstrap version because they solve different jobs.
-  kubernetes_version: {type: string, default: "v1.35.3"}           # verified 2026-04-21
-  # Topology defaults for the two CAPN-provisioned clusters. The mgmt
-  # cluster runs a 1+1 (single CP, single worker) — small footprint
-  # since add-ons + Terraform state live elsewhere on the runner. The
-  # workload cluster runs a 2+2 (HA control plane, two workers) so the
-  # local lab actually exercises multi-CP kubeadm reconciliation and
-  # MetalLB / Calico failover paths in §18.x. All four counts are
-  # tunable via Terraform vars on the corresponding fixture roots
-  # (§17.6) — they are NOT substrate-required.
-  management_controlplane_count: {type: int, default: 1}
-  management_worker_count:       {type: int, default: 1}
-  workload_controlplane_count:   {type: int, default: 2}
-  workload_worker_count:         {type: int, default: 2}
+# ---- clusters ----
+k8s_lab_management_cluster_name: {type: string, default: "mgmt-1"}
+k8s_lab_workload_cluster_name: {type: string, default: "lab-default"}
+# Per plan §2.11: latest stable at time of pin. Workload/mgmt K8s version
+# is separate from k3s bootstrap version because they solve different jobs.
+k8s_lab_kubernetes_version: {type: string, default: "v1.35.3"}           # verified 2026-04-21
+# Topology defaults for the two CAPN-provisioned clusters. The mgmt
+# cluster runs a 1+1 (single CP, single worker) — small footprint
+# since add-ons + Terraform state live elsewhere on the runner. The
+# workload cluster runs a 2+2 (HA control plane, two workers) so the
+# local lab actually exercises multi-CP kubeadm reconciliation and
+# MetalLB / Calico failover paths in §18.x. All four counts are
+# tunable via Terraform vars on the corresponding fixture roots
+# (§17.6) — they are NOT substrate-required.
+k8s_lab_management_controlplane_count: {type: int, default: 1}
+k8s_lab_management_worker_count:       {type: int, default: 1}
+k8s_lab_workload_controlplane_count:   {type: int, default: 2}
+k8s_lab_workload_worker_count:         {type: int, default: 2}
 ```
 
 ## 8a. Verified version log
@@ -1217,16 +1237,16 @@ Per §2.11, каждый pin внешней зависимости фиксир�
 
 | Компонент | Версия | Где используется | Дата проверки |
 | --- | --- | --- | --- |
-| Kubernetes (workload/mgmt) | `v1.35.3` | `clusters.kubernetes_version` | 2026-04-21 |
-| k3s (bootstrap) | `v1.35.3+k3s1` | `bootstrap.k3s_version` | 2026-04-21 |
-| kubectl | `v1.35.3` | `bootstrap.kubectl_version` | 2026-04-21 |
-| Cluster API (clusterctl) | `v1.12.5` | `bootstrap.clusterctl_version` | 2026-04-21 |
-| CAPN | `v0.8.5` | `bootstrap.capn_provider_version` | 2026-04-21 |
-| LXD snap channel | `6/stable` | `host.lxd_host_snap_channel` | 2026-04-21 |
-| Flannel chart | `v0.28.4` | `addons.flannel_chart_version` | 2026-04-21 |
-| Calico (tigera-operator) chart | `v3.31.5` | `addons.calico_chart_version` | 2026-04-21 |
-| MetalLB chart | `0.15.3` | `addons.metallb_chart_version` | 2026-04-21 |
-| Terraform helm provider | `3.1.1` | `addons.helm_provider_version` | 2026-04-21 |
+| Kubernetes (workload/mgmt) | `v1.35.3` | `k8s_lab_kubernetes_version` | 2026-04-21 |
+| k3s (bootstrap) | `v1.35.3+k3s1` | `k8s_lab_k3s_version` | 2026-04-21 |
+| kubectl | `v1.35.3` | `k8s_lab_kubectl_version` | 2026-04-21 |
+| Cluster API (clusterctl) | `v1.12.5` | `k8s_lab_clusterctl_version` | 2026-04-21 |
+| CAPN | `v0.8.5` | `k8s_lab_capn_provider_version` | 2026-04-21 |
+| LXD snap channel | `6/stable` | `lxd_host_snap_channel` | 2026-04-21 |
+| Flannel chart | `v0.28.4` | `k8s_lab_flannel_chart_version` | 2026-04-21 |
+| Calico (tigera-operator) chart | `v3.31.5` | `k8s_lab_calico_chart_version` | 2026-04-21 |
+| MetalLB chart | `0.15.3` | `k8s_lab_metallb_chart_version` | 2026-04-21 |
+| Terraform helm provider | `3.1.1` | `k8s_lab_helm_provider_version` | 2026-04-21 |
 | ansible.posix collection | `>=2.1.0` | `ansible/requirements.yml` | 2026-04-21 |
 | community.general collection | `>=12.6.0` | `ansible/requirements.yml` | 2026-04-21 |
 | community.crypto collection | `>=3.2.0` | `ansible/requirements.yml` | 2026-04-21 |
@@ -1389,7 +1409,7 @@ Libvirt network XML officially supports:
   с 5 правильными data keys (server URL = `https://10.77.x.x:8443`,
   project=capi-lab, корректные PEM bodies), `server-crt` byte-equal
   с live `/var/snap/lxd/common/lxd/server.crt`, отсутствие pivot
-  label при `pivot_enabled=false` (default).
+  label при `k8s_lab_pivot_enabled=false` (default).
 
 ### Integration-level
 
@@ -1413,7 +1433,7 @@ Libvirt network XML officially supports:
 
 * `e2e_local` — полный путь, включая повторение HA pair assertions
   §2.12 на финальном workload cluster после pivot (если
-  `pivot_enabled=true`).
+  `k8s_lab_pivot_enabled=true`).
 
 ### Molecule harness style contract
 
@@ -1535,19 +1555,38 @@ Backend strategy для реальных окружений определяет
 
 ## 11.4. Bootstrap API auth
 
-Не “голый порт”, а:
+Защита bootstrap Kubernetes API опирается на два уровня, оба находятся
+В SCOPE этого repo:
 
-* source-IP ACL на host,
-* Kubernetes API mTLS/kubeconfig,
-* LXD API auth отдельно через restricted TLS secret.
+* **Kubernetes API mTLS / kubeconfig** — API-server k3s всегда
+  требует клиентский сертификат. `.artifacts/bootstrap.kubeconfig`
+  несёт admin-cert, доступен только runner-у (mode 0600, gitignore).
+* **LXD API auth** — отдельно, через restricted TLS secret
+  (`capi-lab` project-scoped client cert). Реализует
+  `bootstrap_capn_secret` (§16.4); подтверждён CAPN identity-secret
+  format. ([capn.linuxcontainers.org][19])
 
-Правило интерпретации ACL:
+**Host firewall — ВНЕ scope этого repo.** Решения:
 
-* `allowed_source_ips=[]` не означает allow-all;
-* при `bootstrap.api_publish_acl_mode=strict` пустой список должен приводить к explicit failure;
-* auto-discovery источника допускается только в local harness mode и всё равно должна материализовать явный ACL.
-
-CAPN identity secret format and LXD restricted TLS auth support this exact model. ([capn.linuxcontainers.org][19])
+* В проде хостовой файрвол — собственность оператора (уже настроен
+  по корпоративным политикам); роль не имеет права туда писать, чтобы
+  не переопределить правила окружения и не оставить дыр при
+  destroy-фазе.
+* Любая внешняя публикация TCP-портов bootstrap-контейнера делается
+  через **LXD proxy device** типа `host` (userspace listener LXD
+  daemon'а на хосте → socket внутри инстанса). Этот механизм LXD
+  владеет полностью: создаётся через declarative
+  `lxd_bootstrap_instance_devices` (§13.7 `lxd_bootstrap_instance`),
+  удаляется при `lxc delete`, не оставляет висящих rules в
+  distro-owned nftables-таблицах.
+* Source-IP ACL на хостовом файрволе, если оператору нужен — это
+  задача внешних ролей consumer-repo (vendor-specific firewall
+  management), а не Stage 1 substrate.
+* Kubernetes API mTLS + LXD restricted TLS secret — достаточная
+  защита без source-IP фильтра: kubeconfig карается 0600 и не
+  коммитится; LXD identity secret scope'ится на project `capi-lab`,
+  даже скомпрометированный клиент не дотягивается до чужих
+  инстансов.
 
 ---
 
@@ -1595,7 +1634,7 @@ Mitigation:
 
 Mitigation:
 
-* `pivot_enabled=false` by default
+* `k8s_lab_pivot_enabled=false` by default
 
 ## 12.7. CAPN + Canonical LXD drift risk
 
@@ -1620,7 +1659,7 @@ Mitigation:
 
 * local harness may use `capi:kubeadm/VERSION` images for reproducibility
 * consumer repos should support custom image override and pinning
-* `install_kubeadm=true` does not become the implicit workaround path
+* `k8s_lab_install_kubeadm=true` does not become the implicit workaround path
 
 ---
 

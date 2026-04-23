@@ -7,16 +7,16 @@
 # role drives LXD to format the device (currently lxd_storage_pools).
 #
 # Inputs (from shared vars):
-#   lxd_pool_device      — /dev/disk/by-id/virtio-k8slab-lxdpool
-#   lxd_pool_mountpoint  — path mounted by prepare-btrfs-pool.yml (if ever)
+#   k8s_lab_lxd_pool_device      — /dev/disk/by-id/virtio-k8slab-lxdpool
+#   k8s_lab_lxd_pool_mountpoint  — path mounted by prepare-btrfs-pool.yml (if ever)
 
 - name: "Prepare | clean-disk | assert inputs"
   ansible.builtin.assert:
     that:
-      - lxd_pool_device is string
-      - lxd_pool_device | length > 0
-      - lxd_pool_mountpoint is string
-      - lxd_pool_mountpoint | length > 0
+      - k8s_lab_lxd_pool_device is string
+      - k8s_lab_lxd_pool_device | length > 0
+      - k8s_lab_lxd_pool_mountpoint is string
+      - k8s_lab_lxd_pool_mountpoint | length > 0
     fail_msg: "prepare-clean-disk.yml: lxd_pool_* inputs must be set"
 
 # Unmount + drop the fstab entry first: otherwise `wipefs` on a live
@@ -26,7 +26,7 @@
 # (unmount + remove fstab in one module call).
 - name: "Prepare | clean-disk | unmount + drop fstab entry"
   ansible.posix.mount:
-    path:    "{{ lxd_pool_mountpoint }}"
+    path:    "{{ k8s_lab_lxd_pool_mountpoint }}"
     state:   absent
   failed_when: false
 
@@ -38,6 +38,6 @@
 # the blast radius contained to the declared device.
 - name: "Prepare | clean-disk | wipefs -a"
   ansible.builtin.command:
-    cmd: "wipefs -a -f {{ lxd_pool_device }}"
+    cmd: "wipefs -a -f {{ k8s_lab_lxd_pool_device }}"
   register: _prepare_clean_disk_wipefs_register
   changed_when: _prepare_clean_disk_wipefs_register.stdout | length > 0

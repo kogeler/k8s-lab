@@ -34,8 +34,10 @@
       - binary_fetch_group | length > 0
       - binary_fetch_download_timeout | int > 0
     fail_msg: >-
-      binary_fetch: opt_root / bin_dir must be absolute paths, mode a
-      4-digit octal string, owner/group non-empty, timeout positive.
+      binary_fetch: binary_fetch_opt_root (sources from global
+      k8s_lab_opt_root) / binary_fetch_bin_dir must be absolute paths,
+      mode a 4-digit octal string, owner/group non-empty, timeout
+      positive.
 
 - name: "binary-fetch | preflight | validate architecture"
   ansible.builtin.assert:
@@ -88,7 +90,7 @@
       manifest entry must name the asset inside sha256sum-*.txt.
 
 - name: "binary-fetch | preflight | ensure bin dir exists"
-  # base_system already creates opt_root/bin; re-assert as a contract
+  # base_system already creates k8s_lab_opt_root/bin; re-assert as a contract
   # guard so binary_fetch fails loudly if the dep chain is broken.
   ansible.builtin.file:
     path:  "{{ binary_fetch_bin_dir }}"

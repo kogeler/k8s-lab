@@ -20,8 +20,11 @@ Out of scope:
 * `k3s`, `kubectl`, `clusterctl` binaries inside the container —
   owned by `binary_fetch` / `bootstrap_k3s` in later phases.
 * CAPN identity secret — owned by `bootstrap_capn_secret`.
-* Bootstrap API publication on the host — owned by
-  `bootstrap_api_publish`.
+* **Host firewall** — out-of-project-scope (plan §11.4). Consumers
+  that need external reach to the container's k3s API pass an LXD
+  proxy device through `lxd_bootstrap_instance_devices` (see
+  example below) — the role pipes that straight into
+  `community.general.lxd_container`'s `devices:` parameter.
 
 Implemented through the native `community.general.lxd_container`
 module. Diff-logic caveats that bit `lxd_project` earlier do not
@@ -87,7 +90,7 @@ as a public default is a footgun.
 | --- | --- | --- |
 | `lxd_bootstrap_instance_state` | `started` | Desired state: `started` / `stopped` / `absent`. |
 | `lxd_bootstrap_instance_wait_ready` | `true` | When true, the role polls LXD REST until `readiness_ifname` has a non-link-local IPv4 before returning. Replaces the previous `wait_ipv4` flag on `community.general.lxd_container` — see caveat below. |
-| `lxd_bootstrap_instance_readiness_ifname` | `eth0` | Name of the container-side nic the readiness gate polls. Plan §5.3 `guest_internal_ifname`. |
+| `lxd_bootstrap_instance_readiness_ifname` | `eth0` | Name of the container-side nic the readiness gate polls. Plan §5.3 `k8s_lab_guest_internal_ifname`. |
 | `lxd_bootstrap_instance_wait_timeout` | `120` | Shared wall-clock budget (seconds) for `community.general.lxd_container`'s `wait_for_container` AND the readiness poll (retries = `wait_timeout // 4`). |
 
 ### Flow control
@@ -122,6 +125,35 @@ Both `_` and `-` spellings accepted (plan §2.6.3):
         lxd_bootstrap_instance_extra_profiles:
           - "lab-diagnostics"
 ```
+
+### Publishing a container port outside the host
+
+Host firewall is out-of-project-scope (plan §11.4). Publication of
+a container TCP port to an address reachable from outside the host
+is done declaratively via an LXD proxy device passed through
+`lxd_bootstrap_instance_devices` — `community.general.lxd_container`
+applies it to the instance config through the LXD REST API. No
+nftables / iptables rules are written anywhere on the host:
+
+```yaml
+lxd_bootstrap_instance_devices:
+  k3s-api:
+    type:    proxy
+    # LXD daemon listens here (on the LXD host), forwarding every
+    # accepted connection into the container's socket below.
+    listen:  "tcp:0.0.0.0:16443"
+    connect: "tcp:127.0.0.1:6443"
+    # `bind: host` makes the listener live on the host; `bind: instance`
+    # flips that direction. `nat: true` would opt into LXD-managed
+    # kernel DNAT in LXD's own isolated nftables table (still doesn't
+    # touch distro-owned rules). Default `bind: host` is recommended.
+    bind:    host
+```
+
+If the operator needs source-IP ACL / rate limiting / TLS
+termination in front of the published port — that's an external
+firewall-management role (plan §11.4) — this repo does not own
+that layer.
 
 ## Testing
 

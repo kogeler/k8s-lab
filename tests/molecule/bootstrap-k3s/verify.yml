@@ -243,3 +243,123 @@
             }}
       register: _verify_strip_register
       changed_when: false
+
+    # ---- LXD proxy device publishes k3s API on the host (plan §16.5) ---
+    # molecule.yml host_vars adds a `k3s-api` proxy device with
+    # listen=tcp:0.0.0.0:16443 → connect=tcp:127.0.0.1:6443 bind=host.
+    # Assert that:
+    #   1) the device is present on the live instance config;
+    #   2) the LXD daemon owns a listening socket on :16443;
+    #   3) the k3s API is actually reachable through that listener by
+    #      materialising a kubeconfig with server= https://127.0.0.1:16443
+    #      and fetching the Node list via kubernetes.core.k8s_info.
+    # This is the opt-in publish path that replaced the removed
+    # `bootstrap_api_publish` role (Step 7, 2026-04-23).
+
+    - name: "Verify | bootstrap_k3s | fetch live instance config with devices"
+      ansible.builtin.uri:
+        url:         "http://localhost/1.0/instances/{{ _instance }}?project={{ _project }}"
+        unix_socket: "{{ _socket }}"
+        method:      GET
+        status_code: 200
+        return_content: true
+      register: _verify_instance_config_register
+
+    - name: "Verify | bootstrap_k3s | assert k3s-api proxy device present on instance"
+      ansible.builtin.assert:
+        that:
+          - (_verify_instance_config_register.json.metadata.devices | default({}))['k3s-api'] is defined
+          - (_verify_instance_config_register.json.metadata.devices['k3s-api'].type | default('')) == 'proxy'
+          - (_verify_instance_config_register.json.metadata.devices['k3s-api'].listen | default('')) == 'tcp:0.0.0.0:16443'
+          - (_verify_instance_config_register.json.metadata.devices['k3s-api'].connect | default('')) == 'tcp:127.0.0.1:6443'
+          - (_verify_instance_config_register.json.metadata.devices['k3s-api'].bind | default('')) == 'host'
+        fail_msg: >-
+          k3s-api proxy device missing or drifted on instance
+          {{ _instance }}. live devices=
+          {{ _verify_instance_config_register.json.metadata.devices | default({}) }}.
+
+    - name: "Verify | bootstrap_k3s | TCP probe host:16443 (proxy listener)"
+      ansible.builtin.wait_for:
+        host: "127.0.0.1"
+        port: 16443
+        state: started
+        timeout: 15
+
+    # ---- End-to-end: reach k3s API through the proxy listener ---------
+    # Pull the in-container admin kubeconfig, rewrite server URL to the
+    # host:16443 endpoint the proxy device publishes, and hand it to
+    # kubernetes.core.k8s_info. Success proves listener → connect()
+    # into container:6443 → kube-apiserver all line up.
+
+    - name: "Verify | bootstrap_k3s | pull in-container kubeconfig"
+      # `lxc file pull` shell fallback (plan §2.6.1): no native Ansible
+      # module covers cross-namespace file copy from an LXC instance
+      # over the host's unix socket. Output goes to a fixed staging
+      # path so a second verify run stays idempotent.
+      ansible.builtin.command:
+        argv:
+          - "/snap/bin/lxc"
+          - "file"
+          - "pull"
+          - "--project={{ _project }}"
+          - "{{ _instance }}/etc/rancher/k3s/k3s.yaml"
+          - "/tmp/bootstrap_k3s_verify.kubeconfig.raw"
+      changed_when: false
+
+    - name: "Verify | bootstrap_k3s | read raw kubeconfig body"
+      ansible.builtin.slurp:
+        src: "/tmp/bootstrap_k3s_verify.kubeconfig.raw"
+      register: _verify_proxy_kc_raw_register
+
+    - name: "Verify | bootstrap_k3s | rewrite server URL to host:16443"
+      ansible.builtin.set_fact:
+        _verify_proxy_kc_body: >-
+          {{
+            (_verify_proxy_kc_raw_register.content | b64decode | from_yaml)
+            | combine({
+                'clusters': (
+                  (_verify_proxy_kc_raw_register.content | b64decode | from_yaml).clusters
+                  | map('combine', {
+                      'cluster': {
+                        'server': 'https://127.0.0.1:16443'
+                      }
+                    }, recursive=True)
+                  | list
+                )
+              }, recursive=True)
+          }}
+
+    - name: "Verify | bootstrap_k3s | write rewritten probe kubeconfig"
+      ansible.builtin.copy:
+        content: "{{ _verify_proxy_kc_body | to_nice_yaml(indent=2) }}"
+        dest:    "/tmp/bootstrap_k3s_verify.kubeconfig"
+        owner:   "root"
+        group:   "root"
+        mode:    "0600"
+
+    - name: "Verify | bootstrap_k3s | list nodes via published port"
+      kubernetes.core.k8s_info:
+        kubeconfig:     "/tmp/bootstrap_k3s_verify.kubeconfig"
+        api_version:    "v1"
+        kind:           "Node"
+        validate_certs: false
+      register: _verify_proxy_api_nodes
+
+    - name: "Verify | bootstrap_k3s | assert API answered through proxy device"
+      ansible.builtin.assert:
+        that:
+          - (_verify_proxy_api_nodes.resources | length) > 0
+        fail_msg: >-
+          k3s API not reachable through the LXD proxy device at
+          https://127.0.0.1:16443. Expected a Node list via the
+          published listener; got empty response. Check `lxc config
+          device show {{ _instance }} k3s-api` and `ss -tnlp | grep 16443`
+          on the host.
+
+    - name: "Verify | bootstrap_k3s | cleanup probe kubeconfig + raw"
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - "/tmp/bootstrap_k3s_verify.kubeconfig"
+        - "/tmp/bootstrap_k3s_verify.kubeconfig.raw"

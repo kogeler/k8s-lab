@@ -32,9 +32,10 @@
       - base_system_opt_mode is match('^0[0-7]{3}$')
       - base_system_apt_cache_valid_time | int >= 0
     fail_msg: >-
-      base_system: invalid public inputs — opt_root must be absolute,
-      opt_mode must be a 4-digit octal string, apt_cache_valid_time
-      must be a non-negative integer.
+      base_system: invalid public inputs — base_system_opt_root
+      (sources from global k8s_lab_opt_root, plan §8) must be
+      absolute, opt_mode must be a 4-digit octal string,
+      apt_cache_valid_time must be a non-negative integer.
 
 - name: "base-system | preflight | validate extras shape"
   # The substrate-required package / module / sysctl sets live in

@@ -45,7 +45,7 @@
 
 - name: "bootstrap-clusterctl | init | run clusterctl init"
   # Env: CLUSTER_TOPOLOGY=true flips the ClusterClass / managed-topology
-  # feature gate on the core controller (plan §8 capi.cluster_topology_enabled).
+  # feature gate on the core controller (plan §8 k8s_lab_cluster_topology_enabled).
   # async/poll: cold-cache image pulls (cert-manager + 4 providers) push
   # init to ~3 minutes; foreground SSH timeouts on shared molecule runs
   # would interrupt that. async + poll keeps the SSH session alive.

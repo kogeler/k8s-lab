@@ -73,11 +73,11 @@ verify, changed=0 на повторных проходах).
 
 **Step 6 review-fixes (применённые перед коммитом):**
 * `bootstrap_capn_secret_name` сделан публичным дефолтом, sourced из
-  глобального `infrastructure_secret_name` (плана §8 контракт) — Phase
-  5+ Cluster CR's `identityRef.name` и Secret name теперь меняются
-  одной глобальной переменной, без silent-disconnect;
+  глобального `k8s_lab_infrastructure_secret_name` (плана §8 контракт)
+  — Phase 5+ Cluster CR's `identityRef.name` и Secret name теперь
+  меняются одной глобальной переменной, без silent-disconnect;
 * `bootstrap_capn_secret_pivot_enabled` sourced из глобального
-  `pivot_enabled` (плана §8) — global flag flip автоматически
+  `k8s_lab_pivot_enabled` (плана §8) — global flag flip автоматически
   пробрасывает `clusterctl.cluster.x-k8s.io/move=true` label, без
   ручного дублирования в role-vars;
 * §9.4 role-level scenarios list дополнен новыми двумя сценариями;
@@ -288,6 +288,20 @@ Driver: подъём `bootstrap_k3s` в unprivileged LXC потребовал д
   `lxd_project_extra_restrictions: {}` для consumer'ских
   *дополнительных* restrictions поверх baseline. Tasks мержат
   required + extras в один payload.
+
+### Step 7 расширения (2026-04-23)
+
+* **`restricted.devices.proxy=allow`** добавлен в
+  `_lxd_project_required_restrictions`. Default LXD policy для
+  restricted-project блокирует proxy devices с ошибкой "Proxy
+  devices are forbidden", из-за чего ломается canonical publish
+  path плана §16.5 (опциональный proxy device на bootstrap
+  инстансе, пробрасываемый через `lxd_bootstrap_instance_devices`).
+  Rationale в vars/main.yml header + §16.5. Verify scenario
+  `lxd-project` дополнен ассертом на этот ключ. Остальные
+  substrate-restrictions не меняются; security trade-off умеренный
+  — host firewall владеет оператор, proxy listener LXD'а запускается
+  только если consumer явно добавил device в host_vars.
 
 ## 13.4. `lxd_storage_pools`
 
@@ -673,7 +687,7 @@ owns CRUD:
      `lxd_bootstrap_instance_wait_ready` (semantic clarification —
      теперь это **роль-овный gate**, не module-флаг);
    - добавлена `lxd_bootstrap_instance_readiness_ifname: "eth0"` —
-     явная точка расширения (`guest_internal_ifname` из плана §5.3);
+     явная точка расширения (`k8s_lab_guest_internal_ifname` из плана §5.3);
    - `lxd_bootstrap_instance_wait_timeout: 120` — общий wall-clock
      бюджет и для `wait_for_container` модуля, и для readiness-poll.
 
@@ -855,7 +869,7 @@ hardcoded `--disable-cloud-controller` и
 * рендерит pinned `clusterctl.yaml` с CAPN `incus`-провайдером (URL
   `github.com/lxc/cluster-api-provider-incus/releases/<ver>/infrastructure-components.yaml`);
 * `clusterctl init --infrastructure incus:<ver>` с
-  `CLUSTER_TOPOLOGY=true` env (плана §8 `capi.cluster_topology_enabled`);
+  `CLUSTER_TOPOLOGY=true` env (плана §8 `k8s_lab_cluster_topology_enabled`);
 * `--wait-providers` + role-side `kubernetes.core.k8s_info` polling до
   Available на cert-manager + 4 CAPI/CAPN deployments.
 
@@ -896,8 +910,9 @@ hardcoded `--disable-cloud-controller` и
   - `_bootstrap_clusterctl_container_kubeconfig_path: "/etc/rancher/k3s/k3s.yaml"`
     — k3s всегда пишет туда.
 * **Public defaults — только tunable:** `capn_version` (sourced из
-  global `capn_provider_version`), `capn_provider_url` (overridable
-  для airgap mirror), `cluster_topology_enabled`, extras-knobs (extra
+  global `k8s_lab_capn_provider_version`), `capn_provider_url`
+  (overridable для airgap mirror),
+  `bootstrap_clusterctl_cluster_topology_enabled`, extras-knobs (extra
   providers / init flags / wait deployments), timeouts/retries, paths
   owned by сама роль.
 * **`async + poll` для clusterctl init.** Cold-cache image pulls
@@ -931,7 +946,7 @@ hardcoded `--disable-cloud-controller` и
   (`server`, `server-crt`, `client-crt`, `client-key`, `project`) per
   CAPN identity-secret spec. Conditional label
   `clusterctl.cluster.x-k8s.io/move: "true"` когда
-  `pivot_enabled=true`.
+  `k8s_lab_pivot_enabled=true`.
 
 ### Implementation notes (Step 6)
 
@@ -958,7 +973,7 @@ hardcoded `--disable-cloud-controller` и
     громко (operator, видимо, релаксировал scope руками);
   - Secret apply: server-side apply + byte-stable manifest body →
     `unchanged` на повторных проходах. Pivot label flip via global
-    `pivot_enabled` распространяется чисто (server-side apply
+    `k8s_lab_pivot_enabled` распространяется чисто (server-side apply
     field-manager корректно стомпит/убирает label).
 * **Substrate-required в `vars/main.yml`:**
   - `_bootstrap_capn_secret_required_namespace: "capn-system"` —
@@ -975,11 +990,11 @@ hardcoded `--disable-cloud-controller` и
     `_bootstrap_capn_secret_lxd_server_cert_path` — snap-LXD
     invariants.
 * **Public defaults — sourced from §8 contract:**
-  - `bootstrap_capn_secret_name ← infrastructure_secret_name` —
-    Phase 5+ Cluster CR `identityRef.name` и Secret name меняются
+  - `bootstrap_capn_secret_name ← k8s_lab_infrastructure_secret_name`
+    — Phase 5+ Cluster CR `identityRef.name` и Secret name меняются
     одной глобальной переменной (без silent-disconnect);
-  - `bootstrap_capn_secret_pivot_enabled ← pivot_enabled` — global
-    flag flip автоматически добавляет `move` label.
+  - `bootstrap_capn_secret_pivot_enabled ← k8s_lab_pivot_enabled` —
+    global flag flip автоматически добавляет `move` label.
 * **Public defaults — tunable:** cert metadata (CN/country/org/
   validity/key size+type), staging paths, auto-resolve override
   (`bootstrap_capn_secret_lxd_https_bind_address`), wait timing.
@@ -1003,8 +1018,10 @@ Vagrant/libvirt-контуре по состоянию на Step 6 (2026-04-23):
 * §14.5 Phase 3.5 — `binary_fetch` (Step 4);
 * §14.6 Phase 4 — bootstrap management cluster (Step 4 + Step 6 —
   частично: `bootstrap_k3s` готов с Step 4; `bootstrap_clusterctl` +
-  `bootstrap_capn_secret` готовы с Step 6; `bootstrap_api_publish` и
-  `export_artifacts` остаются в §16.5..§16.6).
+  `bootstrap_capn_secret` готовы с Step 6; отдельная роль
+  `bootstrap_api_publish` removed в Step 7 — публикация API перенесена
+  на LXD proxy device поверх `lxd_bootstrap_instance`, см. §16.5;
+  `export_artifacts` остаётся в §16.6).
 
 Step 5 — **сквозной refactor без новых phases**: substrate-required
 значения в `base_system` / `lxd_storage_pools` / `lxd_network_int_managed`
@@ -1029,13 +1046,76 @@ Trixie) добавлен в shared Molecule prepare. Все Kubernetes API
 required values в обеих ролях вынесены в `vars/main.yml` под
 `_<role>_required_*` prefix согласно правилу
 `feedback_required_values_hardcoded.md`. Public defaults sourced из
-плана §8 globals (`infrastructure_secret_name` →
-`bootstrap_capn_secret_name`; `pivot_enabled` →
+плана §8 globals (`k8s_lab_infrastructure_secret_name` →
+`bootstrap_capn_secret_name`; `k8s_lab_pivot_enabled` →
 `bootstrap_capn_secret_pivot_enabled`) — single global flip держит
 Phase 5+ Cluster CR identityRef и pivot move-label синхронизированными
 без silent-disconnect'а. Step 6 не закрывает Phase 4 целиком —
-оставшиеся `bootstrap_api_publish` / `export_artifacts` живут в
-§16.5..§16.6 и адресуются в Step 7.
+остаются `bootstrap_api_publish` (§16.5) и `export_artifacts`
+(§16.6), оба адресуются в Step 7.
+
+Step 7 (2026-04-23) — repo-wide naming refactor + переосмысление
+публикации bootstrap API. Никаких новых phases не добавляет, но
+ощутимо меняет public contract.
+
+* **Repo-wide global variable rename.** Все project-wide переменные
+  §8 получили префикс `k8s_lab_*` (`opt_root` → `k8s_lab_opt_root`,
+  `k3s_version` → `k8s_lab_k3s_version`, `api_publish_port` →
+  `k8s_lab_api_publish_port` и т.д., §8 целиком переписан). Naked
+  globals без префикса запрещены — правило закодировано в памяти
+  `feedback_global_var_prefix.md` и §2.6.5. Role-scoped переменные
+  с role-прификсом (`lxd_host_*`, `bootstrap_clusterctl_*`) не
+  трогались. Rename прогнан через sed со `\b` word-boundaries (177
+  файлов в `ansible/roles/` + `tests/molecule/` + `scripts/`);
+  выжившие ссылки на naked-имена — исторические deprecation
+  заметки + один разъясняющий пример в самой §2.6.5 rule.
+* **Host firewall out-of-project-scope.** Отдельная роль
+  `bootstrap_api_publish` (планировалась в §16.5 как nftables DNAT
+  + source-IP ACL на host) удалена как overengineered: mTLS
+  kubeconfig'а уже защищает API, source-IP ACL поверх не даёт
+  измеримой пользы, а правки в distro-owned nftables tables могут
+  перекрыть operator-managed правила в проде. §11.4 переписан —
+  host firewall формально объявлен вне scope repo; публикация
+  портов теперь делается через нативный LXD proxy device
+  (`type: proxy, bind: host`), пробрасываемый через
+  `lxd_bootstrap_instance_devices` уже существующей роли §13.7.
+  Правило закодировано в памяти `feedback_host_firewall_scope.md`.
+* **Project policy расширена.** `lxd_project` получил
+  substrate-required `restricted.devices.proxy: "allow"` в
+  `vars/main.yml` — без этого LXD отвергает proxy device в
+  restricted project'е, ломая canonical publish path. See §13.3
+  Step 7 deviation section.
+* **Artefacts удалены из repo.**
+  `ansible/roles/bootstrap_api_publish/` + целый scenario
+  `tests/molecule/bootstrap-api-publish/` снесены полностью вместе
+  со всеми tasks, templates, handlers, meta-deps и README. Запись
+  из `tests/molecule/Makefile` SCENARIOS убрана. Globals
+  `k8s_lab_api_publish_port` / `k8s_lab_api_publish_acl_mode` /
+  `k8s_lab_allowed_source_ips` удалены из §8 (никогда не успели
+  войти в стабильный контракт — были renamed в начале Step 7 и
+  удалены в его конце). План §16.5 переписан как one-page
+  объяснение canonical publish path через LXD proxy device.
+* **Тестовое покрытие публикации.** End-to-end тест LXD proxy
+  device'а живёт в scenario `bootstrap-k3s`: его `molecule.yml`
+  host_vars задаёт `lxd_bootstrap_instance_devices.k3s-api`, а
+  verify.yml ассертит device в live config инстанса, TCP probe
+  `127.0.0.1:16443` и получение Node list через kubernetes.core.k8s_info
+  по published endpoint.
+* **Memory housekeeping.** Добавлены два новых правила
+  (`feedback_global_var_prefix.md`, `feedback_host_firewall_scope.md`,
+  `feedback_pause_before_role_test.md`). Одноразовые инструкции,
+  применённые и завершённые в предыдущих step'ах, удалены из
+  памяти (policy-rules остались).
+* **Regression prove.** Sequential Molecule runner (`/tmp/
+  run_all_scenarios.sh`) на свеже-созданной Vagrant VM прошёл все 11
+  оставшихся готовых сценариев (base-system, binary-fetch, lxd-host,
+  lxd-project, lxd-storage-pools, lxd-network-int-managed,
+  lxd-profiles, lxd-bootstrap-instance, bootstrap-k3s,
+  bootstrap-clusterctl, bootstrap-capn-secret) — rename ничего не
+  сломал, proxy publish работает через bootstrap-k3s verify.
+
+Step 7 оставляет Phase 4 не до конца закрытой —
+`export_artifacts` (§16.6) переносится в следующий Step.
 
 Ещё не выполненные phases живут в §15..§20.
 
@@ -1141,8 +1221,11 @@ Acceptance:
 **Статус: частично выполнено в Step 4 + Step 6.** На Step 4 (2026-04-22)
 готов `bootstrap_k3s`; на Step 6 (2026-04-23) добавлены
 `bootstrap_clusterctl` (§13.10) и `bootstrap_capn_secret` (§13.11).
-Остаются `bootstrap_api_publish` (§16.5) и `export_artifacts` (§16.6)
-— уйдут в следующие Step'ы.
+Step 7 (2026-04-23): отдельная роль `bootstrap_api_publish` removed
+из Phase 4 (§16.5) — публикация портов перенесена на LXD proxy
+device поверх `lxd_bootstrap_instance`; host-side firewall признан
+вне scope repo (§11.4). Остаётся `export_artifacts` (§16.6) — уйдёт
+в следующий Step.
 
 Сделано в Step 4:
 
@@ -1169,8 +1252,9 @@ Acceptance:
   `restricted: true + projects: [capi-lab]` trust entry, server-side
   apply Secret в `capn-system` (5 ключей CAPN identity-secret spec).
   `bootstrap_capn_secret_name` sourced из global
-  `infrastructure_secret_name` (§8 contract), pivot label sourced из
-  global `pivot_enabled` — single global flip держит Phase 5+ Cluster
+  `k8s_lab_infrastructure_secret_name` (§8 contract), pivot label
+  sourced из global `k8s_lab_pivot_enabled` — single global flip
+  держит Phase 5+ Cluster
   CR identityRef и `clusterctl move` в синхронизации.
 * Repo-wide native-first upgrade: `kubernetes.core ≥6.0.0` (resolved
   6.4.0) + `python3-kubernetes` (Debian Trixie). Все Kubernetes API
@@ -1205,7 +1289,7 @@ Acceptance Step 6 части (доказано verify scenario'ями):
   и оканчивается `:8443`, project=capi-lab, все cert/key в правильном
   PEM формате), `server-crt` Secret-ключа byte-equal с live
   `/var/snap/lxd/common/lxd/server.crt`, нет pivot label при
-  pivot_enabled=false (default).
+  `k8s_lab_pivot_enabled=false` (default).
 
 Acceptance целой Phase 4 (после остальных ролей §16.5..§16.6):
 

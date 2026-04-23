@@ -25,9 +25,10 @@
 # naming rule from plan §2.6.3.
 base_system_enabled: true
 
-# Role-wide filesystem root. Kept in sync with `opt_root` across roles so
-# that every artefact lands under `/opt/capi-lab/` (plan §2.2).
-base_system_opt_root: "/opt/capi-lab"
+# Role-wide filesystem root. Sources from the project-wide global
+# `k8s_lab_opt_root` (plan §8) so that every role which consumes the
+# opt root stays consistent when the consumer overrides the global.
+base_system_opt_root: "{{ k8s_lab_opt_root | default('/opt/capi-lab') }}"
 
 # Owner/group/mode for the opt root. Deterministic per plan §16.1.
 base_system_opt_owner: "root"

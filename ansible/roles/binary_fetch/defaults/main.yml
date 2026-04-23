@@ -25,9 +25,11 @@
 # inconsistent inputs but no mutating task is applied.
 binary_fetch_enabled: true
 
-# Shared filesystem root. Must match base_system_opt_root — base_system
-# owns the directory itself (plan §2.7 ownership model).
-binary_fetch_opt_root: "/opt/capi-lab"
+# Shared filesystem root. Sources from the project-wide global
+# `k8s_lab_opt_root` (plan §8). base_system owns the directory itself
+# per plan §2.7 ownership model; this default must resolve to the same
+# value as `base_system_opt_root`.
+binary_fetch_opt_root: "{{ k8s_lab_opt_root | default('/opt/capi-lab') }}"
 
 # Final destination for the binaries.
 binary_fetch_bin_dir: "{{ binary_fetch_opt_root }}/bin"

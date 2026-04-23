@@ -59,7 +59,7 @@ bootstrap_k3s_bin_mode: "0755"
 # file. Persistent (under `/opt/capi-lab/etc/`) so `ansible.builtin.template`
 # reports `changed=false` on a second converge when inputs have not
 # moved — which is the requirement for Molecule's idempotence check.
-bootstrap_k3s_host_staging_dir: "{{ binary_fetch_opt_root | default('/opt/capi-lab') }}/etc/bootstrap_k3s"
+bootstrap_k3s_host_staging_dir: "{{ k8s_lab_opt_root | default('/opt/capi-lab') }}/etc/bootstrap_k3s"
 
 # -- systemd unit ---------------------------------------------------------
 

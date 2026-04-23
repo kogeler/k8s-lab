@@ -25,7 +25,7 @@
 
 - name: "bootstrap-capn-secret | preflight | validate identifiers"
   # `bootstrap_capn_secret_name` is sourced from project-wide
-  # `infrastructure_secret_name` (plan §8 contract); validate it here
+  # `k8s_lab_infrastructure_secret_name` (plan §8 contract); validate it here
   # because public-input validation is the role's job, not the plan's.
   ansible.builtin.assert:
     that:
@@ -38,7 +38,7 @@
     fail_msg: >-
       bootstrap_capn_secret: identifiers must be valid DNS-1123 (or LXD
       trust-name) form. Note: bootstrap_capn_secret_name resolves from
-      `infrastructure_secret_name` (plan §8) — check both the global
+      `k8s_lab_infrastructure_secret_name` (plan §8) — check both the global
       and any role-level override.
 
 - name: "bootstrap-capn-secret | preflight | validate paths + modes"

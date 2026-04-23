@@ -21,8 +21,9 @@ LXD daemon. Plan §16.4.
 
 ## Out of scope
 
-* publishing the bootstrap API on a host port (`bootstrap_api_publish`,
-  plan §16.5);
+* publishing the bootstrap API on a host port — opt-in LXD proxy
+  device on the bootstrap instance, plan §16.5; host firewall is
+  out-of-project-scope, plan §11.4;
 * exporting `bootstrap.kubeconfig` to the runner side
   (`export_artifacts`, plan §16.6);
 * Cluster CR lifecycle (Phase 5+).
@@ -68,10 +69,10 @@ staging paths, the auto-resolve override
 Two public defaults source from the project-wide §8 contract so a
 single global flip stays coordinated with downstream consumers:
 
-* `bootstrap_capn_secret_name` ← `infrastructure_secret_name` —
+* `bootstrap_capn_secret_name` ← `k8s_lab_infrastructure_secret_name` —
   must match the Cluster CR's `identityRef.name` in Phase 5+
   (`§17.4` / `§17.5`);
-* `bootstrap_capn_secret_pivot_enabled` ← `pivot_enabled` —
+* `bootstrap_capn_secret_pivot_enabled` ← `k8s_lab_pivot_enabled` —
   drives the `clusterctl.cluster.x-k8s.io/move=true` label that
   `clusterctl move` (`§19`) follows.
 

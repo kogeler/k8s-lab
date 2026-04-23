@@ -66,7 +66,7 @@ use `_binary_fetch_*` and must not be consumed outside the role.
 | --- | --- | --- |
 | `binary_fetch_enabled` | `true` | Whole-role toggle; preflight still runs when `false`. |
 | `binary_fetch_opt_root` | `/opt/capi-lab` | Shared filesystem root (must match `base_system_opt_root`). |
-| `binary_fetch_bin_dir` | `{{ opt_root }}/bin` | Destination directory. |
+| `binary_fetch_bin_dir` | `{{ binary_fetch_opt_root }}/bin` | Destination directory. |
 | `binary_fetch_owner` / `binary_fetch_group` | `root` / `root` | Ownership applied to every artefact. |
 | `binary_fetch_mode` | `0755` | Mode (octal string) applied to every artefact. |
 | `binary_fetch_download_timeout` | `180` | Wall-time budget for each `uri` / `get_url` call (seconds). |

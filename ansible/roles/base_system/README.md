@@ -55,9 +55,9 @@ Consumers extend the baseline through `*_extra_*` variables (below).
 | --- | --- | --- |
 | `base_system_enabled` | `true` | Whole-role toggle. `false` still runs preflight. |
 | `base_system_opt_root` | `/opt/capi-lab` | Shared filesystem root for binaries and config. |
-| `base_system_opt_owner` | `root` | Owner of `opt_root` and children. |
-| `base_system_opt_group` | `root` | Group of `opt_root` and children. |
-| `base_system_opt_mode` | `0755` | Mode of `opt_root` and children (octal string). |
+| `base_system_opt_owner` | `root` | Owner of `base_system_opt_root` and children. |
+| `base_system_opt_group` | `root` | Group of `base_system_opt_root` and children. |
+| `base_system_opt_mode` | `0755` | Mode of `base_system_opt_root` and children (octal string). |
 
 ### Package extras
 

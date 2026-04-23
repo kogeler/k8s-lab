@@ -44,7 +44,7 @@ _bootstrap_capn_secret_required_lxd_https_port: 8443
 # patching the manifest itself, so it lives here as substrate.
 #
 # The Secret NAME, by contrast, is a project-wide tunable
-# (`capi.infrastructure_secret_name` per plan §8) — both this role
+# (`k8s_lab_infrastructure_secret_name` per plan §8) — both this role
 # AND the Phase 5+ Cluster CR identityRef must read the same value.
 # It is sourced from the global in defaults/main.yml as
 # `bootstrap_capn_secret_name`.

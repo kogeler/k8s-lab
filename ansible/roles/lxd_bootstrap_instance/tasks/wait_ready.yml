@@ -3,7 +3,7 @@
 #
 # Contract: the bootstrap container is "ready" when a SINGLE named
 # container-side interface (default `eth0`, the internal-plane nic
-# from the `capi-base` profile — plan §5.3 guest_internal_ifname)
+# from the `capi-base` profile — plan §5.3 k8s_lab_guest_internal_ifname)
 # has a non-link-local IPv4 address. Downstream roles (`bootstrap_k3s`)
 # only need to reach the container over this nic; they do not care
 # about transient CNI veth-pairs inner k3s brings up inside.

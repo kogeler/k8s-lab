@@ -135,7 +135,7 @@
           providers CR list is missing entries.
 
     # ---- ClusterClass / topology feature gate is on ------------------
-    # capi.cluster_topology_enabled is plumbed via CLUSTER_TOPOLOGY=true
+    # k8s_lab_cluster_topology_enabled is plumbed via CLUSTER_TOPOLOGY=true
     # in the role's init env. clusterctl flips a flag on the core
     # Deployment when that env is set; assert it's there.
     - name: "Verify | bootstrap_clusterctl | inspect capi-controller-manager Deployment"

@@ -115,7 +115,7 @@
     # ---- btrfs pool contract ------------------------------------------
     - name: "Verify | base_system | stat btrfs pool mountpoint"
       ansible.builtin.stat:
-        path: "{{ lxd_pool_mountpoint }}"
+        path: "{{ k8s_lab_lxd_pool_mountpoint }}"
       register: _verify_pool_register
 
     - name: "Verify | base_system | assert pool mountpoint exists"
@@ -123,14 +123,14 @@
         that:
           - _verify_pool_register.stat.exists
           - _verify_pool_register.stat.isdir
-        fail_msg: "{{ lxd_pool_mountpoint }} is not a directory"
+        fail_msg: "{{ k8s_lab_lxd_pool_mountpoint }} is not a directory"
 
     - name: "Verify | base_system | resolve pool mount from facts"
       ansible.builtin.set_fact:
         _verify_pool_mount_fact: >-
           {{
             (ansible_facts['mounts'] | default([]))
-            | selectattr('mount', 'equalto', lxd_pool_mountpoint)
+            | selectattr('mount', 'equalto', k8s_lab_lxd_pool_mountpoint)
             | list
           }}
 
@@ -140,5 +140,5 @@
           - _verify_pool_mount_fact | length == 1
           - _verify_pool_mount_fact[0].fstype == "btrfs"
         fail_msg: >-
-          {{ lxd_pool_mountpoint }} is not a btrfs mount — got
+          {{ k8s_lab_lxd_pool_mountpoint }} is not a btrfs mount — got
           {{ _verify_pool_mount_fact | default('nothing') }}

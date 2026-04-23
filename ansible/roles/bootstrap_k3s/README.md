@@ -21,8 +21,10 @@ It does **not**:
 * install `kubectl` / `clusterctl` inside the container — those are
   the lane of [`bootstrap_clusterctl`](../bootstrap_clusterctl/README.md)
   in Phase 4 (plan §16.3);
-* publish the kube-apiserver outside the host — that is
-  `bootstrap_api_publish`'s job (plan §16.5);
+* publish the kube-apiserver outside the host — passes through an
+  opt-in LXD proxy device configured via
+  `lxd_bootstrap_instance_devices` (plan §16.5); host firewall stays
+  out-of-project-scope (plan §11.4);
 * write CAPN identity / CAPI provider resources — `bootstrap_capn_secret`
   (plan §16.4).
 

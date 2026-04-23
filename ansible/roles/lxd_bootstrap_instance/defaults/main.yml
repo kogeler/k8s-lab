@@ -98,7 +98,7 @@ lxd_bootstrap_instance_wait_ready: true
 
 # Name of the container-side nic the readiness gate polls. Defaults
 # to the internal-plane nic from the `capi-base` profile (plan §5.3
-# `guest_internal_ifname`). Consumers with a non-standard layout set
+# `k8s_lab_guest_internal_ifname`). Consumers with a non-standard layout set
 # this explicitly.
 lxd_bootstrap_instance_readiness_ifname: "eth0"
 

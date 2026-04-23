@@ -19,8 +19,9 @@ cert-manager, the core Cluster API providers and the CAPN
 
 ## Out of scope
 
-* publishing the bootstrap API outside the host (`bootstrap_api_publish`,
-  plan §16.5);
+* publishing the bootstrap API outside the host — opt-in LXD proxy
+  device on the bootstrap instance, plan §16.5; host firewall is
+  out-of-project-scope, plan §11.4;
 * creating the LXD identity Secret CAPN reads to talk to the host
   daemon (`bootstrap_capn_secret`, plan §16.4);
 * exporting `bootstrap.kubeconfig` to the runner side
