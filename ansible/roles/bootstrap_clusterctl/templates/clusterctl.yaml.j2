@@ -1,0 +1,17 @@
+{{ ansible_managed | comment }}
+# clusterctl config consumed via `clusterctl init --config <this file>`.
+# Declares the CAPN infrastructure provider entry; core/kubeadm-bootstrap/
+# kubeadm-control-plane providers come from clusterctl's built-in
+# registry (kubernetes-sigs/cluster-api releases) and need no entry here.
+#
+# Provider list: https://main.cluster-api.sigs.k8s.io/clusterctl/configuration
+---
+providers:
+  - name: "{{ _bootstrap_clusterctl_required_provider_name }}"
+    url:  "{{ bootstrap_clusterctl_capn_provider_url }}"
+    type: "InfrastructureProvider"
+{% for entry in bootstrap_clusterctl_extra_providers %}
+  - name: "{{ entry.name }}"
+    url:  "{{ entry.url }}"
+    type: "{{ entry.type }}"
+{% endfor %}

@@ -1,0 +1,93 @@
+---
+# Role-internal healthchecks (plan §2.6.6). Re-probe live state from
+# the host to catch drift between the rendered manifest and what
+# actually landed in the cluster / LXD trust store.
+
+# ---- Secret exists with all required keys ------------------------------
+
+- name: "bootstrap-capn-secret | healthchecks | fetch live Secret"
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ bootstrap_capn_secret_kubeconfig_path }}"
+    api_version: "v1"
+    kind: "Secret"
+    namespace: "{{ _bootstrap_capn_secret_required_namespace }}"
+    name: "{{ bootstrap_capn_secret_name }}"
+  register: _bootstrap_capn_secret_get_register
+
+- name: "bootstrap-capn-secret | healthchecks | assert Secret exists"
+  ansible.builtin.assert:
+    that:
+      - (_bootstrap_capn_secret_get_register.resources | length) == 1
+    fail_msg: >-
+      bootstrap_capn_secret healthcheck: Secret
+      {{ _bootstrap_capn_secret_required_namespace }}/{{ bootstrap_capn_secret_name }}
+      not found by k8s_info.
+
+- name: "bootstrap-capn-secret | healthchecks | record live data keys + label"
+  ansible.builtin.set_fact:
+    _bootstrap_capn_secret_live_keys: >-
+      {{ (_bootstrap_capn_secret_get_register.resources[0].data | default({})).keys() | list | sort }}
+    _bootstrap_capn_secret_live_pivot_label: >-
+      {{
+        (_bootstrap_capn_secret_get_register.resources[0].metadata.labels | default({}))
+        ['clusterctl.cluster.x-k8s.io/move'] | default('')
+      }}
+
+- name: "bootstrap-capn-secret | healthchecks | assert all required keys present"
+  ansible.builtin.assert:
+    that:
+      - "(_bootstrap_capn_secret_required_keys | difference(_bootstrap_capn_secret_live_keys)) | length == 0"
+    fail_msg: >-
+      bootstrap_capn_secret healthcheck failed: live Secret
+      {{ _bootstrap_capn_secret_required_namespace }}/{{ bootstrap_capn_secret_name }}
+      is missing keys
+      {{ _bootstrap_capn_secret_required_keys | difference(_bootstrap_capn_secret_live_keys) }}.
+      live keys = {{ _bootstrap_capn_secret_live_keys }}.
+
+# ---- Pivot label discipline -------------------------------------------
+
+- name: "bootstrap-capn-secret | healthchecks | assert pivot label matches contract"
+  ansible.builtin.assert:
+    that:
+      - >-
+        (
+          (bootstrap_capn_secret_pivot_enabled | bool)
+          and _bootstrap_capn_secret_live_pivot_label == 'true'
+        )
+        or
+        (
+          (not (bootstrap_capn_secret_pivot_enabled | bool))
+          and (_bootstrap_capn_secret_live_pivot_label | length == 0)
+        )
+    fail_msg: >-
+      bootstrap_capn_secret healthcheck failed: pivot_enabled=
+      {{ bootstrap_capn_secret_pivot_enabled }} but Secret label
+      `clusterctl.cluster.x-k8s.io/move`=
+      "{{ _bootstrap_capn_secret_live_pivot_label }}".
+
+# ---- LXD trust store membership reflects role state -------------------
+
+- name: "bootstrap-capn-secret | healthchecks | re-probe LXD trust by fingerprint"
+  ansible.builtin.uri:
+    url:         "http://localhost/1.0/certificates/{{ _bootstrap_capn_secret_client_fingerprint }}"
+    unix_socket: "{{ _bootstrap_capn_secret_lxd_socket }}"
+    method:      GET
+    status_code: 200
+    return_content: true
+  register: _bootstrap_capn_secret_trust_recheck_register
+  changed_when: false
+
+- name: "bootstrap-capn-secret | healthchecks | assert trust entry shape"
+  ansible.builtin.assert:
+    that:
+      - (_bootstrap_capn_secret_trust_recheck_register.json.metadata.type | default('')) == _bootstrap_capn_secret_required_trust_type
+      - (_bootstrap_capn_secret_trust_recheck_register.json.metadata.restricted | default(false)) | bool
+      - bootstrap_capn_secret_lxd_project in (_bootstrap_capn_secret_trust_recheck_register.json.metadata.projects | default([]))
+    fail_msg: >-
+      bootstrap_capn_secret healthcheck failed: LXD trust entry shape
+      drift. type=
+      {{ _bootstrap_capn_secret_trust_recheck_register.json.metadata.type | default('?') }},
+      restricted=
+      {{ _bootstrap_capn_secret_trust_recheck_register.json.metadata.restricted | default('?') }},
+      projects=
+      {{ _bootstrap_capn_secret_trust_recheck_register.json.metadata.projects | default([]) }}.

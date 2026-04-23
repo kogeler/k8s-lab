@@ -1,0 +1,28 @@
+---
+galaxy_info:
+  role_name: bootstrap_clusterctl
+  namespace: k8slab
+  author: k8s-lab contributors
+  description: >-
+    Run `clusterctl init --infrastructure incus:<version>` against the
+    bootstrap k3s cluster (plan §16.3). Renders pinned clusterctl.yaml,
+    materialises a host-side kubeconfig with the container IP rewritten
+    into the server URL, then drives clusterctl + kubectl from the host
+    binaries laid down by binary_fetch.
+  license: MIT
+  min_ansible_version: "2.16"
+  platforms:
+    - name: Debian
+      versions:
+        - trixie
+  galaxy_tags:
+    - kubernetes
+    - clusterapi
+    - clusterctl
+    - bootstrap
+
+dependencies:
+  # bootstrap_k3s transitively pulls binary_fetch (kubectl + clusterctl
+  # land on the host) and lxd_bootstrap_instance (container exists +
+  # ready). We rely on its healthcheck having already proven k3s up.
+  - role: bootstrap_k3s

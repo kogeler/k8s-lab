@@ -1,0 +1,47 @@
+---
+# Dispatcher-only (plan §2.6.2). Each include file covers one concern.
+
+- name: "bootstrap-clusterctl | preflight"
+  ansible.builtin.include_tasks:
+    file: preflight.yml
+    apply:
+      tags: [bootstrap_clusterctl, bootstrap-clusterctl, bootstrap_clusterctl_preflight]
+  tags: [bootstrap_clusterctl, bootstrap-clusterctl, bootstrap_clusterctl_preflight]
+
+- name: "bootstrap-clusterctl | kubeconfig"
+  ansible.builtin.include_tasks:
+    file: kubeconfig.yml
+    apply:
+      tags: [bootstrap_clusterctl, bootstrap-clusterctl, bootstrap_clusterctl_kubeconfig]
+  when:
+    - bootstrap_clusterctl_enabled
+    - bootstrap_clusterctl_flow_control_kubeconfig
+  tags: [bootstrap_clusterctl, bootstrap-clusterctl, bootstrap_clusterctl_kubeconfig]
+
+- name: "bootstrap-clusterctl | config"
+  ansible.builtin.include_tasks:
+    file: config.yml
+    apply:
+      tags: [bootstrap_clusterctl, bootstrap-clusterctl, bootstrap_clusterctl_config]
+  when:
+    - bootstrap_clusterctl_enabled
+    - bootstrap_clusterctl_flow_control_config
+  tags: [bootstrap_clusterctl, bootstrap-clusterctl, bootstrap_clusterctl_config]
+
+- name: "bootstrap-clusterctl | init"
+  ansible.builtin.include_tasks:
+    file: init.yml
+    apply:
+      tags: [bootstrap_clusterctl, bootstrap-clusterctl, bootstrap_clusterctl_init]
+  when:
+    - bootstrap_clusterctl_enabled
+    - bootstrap_clusterctl_flow_control_init
+  tags: [bootstrap_clusterctl, bootstrap-clusterctl, bootstrap_clusterctl_init]
+
+- name: "bootstrap-clusterctl | healthchecks"
+  ansible.builtin.include_tasks:
+    file: healthchecks.yml
+    apply:
+      tags: [bootstrap_clusterctl, bootstrap-clusterctl, bootstrap_clusterctl_healthchecks]
+  when: bootstrap_clusterctl_enabled
+  tags: [bootstrap_clusterctl, bootstrap-clusterctl, bootstrap_clusterctl_healthchecks]

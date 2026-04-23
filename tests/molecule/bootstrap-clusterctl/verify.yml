@@ -1,0 +1,160 @@
+---
+# bootstrap_clusterctl verify — plan §9.4 real-runtime assertions.
+# We do NOT just trust the role's own healthchecks: this playbook
+# re-probes the live state from the host using kubernetes.core.k8s_info
+# pointed at the materialised host-side kubeconfig.
+
+- name: "Verify | bootstrap_clusterctl"
+  hosts: all
+  gather_facts: true
+  become: true
+  vars_files:
+    - "../shared/vars/common.yml"
+  vars:
+    _kubeconfig: "/opt/capi-lab/etc/bootstrap_clusterctl/bootstrap.kubeconfig"
+  tasks:
+    # ---- Staging artefacts exist + permissions sane ------------------
+    - name: "Verify | bootstrap_clusterctl | stat host kubeconfig"
+      ansible.builtin.stat:
+        path: "{{ _kubeconfig }}"
+      register: _verify_kubeconfig_stat
+
+    - name: "Verify | bootstrap_clusterctl | assert kubeconfig present + 0600"
+      ansible.builtin.assert:
+        that:
+          - _verify_kubeconfig_stat.stat.exists
+          - _verify_kubeconfig_stat.stat.size > 100
+          - (_verify_kubeconfig_stat.stat.mode | string) in ['0600', '600']
+        fail_msg: >-
+          host-side kubeconfig missing or wrong mode at {{ _kubeconfig }}.
+
+    - name: "Verify | bootstrap_clusterctl | read kubeconfig body"
+      ansible.builtin.slurp:
+        src: "{{ _kubeconfig }}"
+      register: _verify_kubeconfig_body_register
+
+    - name: "Verify | bootstrap_clusterctl | parse kubeconfig"
+      ansible.builtin.set_fact:
+        _verify_kubeconfig_yaml: >-
+          {{ _verify_kubeconfig_body_register.content | b64decode | from_yaml }}
+
+    - name: "Verify | bootstrap_clusterctl | assert server URL rewritten away from 127.0.0.1"
+      ansible.builtin.assert:
+        that:
+          - (_verify_kubeconfig_yaml.clusters | length) > 0
+          - "'127.0.0.1' not in (_verify_kubeconfig_yaml.clusters[0].cluster.server | default(''))"
+          - "'localhost'  not in (_verify_kubeconfig_yaml.clusters[0].cluster.server | default(''))"
+          - "'10.77.'     in     (_verify_kubeconfig_yaml.clusters[0].cluster.server | default(''))"
+        fail_msg: >-
+          kubeconfig server still references 127.0.0.1 / localhost or a
+          non-capi-int IP. server=
+          {{ _verify_kubeconfig_yaml.clusters[0].cluster.server | default('?') }}
+
+    # ---- API reachable + a Ready node ------------------------------
+    - name: "Verify | bootstrap_clusterctl | list nodes via k8s_info"
+      kubernetes.core.k8s_info:
+        kubeconfig: "{{ _kubeconfig }}"
+        api_version: "v1"
+        kind: "Node"
+      register: _verify_nodes_register
+
+    - name: "Verify | bootstrap_clusterctl | assert at least one Ready node"
+      ansible.builtin.assert:
+        that:
+          - (_verify_nodes_register.resources | length) > 0
+          - >-
+            _verify_nodes_register.resources[0].status.conditions
+            | selectattr('type', 'equalto', 'Ready')
+            | selectattr('status', 'equalto', 'True')
+            | list | length > 0
+        fail_msg: >-
+          no Ready node visible via kubeconfig.
+
+    # ---- All required Deployments are Available ---------------------
+    - name: "Verify | bootstrap_clusterctl | poll cert-manager + CAPI/CAPN deployments"
+      kubernetes.core.k8s_info:
+        kubeconfig: "{{ _kubeconfig }}"
+        api_version: "apps/v1"
+        kind: "Deployment"
+        namespace: "{{ item.namespace }}"
+        name: "{{ item.deployment }}"
+      loop:
+        - { namespace: "cert-manager", deployment: "cert-manager" }
+        - { namespace: "cert-manager", deployment: "cert-manager-cainjector" }
+        - { namespace: "cert-manager", deployment: "cert-manager-webhook" }
+        - { namespace: "capi-system", deployment: "capi-controller-manager" }
+        - { namespace: "capi-kubeadm-bootstrap-system", deployment: "capi-kubeadm-bootstrap-controller-manager" }
+        - { namespace: "capi-kubeadm-control-plane-system", deployment: "capi-kubeadm-control-plane-controller-manager" }
+        - { namespace: "capn-system", deployment: "capn-controller-manager" }
+      loop_control:
+        label: "{{ item.namespace }}/{{ item.deployment }}"
+      register: _verify_deployments_register
+      retries: 30
+      delay: 4
+      until: >-
+        (_verify_deployments_register.resources | default([]) | length) > 0
+        and (
+          _verify_deployments_register.resources[0].status.conditions | default([])
+          | selectattr('type', 'equalto', 'Available')
+          | selectattr('status', 'equalto', 'True')
+          | list | length > 0
+        )
+
+    # ---- Provider CRs cover every required type ----------------------
+    - name: "Verify | bootstrap_clusterctl | list Provider CRs"
+      kubernetes.core.k8s_info:
+        kubeconfig: "{{ _kubeconfig }}"
+        api_version: "clusterctl.cluster.x-k8s.io/v1alpha3"
+        kind: "Provider"
+      register: _verify_providers_register
+
+    - name: "Verify | bootstrap_clusterctl | assert all provider types present"
+      ansible.builtin.assert:
+        that:
+          - >-
+            _verify_providers_register.resources
+            | selectattr('type', 'equalto', 'CoreProvider')
+            | selectattr('providerName', 'equalto', 'cluster-api')
+            | list | length == 1
+          - >-
+            _verify_providers_register.resources
+            | selectattr('type', 'equalto', 'BootstrapProvider')
+            | selectattr('providerName', 'equalto', 'kubeadm')
+            | list | length == 1
+          - >-
+            _verify_providers_register.resources
+            | selectattr('type', 'equalto', 'ControlPlaneProvider')
+            | selectattr('providerName', 'equalto', 'kubeadm')
+            | list | length == 1
+          - >-
+            _verify_providers_register.resources
+            | selectattr('type', 'equalto', 'InfrastructureProvider')
+            | selectattr('providerName', 'equalto', 'incus')
+            | list | length == 1
+        fail_msg: >-
+          providers CR list is missing entries.
+
+    # ---- ClusterClass / topology feature gate is on ------------------
+    # capi.cluster_topology_enabled is plumbed via CLUSTER_TOPOLOGY=true
+    # in the role's init env. clusterctl flips a flag on the core
+    # Deployment when that env is set; assert it's there.
+    - name: "Verify | bootstrap_clusterctl | inspect capi-controller-manager Deployment"
+      kubernetes.core.k8s_info:
+        kubeconfig: "{{ _kubeconfig }}"
+        api_version: "apps/v1"
+        kind: "Deployment"
+        namespace: "capi-system"
+        name: "capi-controller-manager"
+      register: _verify_capi_dep_register
+
+    - name: "Verify | bootstrap_clusterctl | assert ClusterTopology feature gate enabled"
+      ansible.builtin.assert:
+        that:
+          - >-
+            _verify_capi_dep_register.resources[0].spec.template.spec.containers
+            | map(attribute='args') | flatten
+            | select('search', 'ClusterTopology=true')
+            | list | length > 0
+        fail_msg: >-
+          capi-controller-manager Deployment does NOT carry
+          ClusterTopology=true on any container's args.

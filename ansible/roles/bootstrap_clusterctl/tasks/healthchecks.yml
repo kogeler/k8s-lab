@@ -1,0 +1,94 @@
+---
+# Wait for cert-manager + every CAPI/CAPN controller Deployment to
+# report Available. clusterctl init --wait-providers in init.yml already
+# does most of this when run on a cold cluster, but we re-assert from a
+# separate process to:
+#   * cover the idempotent path (init was skipped — we still verify);
+#   * include cert-manager (clusterctl init's wait covers CAPI providers
+#     only, not its prerequisites);
+#   * include consumer-supplied extras via
+#     `bootstrap_clusterctl_extra_wait_deployments`.
+
+- name: "bootstrap-clusterctl | healthchecks | poll required deployments until Available"
+  # kubernetes.core.k8s_info + retries/until is the native equivalent
+  # of `kubectl wait deployment/X --for=condition=Available`. We loop
+  # outer over the deployment list so each one has its own poll budget;
+  # inner `until` checks the Available condition on the live resource.
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ bootstrap_clusterctl_kubeconfig_path }}"
+    api_version: "apps/v1"
+    kind: "Deployment"
+    namespace: "{{ item.namespace }}"
+    name: "{{ item.deployment }}"
+  loop: >-
+    {{
+      _bootstrap_clusterctl_required_cert_manager_deployments
+      + _bootstrap_clusterctl_required_deployments
+      + bootstrap_clusterctl_extra_wait_deployments
+    }}
+  loop_control:
+    label: "{{ item.namespace }}/{{ item.deployment }}"
+  register: _bootstrap_clusterctl_wait_register
+  retries: "{{ bootstrap_clusterctl_wait_retries | int }}"
+  delay:   "{{ bootstrap_clusterctl_wait_delay | int }}"
+  until: >-
+    (_bootstrap_clusterctl_wait_register.resources | default([]) | length) > 0
+    and (
+      _bootstrap_clusterctl_wait_register.resources[0].status.conditions | default([])
+      | selectattr('type', 'equalto', item.condition | default('Available'))
+      | selectattr('status', 'equalto', 'True')
+      | list | length > 0
+    )
+  changed_when: false
+
+- name: "bootstrap-clusterctl | healthchecks | list installed Provider CRs"
+  # The providers.clusterctl.cluster.x-k8s.io CRD is created by
+  # clusterctl init and holds one CR per installed provider. CAPI
+  # quirk: `type` and `providerName` are TOP-LEVEL fields on the CR,
+  # not under .spec — confirmed against the cluster-api book.
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ bootstrap_clusterctl_kubeconfig_path }}"
+    api_version: "clusterctl.cluster.x-k8s.io/v1alpha3"
+    kind: "Provider"
+  register: _bootstrap_clusterctl_providers_register
+  changed_when: false
+
+- name: "bootstrap-clusterctl | healthchecks | assert all four providers present"
+  # CAPI Provider CR has top-level `type` and `providerName` fields
+  # (NOT under .spec). selectattr chains pick the matching CR per
+  # tuple; assert each chain returns exactly one resource.
+  ansible.builtin.assert:
+    that:
+      - >-
+        _bootstrap_clusterctl_providers_register.resources
+        | selectattr('type', 'equalto', 'CoreProvider')
+        | selectattr('providerName', 'equalto', 'cluster-api')
+        | list | length == 1
+      - >-
+        _bootstrap_clusterctl_providers_register.resources
+        | selectattr('type', 'equalto', 'BootstrapProvider')
+        | selectattr('providerName', 'equalto', 'kubeadm')
+        | list | length == 1
+      - >-
+        _bootstrap_clusterctl_providers_register.resources
+        | selectattr('type', 'equalto', 'ControlPlaneProvider')
+        | selectattr('providerName', 'equalto', 'kubeadm')
+        | list | length == 1
+      - >-
+        _bootstrap_clusterctl_providers_register.resources
+        | selectattr('type', 'equalto', 'InfrastructureProvider')
+        | selectattr('providerName', 'equalto', _bootstrap_clusterctl_required_provider_name)
+        | list | length == 1
+    fail_msg: >-
+      bootstrap_clusterctl healthcheck failed: providers CR list missing
+      one or more required entries.
+      provider_resources=
+      {{
+        _bootstrap_clusterctl_providers_register.resources
+        | map(attribute='type') | list
+      }}
+      /
+      {{
+        _bootstrap_clusterctl_providers_register.resources
+        | map(attribute='providerName') | list
+      }}

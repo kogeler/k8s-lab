@@ -1,0 +1,143 @@
+---
+# ==========================================================================
+# bootstrap_clusterctl — role defaults
+# ==========================================================================
+#
+# Purpose (plan §16.3): turn the bare bootstrap k3s cluster into a CAPI
+# management cluster by running `clusterctl init` with cert-manager,
+# core CAPI, kubeadm bootstrap / control-plane, and the CAPN
+# infrastructure provider.
+#
+# Execution model:
+#   clusterctl ships in /opt/capi-lab/bin (binary_fetch). The role drives
+#   it from the LXD host — NOT from inside the bootstrap container —
+#   using a kubeconfig fetched out of the container and rewritten so
+#   `clusters[].server` points at the container's eth0 IPv4 instead of
+#   the in-container 127.0.0.1 the k3s default emits. All Kubernetes
+#   reads/writes go through kubernetes.core.k8s_info / k8s (native).
+#
+# Public contract (plan §2.6.2): every variable exposed to callers is
+# prefixed `bootstrap_clusterctl_*`. Internal / derived facts use the
+# `_bootstrap_clusterctl_*` prefix.
+#
+# Substrate-required values (memory `feedback_required_values_hardcoded.md`):
+# anything whose empty / wrong override would silently break the role
+# lives in `vars/main.yml` under the `_bootstrap_clusterctl_required_*`
+# prefix and is NOT exposed below. Concretely:
+#   * CAPN provider name (`incus`) — embedded in `clusterctl init
+#     --infrastructure <name>:<ver>` and in the rendered clusterctl.yaml
+#     entry; the upstream registry only knows that name;
+#   * LXD snap socket / `lxc` CLI path — invariant for the snap LXD
+#     install lxd_host produces;
+#   * in-container kubeconfig path — k3s always writes to
+#     `/etc/rancher/k3s/k3s.yaml`;
+#   * required CAPI/CAPN/cert-manager Deployment list for healthchecks.
+
+# -- General ---------------------------------------------------------------
+
+# Whole-role toggle. When false, preflight still runs to catch
+# inconsistent inputs but no mutating task is applied.
+bootstrap_clusterctl_enabled: true
+
+# LXD project + instance to read kubeconfig out of. Must match what
+# bootstrap_k3s + lxd_bootstrap_instance produced. Cross-role coupling
+# is by value (plan §2.6.5 bans reading another role's `<other>_*`).
+bootstrap_clusterctl_project: "capi-lab"
+bootstrap_clusterctl_instance_name: "capi-bootstrap-0"
+
+# Name of the container interface we read the IPv4 from when rewriting
+# the kubeconfig server URL. Matches lxd_bootstrap_instance's readiness
+# nic (plan §5.3 `guest_internal_ifname`).
+bootstrap_clusterctl_container_ifname: "eth0"
+
+# -- Host binary location -------------------------------------------------
+
+# Host-side bin dir owned by binary_fetch (plan §16.1). clusterctl
+# binary lives here.
+bootstrap_clusterctl_host_bin_dir:    "/opt/capi-lab/bin"
+bootstrap_clusterctl_clusterctl_path: "{{ bootstrap_clusterctl_host_bin_dir }}/clusterctl"
+
+# -- Staging artefacts -----------------------------------------------------
+#
+# Persistent staging dir under /opt/capi-lab/etc (owned by base_system).
+# We keep it OUT of /tmp so `template`/`copy` actions earn idempotence
+# across reruns: a re-render with unchanged inputs leaves staging files
+# byte-identical, so the role reports `changed=false` on the second
+# converge.
+bootstrap_clusterctl_staging_dir: "{{ bootstrap_clusterctl_opt_root | default('/opt/capi-lab') }}/etc/bootstrap_clusterctl"
+
+# Materialised host-side kubeconfig the role passes to clusterctl /
+# k8s_info via `kubeconfig:`. Mode 0600 — it carries an admin token.
+# Downstream Phase 4 roles (bootstrap_capn_secret, …) consume the same
+# path by reference, so don't move it without coordinating.
+bootstrap_clusterctl_kubeconfig_path: "{{ bootstrap_clusterctl_staging_dir }}/bootstrap.kubeconfig"
+
+# Rendered clusterctl config consumed via `--config <path>`. Lists the
+# CAPN infrastructure provider; the core, bootstrap and control-plane
+# providers come from clusterctl's built-in defaults (kubernetes-sigs/
+# cluster-api releases).
+bootstrap_clusterctl_config_path: "{{ bootstrap_clusterctl_staging_dir }}/clusterctl.yaml"
+
+bootstrap_clusterctl_staging_mode_dir:        "0750"
+bootstrap_clusterctl_staging_mode_kubeconfig: "0600"
+bootstrap_clusterctl_staging_mode_config:     "0600"
+
+# -- CAPN provider pinning ------------------------------------------------
+
+# The CAPN release this lab runs. Defaults to the project-wide pin
+# `capn_provider_version` exported by the shared Molecule vars file
+# (plan §8a verified version log). Tunable for cherry-picking a
+# different release within the same lab contract.
+bootstrap_clusterctl_capn_version: "{{ capn_provider_version | default('v0.8.5') }}"
+
+# Upstream release manifest URL. clusterctl init fetches this on `init`,
+# expands it into Kubernetes objects and applies them. Tunable so an
+# air-gapped operator can point it at a mirror that hosts the same
+# infrastructure-components.yaml. Note: the REGISTERED PROVIDER NAME
+# (`incus`) is substrate-locked in vars/main.yml — only the URL is
+# tunable here.
+bootstrap_clusterctl_capn_provider_url: >-
+  https://github.com/lxc/cluster-api-provider-incus/releases/{{ bootstrap_clusterctl_capn_version }}/infrastructure-components.yaml
+
+# Enable the ClusterClass / managed topology workflow (plan §8
+# `capi.cluster_topology_enabled`). Surface as CLUSTER_TOPOLOGY=true on
+# the clusterctl init env so the core controller comes up with the
+# feature gate enabled. Disabling this knob breaks the Phase 5+
+# topology-driven workflow; left tunable so consumers running their
+# own non-topology Cluster CRs can opt out.
+bootstrap_clusterctl_cluster_topology_enabled: true
+
+# Optional extra providers — appended on top of the CAPN baseline. Each
+# entry is a dict with the same shape as the CAPN entry: `name`, `url`,
+# `type` (`InfrastructureProvider` / `BootstrapProvider` / etc).
+bootstrap_clusterctl_extra_providers: []
+
+# Optional extra `clusterctl init --<kind>` flags. Each entry is a
+# string in `--<kind>=<provider>:<version>` form, appended verbatim
+# to the init invocation. Use this to pin core / bootstrap / control-
+# plane providers to a specific upstream version (default is "latest"
+# from the cluster-api releases page).
+bootstrap_clusterctl_extra_init_flags: []
+
+# -- clusterctl init runtime ---------------------------------------------
+
+# wall-clock budget for `clusterctl init` itself — cold-cache image
+# pulls (cert-manager + CAPI components) push this to ~3 minutes on a
+# slow uplink.
+bootstrap_clusterctl_init_timeout: 600
+
+# Post-init readiness poll. We loop k8s_info with retries/until until
+# the Deployment reports condition Available=True.
+bootstrap_clusterctl_wait_retries: 60
+bootstrap_clusterctl_wait_delay:   5
+
+# Optional extra Deployments to wait on (e.g. consumer-installed
+# providers). Each entry: `{namespace, deployment, condition?}`.
+bootstrap_clusterctl_extra_wait_deployments: []
+
+# -- Flow control (plan §2.6.3) -------------------------------------------
+
+# Coarse-grained only — no per-task switches.
+bootstrap_clusterctl_flow_control_kubeconfig: true
+bootstrap_clusterctl_flow_control_config:     true
+bootstrap_clusterctl_flow_control_init:       true

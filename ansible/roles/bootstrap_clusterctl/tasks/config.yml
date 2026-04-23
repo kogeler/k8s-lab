@@ -1,0 +1,17 @@
+---
+# Render the clusterctl config file consumed via `--config <path>`.
+#
+# The CAPN provider is NOT in clusterctl's built-in registry — we have
+# to declare it explicitly. Core / kubeadm-bootstrap / kubeadm-control-
+# plane providers DO ship with clusterctl and resolve to the upstream
+# kubernetes-sigs/cluster-api releases without any entry here.
+#
+# Format reference: https://main.cluster-api.sigs.k8s.io/clusterctl/configuration
+
+- name: "bootstrap-clusterctl | config | render clusterctl.yaml"
+  ansible.builtin.template:
+    src:   "clusterctl.yaml.j2"
+    dest:  "{{ bootstrap_clusterctl_config_path }}"
+    owner: "root"
+    group: "root"
+    mode:  "{{ bootstrap_clusterctl_staging_mode_config }}"

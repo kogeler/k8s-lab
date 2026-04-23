@@ -1,0 +1,104 @@
+---
+# Input validation + substrate assertions (plan §2.6.2). Cheap,
+# idempotent and side-effect free; safe to gate downstream tasks
+# behind. Substrate-required identifiers (Secret namespace + name,
+# LXD HTTPS port) live in `vars/main.yml` and are NOT re-validated
+# here — they cannot drift via consumer override.
+
+- name: "bootstrap-capn-secret | preflight | gather facts"
+  ansible.builtin.setup:
+    gather_subset:
+      - "!all"
+      - "!any"
+      - min
+  when: ansible_facts['os_family'] is not defined
+
+- name: "bootstrap-capn-secret | preflight | target OS is Debian 13+"
+  ansible.builtin.assert:
+    that:
+      - ansible_facts['os_family'] == 'Debian'
+      - ansible_facts['distribution'] == 'Debian'
+      - (ansible_facts['distribution_major_version'] | int) >= 13
+    fail_msg: >-
+      bootstrap_capn_secret targets Debian 13 Trixie or newer on the
+      LXD host.
+
+- name: "bootstrap-capn-secret | preflight | validate identifiers"
+  # `bootstrap_capn_secret_name` is sourced from project-wide
+  # `infrastructure_secret_name` (plan §8 contract); validate it here
+  # because public-input validation is the role's job, not the plan's.
+  ansible.builtin.assert:
+    that:
+      - bootstrap_capn_secret_lxd_project is match('^[a-z][a-z0-9_-]{0,62}$')
+      - bootstrap_capn_secret_internal_network_name is match('^[a-z][a-z0-9-]{0,62}$')
+      - bootstrap_capn_secret_trust_name is match('^[A-Za-z][A-Za-z0-9._-]{0,62}$')
+      - bootstrap_capn_secret_client_cert_cn is match('^[A-Za-z][A-Za-z0-9._-]{0,62}$')
+      - bootstrap_capn_secret_name is string
+      - bootstrap_capn_secret_name is match('^[a-z][a-z0-9-]{0,252}$')
+    fail_msg: >-
+      bootstrap_capn_secret: identifiers must be valid DNS-1123 (or LXD
+      trust-name) form. Note: bootstrap_capn_secret_name resolves from
+      `infrastructure_secret_name` (plan §8) — check both the global
+      and any role-level override.
+
+- name: "bootstrap-capn-secret | preflight | validate paths + modes"
+  ansible.builtin.assert:
+    that:
+      - bootstrap_capn_secret_kubeconfig_path is match('^/')
+      - bootstrap_capn_secret_staging_dir is match('^/')
+      - bootstrap_capn_secret_client_key_path is match('^/')
+      - bootstrap_capn_secret_client_csr_path is match('^/')
+      - bootstrap_capn_secret_client_cert_path is match('^/')
+      - bootstrap_capn_secret_manifest_path is match('^/')
+      - bootstrap_capn_secret_staging_mode_dir is match('^0[0-7]{3}$')
+      - bootstrap_capn_secret_staging_mode_key is match('^0[0-7]{3}$')
+      - bootstrap_capn_secret_staging_mode_cert is match('^0[0-7]{3}$')
+    fail_msg: >-
+      bootstrap_capn_secret: paths must be absolute, modes must be
+      4-digit octal strings.
+
+- name: "bootstrap-capn-secret | preflight | validate cert + listener inputs"
+  ansible.builtin.assert:
+    that:
+      - bootstrap_capn_secret_client_cert_validity_days | int > 0
+      - bootstrap_capn_secret_client_key_size | int >= 2048
+      - bootstrap_capn_secret_client_key_type in ['RSA', 'ECDSA']
+      - bootstrap_capn_secret_pivot_enabled in [true, false]
+      - bootstrap_capn_secret_wait_retries | int > 0
+      - bootstrap_capn_secret_wait_delay | int > 0
+    fail_msg: >-
+      bootstrap_capn_secret: cert validity / key size / retries must be
+      sane.
+
+- name: "bootstrap-capn-secret | preflight | assert host kubeconfig present"
+  ansible.builtin.stat:
+    path: "{{ bootstrap_capn_secret_kubeconfig_path }}"
+  register: _bootstrap_capn_secret_kubeconfig_stat
+  changed_when: false
+
+- name: "bootstrap-capn-secret | preflight | assert kubeconfig materialised"
+  ansible.builtin.assert:
+    that:
+      - _bootstrap_capn_secret_kubeconfig_stat.stat.exists
+      - _bootstrap_capn_secret_kubeconfig_stat.stat.size > 100
+    fail_msg: >-
+      bootstrap_capn_secret: kubeconfig
+      ({{ bootstrap_capn_secret_kubeconfig_path }}) must be present
+      and non-empty. Normally produced by the bootstrap_clusterctl
+      meta-dep chain.
+
+- name: "bootstrap-capn-secret | preflight | assert LXD server cert exists"
+  ansible.builtin.stat:
+    path: "{{ _bootstrap_capn_secret_lxd_server_cert_path }}"
+  register: _bootstrap_capn_secret_server_cert_stat
+  changed_when: false
+
+- name: "bootstrap-capn-secret | preflight | server cert must exist"
+  ansible.builtin.assert:
+    that:
+      - _bootstrap_capn_secret_server_cert_stat.stat.exists
+      - _bootstrap_capn_secret_server_cert_stat.stat.size > 100
+    fail_msg: >-
+      bootstrap_capn_secret: LXD server cert at
+      {{ _bootstrap_capn_secret_lxd_server_cert_path }} is missing or
+      empty. lxd_host should have produced it on snap install.

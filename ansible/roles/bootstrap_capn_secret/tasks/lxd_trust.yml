@@ -1,0 +1,80 @@
+---
+# Register the client cert as a `client`-type trusted certificate
+# restricted to the capi-lab project.
+#
+# Idempotence: query GET /1.0/certificates/<fingerprint> first.
+#   * 200 → cert already trusted; verify name + restriction shape and
+#     skip POST (LXD does not support PATCH on certificates that would
+#     materially alter trust scope — best effort: leave as-is).
+#   * 404 → POST /1.0/certificates with the PEM body + restriction.
+
+- name: "bootstrap-capn-secret | lxd_trust | probe trust store for fingerprint"
+  ansible.builtin.uri:
+    url:         "http://localhost/1.0/certificates/{{ _bootstrap_capn_secret_client_fingerprint }}"
+    unix_socket: "{{ _bootstrap_capn_secret_lxd_socket }}"
+    method:      GET
+    status_code: [200, 404]
+    return_content: true
+  register: _bootstrap_capn_secret_trust_probe_register
+  changed_when: false
+
+- name: "bootstrap-capn-secret | lxd_trust | flag whether already trusted"
+  ansible.builtin.set_fact:
+    _bootstrap_capn_secret_already_trusted: >-
+      {{ _bootstrap_capn_secret_trust_probe_register.status == 200 }}
+
+# When the cert is already in the trust store but with a different
+# project restriction (e.g. operator manually relaxed it), we surface
+# this as a warning rather than silently accepting it. CAPN's blast
+# radius is the trust-restriction, so a drift here matters.
+- name: "bootstrap-capn-secret | lxd_trust | check restriction drift on existing entry"
+  ansible.builtin.assert:
+    that:
+      - (_bootstrap_capn_secret_trust_probe_register.json.metadata.restricted | default(false)) | bool
+      - bootstrap_capn_secret_lxd_project in (_bootstrap_capn_secret_trust_probe_register.json.metadata.projects | default([]))
+    fail_msg: >-
+      bootstrap_capn_secret: client cert is already in LXD trust store
+      but its restriction does not include project
+      "{{ bootstrap_capn_secret_lxd_project }}".
+      restricted=
+      {{ _bootstrap_capn_secret_trust_probe_register.json.metadata.restricted | default('?') }},
+      projects=
+      {{ _bootstrap_capn_secret_trust_probe_register.json.metadata.projects | default([]) }}.
+      Remove the entry manually
+      (`lxc config trust remove {{ _bootstrap_capn_secret_client_fingerprint }}`)
+      and re-run.
+  when: _bootstrap_capn_secret_already_trusted
+
+# ---- POST trust entry on a clean trust store ---------------------------
+
+- name: "bootstrap-capn-secret | lxd_trust | strip PEM markers (LXD wants base64 DER)"
+  # LXD's POST /1.0/certificates `certificate` field expects the
+  # base64-encoded DER body — i.e. PEM without the
+  # `-----BEGIN CERTIFICATE-----` / `-----END CERTIFICATE-----`
+  # markers and without internal whitespace. Sending the full PEM
+  # gives `error: illegal base64 data at input byte 0` (the API
+  # tries to base64-decode the literal string starting with `-`).
+  ansible.builtin.set_fact:
+    _bootstrap_capn_secret_client_cert_b64: >-
+      {{
+        _bootstrap_capn_secret_client_cert_pem
+        | regex_replace('-----BEGIN [^-]+-----', '')
+        | regex_replace('-----END [^-]+-----', '')
+        | regex_replace('\\s+', '')
+      }}
+
+- name: "bootstrap-capn-secret | lxd_trust | add cert to LXD trust store"
+  ansible.builtin.uri:
+    url:         "http://localhost/1.0/certificates"
+    unix_socket: "{{ _bootstrap_capn_secret_lxd_socket }}"
+    method:      POST
+    status_code: [200, 201]
+    body_format: json
+    body:
+      type:        "{{ _bootstrap_capn_secret_required_trust_type }}"
+      name:        "{{ bootstrap_capn_secret_trust_name }}"
+      certificate: "{{ _bootstrap_capn_secret_client_cert_b64 }}"
+      restricted:  true
+      projects:    ["{{ bootstrap_capn_secret_lxd_project }}"]
+  when: not _bootstrap_capn_secret_already_trusted
+  changed_when: not _bootstrap_capn_secret_already_trusted

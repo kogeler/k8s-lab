@@ -1,0 +1,70 @@
+---
+# ==========================================================================
+# bootstrap_capn_secret — substrate-required baseline
+# ==========================================================================
+#
+# Role-internal. Holds substrate the lab contract REQUIRES on every
+# bootstrap-management-cluster run. Rationale (memory
+# `feedback_required_values_hardcoded.md`): if a value missing here
+# would silently leave CAPN unable to talk to the LXD daemon (i.e.
+# Stage 1 broken end-to-end), it does not belong in `defaults/main.yml`.
+#
+# Public extras for tunable surface live in `defaults/main.yml` under
+# `bootstrap_capn_secret_*` (cert metadata, paths, pivot flag, wait
+# tuning).
+
+# ---- Snap-LXD invariants (lxd_host owns these paths) -------------------
+
+# REST socket every native ansible.builtin.uri call talks to. Snap LXD
+# install — only path that exists; lxd_host doesn't expose a knob for
+# changing it.
+_bootstrap_capn_secret_lxd_socket: "/var/snap/lxd/common/lxd/unix.socket"
+
+# Path to the LXD daemon's TLS cert. `slurp` reads it into the Secret
+# `server-crt` key so CAPN validates the daemon's TLS chain. Override
+# would silently put the wrong cert in the Secret → CAPN errors with
+# x509 validation failure on first reconcile, with no obvious clue
+# about Ansible-side drift.
+_bootstrap_capn_secret_lxd_server_cert_path: "/var/snap/lxd/common/lxd/server.crt"
+
+# ---- LXD HTTPS listener port (CAPN-wide convention) ------------------
+
+# 8443 is the documented LXD/Incus HTTPS port — CAPN identityRef.server
+# always carries it, every CAPN tutorial assumes it, and the host-side
+# firewall rules (when published in Phase 4 §16.5) target it. Override
+# would cascade as broken `server: https://...:<port>` in the Secret;
+# CAPN would then emit confused TLS-handshake errors.
+_bootstrap_capn_secret_required_lxd_https_port: 8443
+
+# ---- Secret namespace (CAPN-installed) -------------------------------
+
+# CAPN reads the LXD identity Secret from `<namespace>/<name>`. The
+# namespace is fixed by the upstream CAPN release manifest
+# (`capn-system` for v0.8.x); a consumer cannot change it without
+# patching the manifest itself, so it lives here as substrate.
+#
+# The Secret NAME, by contrast, is a project-wide tunable
+# (`capi.infrastructure_secret_name` per plan §8) — both this role
+# AND the Phase 5+ Cluster CR identityRef must read the same value.
+# It is sourced from the global in defaults/main.yml as
+# `bootstrap_capn_secret_name`.
+_bootstrap_capn_secret_required_namespace: "capn-system"
+
+# ---- Required Secret data keys per CAPN identity-secret spec ---------
+#
+# https://capn.linuxcontainers.org/reference/identity-secret.html
+# A consumer cannot drop any of these — CAPN would fail at first
+# Cluster reconciliation with a confusing TLS / config error.
+_bootstrap_capn_secret_required_keys:
+  - "server"
+  - "server-crt"
+  - "client-crt"
+  - "client-key"
+  - "project"
+
+# ---- LXD trust-store entry contract ----------------------------------
+
+# `type: client` is the only value accepted by `restricted: true +
+# projects: [<list>]` — `metrics` / `server` types do not honour
+# project confinement.
+_bootstrap_capn_secret_required_trust_type: "client"

@@ -102,13 +102,30 @@ Terraform add-ons test root:
   * `flannel/flannel` для known-good unprivileged baseline,
   * либо `projectcalico/tigera-operator` для experimental advanced path;
 * поставить MetalLB через официальный chart source;
-* поставить локальный wrapper Helm chart для MetalLB configuration CRs, если он нужен для `IPAddressPool`/`L2Advertisement`.
+* поставить локальный wrapper Helm chart для MetalLB configuration
+  CRs, если он нужен для `IPAddressPool`/`L2Advertisement`;
+* применить **HA replica contract** (§2.12) ко всему, что
+  ставится в workload cluster: каждый multi-replica-capable
+  Deployment / StatefulSet → `replicas: 2` с antiaffinity на
+  `kubernetes.io/hostname`. Если выбран Calico path —
+  `calico-typha` с `replicas: 2`; MetalLB controller с
+  `replicas: 2`. DaemonSet-компоненты (MetalLB speaker, Calico
+  node, Flannel agent) автоматически получают по одной реплике
+  на каждый worker — отдельный override не нужен.
 
 Acceptance:
 
-* Helm releases applied successfully to target cluster
-* cluster add-ons delivered only through Terraform Helm path
-* repeated Terraform apply/plan for the same add-ons pass is expected to be no-op
+* Helm releases applied successfully to target cluster;
+* cluster add-ons delivered only through Terraform Helm path;
+* repeated Terraform apply/plan for the same add-ons pass is expected
+  to be no-op;
+* **HA pair contract (§2.12) выполнен:** для каждого workload-cluster
+  Deployment / StatefulSet с replicas≥2 ассерт'ятся
+  `status.readyReplicas == status.replicas` и
+  `status.availableReplicas == status.replicas`; пара Pod'ов реально
+  на двух разных worker-нодах (`spec.nodeName` уникален); для
+  leader-elected компонентов (MetalLB controller, cert-manager если
+  есть) ровно один holder lease, второй pod в standby.
 
 ## 18.5. Phase 5.2 — CNI gate
 
@@ -129,15 +146,24 @@ Acceptance:
 
 Install MetalLB on first usable cluster stage and verify:
 
-* `IPAddressPool`
-* `L2Advertisement`
-* VIP allocation
-* external reachability from probe endpoint
+* `IPAddressPool`;
+* `L2Advertisement`;
+* VIP allocation;
+* external reachability from probe endpoint;
+* **HA pair контракт для MetalLB на workload cluster (§2.12):**
+  `metallb-controller` Deployment имеет 2 ready replicas на разных
+  worker-нодах, ровно один из них держит leader-election lease;
+  `metallb-speaker` DaemonSet работает на обоих worker'ах. Failover-
+  smoke допустим, но не обязателен на этой phase: достаточно
+  доказать что обе реплики активно участвуют (один — active leader,
+  второй — hot standby с up-to-date config).
 
 Acceptance:
 
-* LoadBalancer service gets IPv6 VIP
-* VIP reachable on `ext6-mock` / equivalent external segment model
+* LoadBalancer service gets IPv6 VIP;
+* VIP reachable on `ext6-mock` / equivalent external segment model;
+* HA pair контракт §2.12 для MetalLB выполнен (ассертится в
+  тесте — см. §9.4).
 
 [1]: https://capn.linuxcontainers.org/?utm_source=chatgpt.com "Introduction - The cluster-api-provider-incus book"
 [2]: https://documentation.ubuntu.com/lxd/latest/reference/network_bridge/?utm_source=chatgpt.com "Bridge network - LXD documentation"

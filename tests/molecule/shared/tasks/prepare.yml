@@ -18,6 +18,12 @@
       - ca-certificates
       - iproute2
       - rsync
+      # python3-kubernetes is the controller-side Python dep
+      # kubernetes.core needs (k8s + k8s_info modules import the
+      # `kubernetes` package directly). The Vagrant VM IS the
+      # Ansible target for these modules, so we install it here
+      # rather than on the dev box's venv.
+      - python3-kubernetes
     state: present
 
 - name: "Prepare | shared | ensure /opt/capi-lab root exists"

@@ -1,0 +1,120 @@
+---
+# Expose the LXD HTTPS API on the capi-int bridge so CAPN, running
+# inside the bootstrap LXC, can reach the daemon over the project's
+# internal network. Default LXD install only listens on the unix
+# socket, which is not reachable from inside a container.
+#
+# Idempotence model: GET /1.0 returns the live `config.core.https_address`
+# value. We compute the desired bind address (auto-resolve from the
+# capi-int network's gateway IPv4 unless the consumer overrode), and
+# PATCH only when they differ.
+
+# ---- Resolve desired bind address --------------------------------------
+
+- name: "bootstrap-capn-secret | lxd_https | fetch capi-int network state"
+  # `state.addresses` returns the IPs assigned to the bridge interface
+  # itself — for an LXD-managed bridge with `ipv4.address`, this is the
+  # gateway IP every container on the bridge sees as its default route.
+  ansible.builtin.uri:
+    url:         "http://localhost/1.0/networks/{{ bootstrap_capn_secret_internal_network_name }}/state"
+    unix_socket: "{{ _bootstrap_capn_secret_lxd_socket }}"
+    method:      GET
+    status_code: 200
+    return_content: true
+  register: _bootstrap_capn_secret_network_state_register
+  changed_when: false
+
+- name: "bootstrap-capn-secret | lxd_https | resolve bridge IPv4"
+  ansible.builtin.set_fact:
+    _bootstrap_capn_secret_bridge_ipv4: >-
+      {{
+        (_bootstrap_capn_secret_network_state_register.json.metadata.addresses | default([]))
+        | selectattr('family', 'equalto', 'inet')
+        | rejectattr('scope', 'equalto', 'link')
+        | map(attribute='address')
+        | first | default('')
+      }}
+
+- name: "bootstrap-capn-secret | lxd_https | assert bridge IPv4 resolved"
+  ansible.builtin.assert:
+    that:
+      - _bootstrap_capn_secret_bridge_ipv4 | length > 0
+      - _bootstrap_capn_secret_bridge_ipv4 is match('^[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+$')
+    fail_msg: >-
+      bootstrap_capn_secret: could not resolve IPv4 of LXD-managed
+      bridge "{{ bootstrap_capn_secret_internal_network_name }}".
+      addresses=
+      {{ _bootstrap_capn_secret_network_state_register.json.metadata.addresses | default([]) }}
+
+- name: "bootstrap-capn-secret | lxd_https | compute target bind address"
+  ansible.builtin.set_fact:
+    _bootstrap_capn_secret_https_target: >-
+      {{
+        bootstrap_capn_secret_lxd_https_bind_address
+        if (bootstrap_capn_secret_lxd_https_bind_address | length > 0)
+        else (_bootstrap_capn_secret_bridge_ipv4 ~ ':' ~ _bootstrap_capn_secret_required_lxd_https_port)
+      }}
+
+# ---- Read live LXD daemon config + drift compare -----------------------
+
+- name: "bootstrap-capn-secret | lxd_https | read live LXD daemon config"
+  ansible.builtin.uri:
+    url:         "http://localhost/1.0"
+    unix_socket: "{{ _bootstrap_capn_secret_lxd_socket }}"
+    method:      GET
+    status_code: 200
+    return_content: true
+  register: _bootstrap_capn_secret_daemon_register
+  changed_when: false
+
+- name: "bootstrap-capn-secret | lxd_https | record current core.https_address"
+  ansible.builtin.set_fact:
+    _bootstrap_capn_secret_https_current: >-
+      {{
+        (_bootstrap_capn_secret_daemon_register.json.metadata.config | default({}))
+        ['core.https_address'] | default('')
+      }}
+
+# ---- Apply only on drift -----------------------------------------------
+
+- name: "bootstrap-capn-secret | lxd_https | enable HTTPS listener"
+  # PATCH /1.0 with `{config: {core.https_address: "..."}}` is the
+  # documented way to mutate daemon config; PUT replaces the whole
+  # config block, PATCH merges. We use PATCH to avoid stomping any
+  # operator-added daemon settings.
+  ansible.builtin.uri:
+    url:         "http://localhost/1.0"
+    unix_socket: "{{ _bootstrap_capn_secret_lxd_socket }}"
+    method:      PATCH
+    status_code: [200, 202]
+    body_format: json
+    body:
+      config:
+        core.https_address: "{{ _bootstrap_capn_secret_https_target }}"
+  when: _bootstrap_capn_secret_https_current != _bootstrap_capn_secret_https_target
+  changed_when: _bootstrap_capn_secret_https_current != _bootstrap_capn_secret_https_target
+
+# ---- Wait for the listener to actually accept connections --------------
+#
+# The PATCH above is asynchronous from the kernel's POV — the daemon
+# rebinds, and a subsequent immediate request can hit the gap. Poll
+# the endpoint once over the unix socket (no certificate needed) until
+# `core.https_address` reflects the target value AND the listener is
+# bound.
+
+- name: "bootstrap-capn-secret | lxd_https | wait for HTTPS listener active"
+  ansible.builtin.uri:
+    url:         "http://localhost/1.0"
+    unix_socket: "{{ _bootstrap_capn_secret_lxd_socket }}"
+    method:      GET
+    status_code: 200
+    return_content: true
+  register: _bootstrap_capn_secret_listener_wait_register
+  retries: "{{ bootstrap_capn_secret_wait_retries | int }}"
+  delay:   "{{ bootstrap_capn_secret_wait_delay | int }}"
+  until: >-
+    (
+      (_bootstrap_capn_secret_listener_wait_register.json.metadata.config | default({}))
+      ['core.https_address'] | default('')
+    ) == _bootstrap_capn_secret_https_target
+  changed_when: false

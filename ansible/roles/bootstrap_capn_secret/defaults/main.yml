@@ -1,0 +1,128 @@
+---
+# ==========================================================================
+# bootstrap_capn_secret — role defaults
+# ==========================================================================
+#
+# Purpose (plan §16.4): materialise the LXD identity Secret CAPN reads
+# to talk to the host LXD daemon. Three cross-cutting pieces:
+#
+#   1) host LXD HTTPS listener — `core.https_address` bound to the
+#      capi-int bridge IP, so the bootstrap container can reach the
+#      LXD API over the project's internal network and nothing on the
+#      external segment is exposed;
+#   2) client TLS cert/key — generated locally with community.crypto,
+#      trusted into LXD as a `client`-type certificate restricted to
+#      the `capi-lab` project so CAPN cannot touch foreign projects;
+#   3) Kubernetes Secret in `capn-system` — keys per CAPN identity-
+#      secret format: `server`, `server-crt`, `client-crt`,
+#      `client-key`, `project` (+ optional `clusterctl.cluster.x-k8s.io/move`
+#      label when `pivot_enabled=true` so `clusterctl move` carries it
+#      across).
+#
+# Public contract (plan §2.6.2): every variable exposed to callers is
+# prefixed `bootstrap_capn_secret_*`. Internal / derived facts use the
+# `_bootstrap_capn_secret_*` prefix.
+#
+# Substrate-required values (memory `feedback_required_values_hardcoded.md`):
+# anything whose empty / wrong override would silently break the role
+# lives in `vars/main.yml` under the `_bootstrap_capn_secret_required_*`
+# prefix and is NOT exposed below. Concretely:
+#   * Secret namespace (`capn-system`) — CAPN reads identity from there;
+#   * Secret name (`incus-identity`) — CAPN docs default + Phase 5+
+#     Cluster CR identityRef;
+#   * snap-LXD socket / server.crt path — invariant for our lxd_host;
+#   * LXD HTTPS port (8443) — CAPN-wide convention;
+#   * required Secret data keys list (5 keys per CAPN identity spec).
+
+# -- General ---------------------------------------------------------------
+
+bootstrap_capn_secret_enabled: true
+
+# Cross-role couplings — by value (plan §2.6.5 bans reading another
+# role's `<other>_*` directly).
+bootstrap_capn_secret_lxd_project: "capi-lab"
+bootstrap_capn_secret_internal_network_name: "capi-int"
+
+# Host-side kubeconfig produced by the bootstrap_clusterctl chain.
+bootstrap_capn_secret_kubeconfig_path: "{{ bootstrap_capn_secret_opt_root | default('/opt/capi-lab') }}/etc/bootstrap_clusterctl/bootstrap.kubeconfig"
+
+# -- LXD HTTPS listener --------------------------------------------------
+#
+# `core.https_address` semantics (LXD docs):
+#   * empty string  → HTTPS API disabled, only unix socket;
+#   * `<host>:<port>` → bind to that host/port specifically;
+#   * `[::]:<port>` → wildcard, all interfaces (NOT used by default).
+#
+# Default: auto-resolve the IPv4 of the capi-int LXD-managed bridge
+# (which is the gateway address inside bootstrap LXC) and bind there
+# only. That keeps the API endpoint reachable from the project's
+# internal subnet but invisible on the host's external NICs.
+#
+# Override `bootstrap_capn_secret_lxd_https_bind_address` to a literal
+# `<ip>:<port>` to skip auto-resolution. The PORT NUMBER (8443) is
+# substrate-locked in vars/main.yml.
+bootstrap_capn_secret_lxd_https_bind_address: ""   # empty → auto
+
+# -- Client cert generation (community.crypto pipeline) -------------------
+
+bootstrap_capn_secret_staging_dir: "{{ bootstrap_capn_secret_opt_root | default('/opt/capi-lab') }}/etc/bootstrap_capn_secret"
+bootstrap_capn_secret_client_key_path:  "{{ bootstrap_capn_secret_staging_dir }}/client.key"
+bootstrap_capn_secret_client_csr_path:  "{{ bootstrap_capn_secret_staging_dir }}/client.csr"
+bootstrap_capn_secret_client_cert_path: "{{ bootstrap_capn_secret_staging_dir }}/client.crt"
+
+# Cert metadata. CN is the canonical "this client" identity in LXD's
+# trust store; LXD displays it in `lxc config trust list`.
+bootstrap_capn_secret_client_cert_cn: "k8slab-capn"
+bootstrap_capn_secret_client_cert_country: "DE"
+bootstrap_capn_secret_client_cert_organization: "k8s-lab"
+bootstrap_capn_secret_client_cert_validity_days: 1095
+bootstrap_capn_secret_client_key_size: 4096
+bootstrap_capn_secret_client_key_type: "RSA"
+
+# Filesystem ownership for cert artefacts. The private key is 0600
+# root-only; the cert and CSR can be world-readable to ease debugging.
+bootstrap_capn_secret_staging_mode_dir:  "0750"
+bootstrap_capn_secret_staging_mode_key:  "0600"
+bootstrap_capn_secret_staging_mode_cert: "0644"
+
+# Trust-store entry name shown in `lxc config trust list`. Cosmetic.
+bootstrap_capn_secret_trust_name: "k8slab-capn"
+
+# -- Kubernetes Secret payload --------------------------------------------
+#
+# Secret name coordinated with the Cluster CR's `identityRef.name` in
+# Phase 5+ (§17.4 / §17.5). Sources from the project-wide contract
+# variable `capi.infrastructure_secret_name` (plan §8) so a single
+# global change keeps both ends — the Secret produced here AND the
+# Cluster CR identityRef downstream — in sync. Falls back to the CAPN
+# docs default ("incus-identity") for standalone runs.
+bootstrap_capn_secret_name: "{{ infrastructure_secret_name | default('incus-identity') }}"
+
+# Whether `clusterctl.cluster.x-k8s.io/move: "true"` label is added.
+# Sources from the project-wide `global.pivot_enabled` (plan §8) so a
+# single global flag flip propagates: pivot ON → label present →
+# `clusterctl move` (plan §19) carries the Secret across to the
+# post-pivot management cluster. For MVP default (pivot_enabled=false)
+# the label is omitted; flipping the global and re-running the role
+# adds the label idempotently via server-side apply.
+bootstrap_capn_secret_pivot_enabled: "{{ pivot_enabled | default(false) }}"
+
+# Rendered Secret manifest staged on the host for ops audit. The
+# runtime apply path uses the in-memory definition, this file is
+# byte-stable read-only artefact.
+bootstrap_capn_secret_manifest_path: "{{ bootstrap_capn_secret_staging_dir }}/secret.yaml"
+
+# -- Wait timing ----------------------------------------------------------
+#
+# Used by the post-PATCH listener readiness loop (`core.https_address`
+# change is async — the daemon rebinds and a subsequent immediate
+# request can hit the gap).
+bootstrap_capn_secret_wait_retries: 30
+bootstrap_capn_secret_wait_delay:   2
+
+# -- Flow control (plan §2.6.3) -------------------------------------------
+
+bootstrap_capn_secret_flow_control_lxd_https:   true
+bootstrap_capn_secret_flow_control_client_cert: true
+bootstrap_capn_secret_flow_control_lxd_trust:   true
+bootstrap_capn_secret_flow_control_secret:      true

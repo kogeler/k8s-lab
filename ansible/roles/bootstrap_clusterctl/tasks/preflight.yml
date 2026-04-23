@@ -1,0 +1,120 @@
+---
+# Input validation + substrate assertions (plan §2.6.2). Cheap, idempotent
+# and side-effect free; safe to gate downstream tasks behind.
+
+- name: "bootstrap-clusterctl | preflight | gather facts"
+  ansible.builtin.setup:
+    gather_subset:
+      - "!all"
+      - "!any"
+      - min
+  when: ansible_facts['os_family'] is not defined
+
+- name: "bootstrap-clusterctl | preflight | target OS is Debian 13+"
+  ansible.builtin.assert:
+    that:
+      - ansible_facts['os_family'] == 'Debian'
+      - ansible_facts['distribution'] == 'Debian'
+      - (ansible_facts['distribution_major_version'] | int) >= 13
+    fail_msg: >-
+      bootstrap_clusterctl targets Debian 13 Trixie or newer on the LXD
+      host (the bootstrap container OS is independent).
+
+- name: "bootstrap-clusterctl | preflight | validate identifiers"
+  ansible.builtin.assert:
+    that:
+      - bootstrap_clusterctl_project is string
+      - bootstrap_clusterctl_project is match('^[a-z][a-z0-9_-]{0,62}$')
+      - bootstrap_clusterctl_instance_name is string
+      - bootstrap_clusterctl_instance_name is match('^[a-z][a-z0-9-]{0,62}$')
+      - bootstrap_clusterctl_container_ifname is match('^[a-z][a-z0-9]{0,14}$')
+    fail_msg: >-
+      bootstrap_clusterctl: project / instance / ifname must be
+      lowercase alnum (+ '-'/'_'), start with a letter, ≤63 chars.
+
+- name: "bootstrap-clusterctl | preflight | validate paths + modes"
+  ansible.builtin.assert:
+    that:
+      - bootstrap_clusterctl_host_bin_dir is match('^/')
+      - bootstrap_clusterctl_clusterctl_path is match('^/')
+      - bootstrap_clusterctl_staging_dir is match('^/')
+      - bootstrap_clusterctl_kubeconfig_path is match('^/')
+      - bootstrap_clusterctl_config_path is match('^/')
+      - bootstrap_clusterctl_staging_mode_dir is match('^0[0-7]{3}$')
+      - bootstrap_clusterctl_staging_mode_kubeconfig is match('^0[0-7]{3}$')
+      - bootstrap_clusterctl_staging_mode_config is match('^0[0-7]{3}$')
+    fail_msg: >-
+      bootstrap_clusterctl: paths must be absolute, modes must be
+      4-digit octal strings.
+
+- name: "bootstrap-clusterctl | preflight | validate version + flags"
+  ansible.builtin.assert:
+    that:
+      - bootstrap_clusterctl_capn_version is string
+      - bootstrap_clusterctl_capn_version is match('^v[0-9]+\\.[0-9]+\\.[0-9]+')
+      - bootstrap_clusterctl_extra_providers is sequence
+      - bootstrap_clusterctl_extra_init_flags is sequence
+      - bootstrap_clusterctl_extra_wait_deployments is sequence
+      - bootstrap_clusterctl_init_timeout | int > 0
+      - bootstrap_clusterctl_wait_retries | int > 0
+      - bootstrap_clusterctl_wait_delay | int > 0
+      - bootstrap_clusterctl_cluster_topology_enabled in [true, false]
+    fail_msg: >-
+      bootstrap_clusterctl: capn_version must look like vX.Y.Z;
+      extra_* must be sequences; timeouts must be positive ints.
+
+- name: "bootstrap-clusterctl | preflight | assert host clusterctl present"
+  ansible.builtin.stat:
+    path: "{{ bootstrap_clusterctl_clusterctl_path }}"
+  register: _bootstrap_clusterctl_clusterctl_stat
+  changed_when: false
+
+- name: "bootstrap-clusterctl | preflight | clusterctl is an executable regular file"
+  ansible.builtin.assert:
+    that:
+      - _bootstrap_clusterctl_clusterctl_stat.stat.exists
+      - _bootstrap_clusterctl_clusterctl_stat.stat.executable
+      - not _bootstrap_clusterctl_clusterctl_stat.stat.isdir
+    fail_msg: >-
+      bootstrap_clusterctl: clusterctl ({{ bootstrap_clusterctl_clusterctl_path }})
+      must exist as an executable regular file. Normally delivered by
+      binary_fetch.
+
+- name: "bootstrap-clusterctl | preflight | fetch live container state"
+  ansible.builtin.uri:
+    url: >-
+      http://localhost/1.0/instances/{{ bootstrap_clusterctl_instance_name }}/state?project={{ bootstrap_clusterctl_project }}
+    unix_socket: "{{ _bootstrap_clusterctl_lxd_socket }}"
+    method:      GET
+    status_code: 200
+    return_content: true
+  register: _bootstrap_clusterctl_state_register
+  changed_when: false
+
+- name: "bootstrap-clusterctl | preflight | resolve container IPv4 on readiness nic"
+  ansible.builtin.set_fact:
+    _bootstrap_clusterctl_container_ipv4: >-
+      {{
+        (_bootstrap_clusterctl_state_register.json.metadata.network | default({}))
+        | dict2items
+        | selectattr('key', 'equalto', bootstrap_clusterctl_container_ifname)
+        | map(attribute='value')
+        | map(attribute='addresses')
+        | map('default', [])
+        | flatten
+        | selectattr('family', 'equalto', 'inet')
+        | rejectattr('scope', 'equalto', 'local')
+        | map(attribute='address')
+        | first | default('')
+      }}
+
+- name: "bootstrap-clusterctl | preflight | assert container IPv4 resolved"
+  ansible.builtin.assert:
+    that:
+      - _bootstrap_clusterctl_container_ipv4 | length > 0
+      - _bootstrap_clusterctl_container_ipv4 is match('^[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+$')
+    fail_msg: >-
+      bootstrap_clusterctl: container "{{ bootstrap_clusterctl_instance_name }}"
+      has no IPv4 lease on "{{ bootstrap_clusterctl_container_ifname }}" — got
+      "{{ _bootstrap_clusterctl_container_ipv4 }}". lxd_bootstrap_instance's
+      readiness gate should have caught this; check the meta-dep chain.

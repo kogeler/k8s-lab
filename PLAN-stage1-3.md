@@ -81,15 +81,31 @@ K3s docs и FAQ explicitly support disabling packaged components like `traefik` 
 
 ## 16.3. Role: `bootstrap_clusterctl`
 
+**Статус: выполнено в Step 6 (2026-04-23) — полное описание,
+implementation notes (k8s_info native-first, idempotence pre-check
+на existing CAPN deployment, async clusterctl init, server URL
+rewrite в host-side kubeconfig, jsonpath quirk для CAPI Provider CR
+top-level fields), substrate-required values в `vars/main.yml`
+живут в §13.10.**
+
 Делает:
 
 * кладёт pinned `clusterctl.yaml`;
 * выполняет `clusterctl init --infrastructure incus[:version]`;
-* включает `CLUSTER_TOPOLOGY=true`, если используем CAPN default ClusterClass/topology
+* включает `CLUSTER_TOPOLOGY=true`, если используем CAPN default
+  ClusterClass/topology;
+* материализует host-side kubeconfig из in-container `k3s.yaml` с
+  переписанным `clusters[].cluster.server` под container-eth0 IPv4.
 
 `clusterctl init` automatically installs core, kubeadm bootstrap and kubeadm control-plane providers; clusterctl config file supports repository and cert-manager overrides. ([main.cluster-api.sigs.k8s.io][7])
 
 ## 16.4. Role: `bootstrap_capn_secret`
+
+**Статус: выполнено в Step 6 (2026-04-23) — полное описание,
+deviation notes (PEM→base64 DER strip для LXD trust API, async PATCH
+core.https_address с readiness poll, restriction-drift assertion на
+existing trust entries) и substrate-required values в `vars/main.yml`
+живут в §13.11.**
 
 Создаёт Secret с:
 
@@ -101,6 +117,24 @@ K3s docs и FAQ explicitly support disabling packaged components like `traefik` 
 * label `clusterctl.cluster.x-k8s.io/move: "true"` если `pivot_enabled=true`
 
 CAPN identity secret format это прямо описывает. ([capn.linuxcontainers.org][19])
+
+Дополнительно к собственно Secret-материализации, роль владеет двумя
+host/LXD-уровневыми операциями (минимально-инвазивный scope, не
+пересекается с lxd_host's snap/socket-ownership):
+
+* PATCH `core.https_address: <bridge-ipv4>:8443` на LXD daemon —
+  binding только на `capi-int` LXD-managed bridge IP, чтобы CAPN
+  внутри bootstrap LXC мог дотянуться до `/1.0/...` через project
+  internal subnet, а на host'овые внешние NIC ничего не торчало;
+* регистрация client TLS cert как `restricted: true + projects:
+  [capi-lab]` trust entry — CAPN не сможет коснуться чужих проектов
+  (даже если будут операторские LXD-сущности вне `capi-lab`).
+
+Public defaults `bootstrap_capn_secret_name` и
+`bootstrap_capn_secret_pivot_enabled` sourced из плана §8 globals
+(`infrastructure_secret_name` и `pivot_enabled` соответственно), что
+обеспечивает single-source-of-truth для координации с Phase 5+
+Cluster CR's `identityRef` и `clusterctl move` workflow.
 
 ## 16.5. Role: `bootstrap_api_publish`
 
@@ -145,25 +179,28 @@ Acceptance: достигнуто (см. §14.5).
 
 ## 16.8. Phase 4 — bootstrap management cluster
 
-**Статус: частично выполнено в Step 4 (2026-04-22) — см. §14.6.**
-`bootstrap_k3s` готов; `bootstrap_clusterctl` / `bootstrap_capn_secret`
-/ `bootstrap_api_publish` остаются.
+**Статус: частично выполнено в Step 4 + Step 6 — см. §14.6.**
+`bootstrap_k3s` готов с Step 4; `bootstrap_clusterctl` +
+`bootstrap_capn_secret` готовы с Step 6; `bootstrap_api_publish` и
+`export_artifacts` остаются.
 
 Роли:
 
 * `bootstrap_k3s` ✓ (Step 4 — §13.9)
-* `bootstrap_clusterctl` ☐ (§16.3)
-* `bootstrap_capn_secret` ☐ (§16.4)
+* `bootstrap_clusterctl` ✓ (Step 6 — §13.10)
+* `bootstrap_capn_secret` ✓ (Step 6 — §13.11)
 * `bootstrap_api_publish` ☐ (§16.5)
+* `export_artifacts` ☐ (§16.6)
 
 Acceptance (целая phase, после оставшихся ролей):
 
 * bootstrap API reachable from runner
-* `clusterctl init` done
-* providers healthy
-* LXD identity secret present
+* `clusterctl init` done                          ✓ (Step 6)
+* providers healthy                               ✓ (Step 6)
+* LXD identity secret present                     ✓ (Step 6)
 
-Acceptance Step 4 части (доказано verify scenario'ями) — см. §14.6.
+Acceptance Step 4 + Step 6 частей (доказано verify scenario'ями) —
+см. §14.6.
 
 [1]: https://capn.linuxcontainers.org/?utm_source=chatgpt.com "Introduction - The cluster-api-provider-incus book"
 [2]: https://documentation.ubuntu.com/lxd/latest/reference/network_bridge/?utm_source=chatgpt.com "Bridge network - LXD documentation"

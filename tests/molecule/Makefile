@@ -57,6 +57,8 @@ SCENARIOS := \
 	lxd-profiles \
 	lxd-bootstrap-instance \
 	bootstrap-k3s \
+	bootstrap-clusterctl \
+	bootstrap-capn-secret \
 	gate-ext-l2 \
 	gate-cni \
 	bootstrap-cluster \

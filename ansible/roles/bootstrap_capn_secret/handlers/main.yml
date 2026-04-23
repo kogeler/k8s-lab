@@ -1,0 +1,8 @@
+---
+# Handlers contract (plan §2.6.4): reactive only. bootstrap_capn_secret
+# PATCH-es LXD `core.https_address` (daemon rebinds itself, no
+# systemctl reload), POSTs trust entries (immediate via REST), and
+# server-side applies a K8s Secret (no controller restart needed —
+# CAPN watches the Secret). Placeholder so future reactive behaviour
+# lands in the canonical location rather than being invented in
+# tasks/.

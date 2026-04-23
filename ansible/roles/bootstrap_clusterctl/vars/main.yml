@@ -1,0 +1,87 @@
+---
+# ==========================================================================
+# bootstrap_clusterctl — substrate-required baseline
+# ==========================================================================
+#
+# Role-internal. Holds the substrate the lab contract REQUIRES on every
+# bootstrap-management-cluster init. Rationale (memory
+# `feedback_required_values_hardcoded.md`): if a value missing here
+# would silently leave Stage 1 broken end-to-end (clusterctl init
+# fails, kubeconfig pull fails, healthchecks pass against the wrong
+# resources), it does not belong in `defaults/main.yml`.
+#
+# Public extras for tunable surface live in `defaults/main.yml` under
+# `bootstrap_clusterctl_extra_*`.
+
+# ---- Snap-LXD invariants (lxd_host owns these paths) -------------------
+
+# REST socket every native ansible.builtin.uri call talks to. Snap LXD
+# install — only path that exists; lxd_host doesn't expose a knob for
+# changing it.
+_bootstrap_clusterctl_lxd_socket: "/var/snap/lxd/common/lxd/unix.socket"
+
+# Absolute path to the snap LXD CLI binary; /snap/bin is not on the
+# default non-interactive SSH PATH, so we always reference the binary
+# explicitly. Used by the `lxc file pull` step that fetches k3s.yaml
+# out of the bootstrap container (no native ansible module in the SSH
+# →host→container topology, see plan §13.9 for the same shell-fallback
+# pattern in bootstrap_k3s).
+_bootstrap_clusterctl_lxc_cli: "/snap/bin/lxc"
+
+# k3s always writes its admin kubeconfig to this path inside the
+# container; bootstrap_k3s healthchecks already asserted it exists +
+# is non-empty. Override on the public surface would silently make
+# `lxc file pull` fetch the wrong file (or fail), so the path is
+# substrate-locked.
+_bootstrap_clusterctl_container_kubeconfig_path: "/etc/rancher/k3s/k3s.yaml"
+
+# ---- CAPN provider name registered in clusterctl --------------------
+
+# `clusterctl init --infrastructure <name>:<ver>` resolves <name>
+# against either clusterctl's built-in provider registry or the
+# providers list in clusterctl.yaml. CAPN is registered as `incus`
+# upstream — that name is hardcoded across the Cluster API book and
+# the CAPN release manifests. A consumer override here would make
+# init fail with `provider <X> does not exist`. The provider URL
+# stays tunable in defaults for airgap mirror cases.
+_bootstrap_clusterctl_required_provider_name: "incus"
+
+# ---- Required Deployments waited on in healthchecks -----------------
+
+# CAPI provider deployments the role waits for after init. The first
+# three are baseline core-CAPI (clusterctl init always installs them),
+# the fourth is CAPN. Each entry: `namespace`, `deployment` (Deployment
+# name), `condition` (k8s status condition).
+_bootstrap_clusterctl_required_deployments:
+  - namespace:  "capi-system"
+    deployment: "capi-controller-manager"
+    condition:  "Available"
+  - namespace:  "capi-kubeadm-bootstrap-system"
+    deployment: "capi-kubeadm-bootstrap-controller-manager"
+    condition:  "Available"
+  - namespace:  "capi-kubeadm-control-plane-system"
+    deployment: "capi-kubeadm-control-plane-controller-manager"
+    condition:  "Available"
+  # CAPN namespace name (`capn-system`) is taken from the upstream
+  # release manifest of cluster-api-provider-incus v0.8.x. If a future
+  # CAPN release renames the namespace, defaults expose
+  # `bootstrap_clusterctl_extra_wait_deployments` for the addition and
+  # this entry can be moved to that knob in a follow-up bump.
+  - namespace:  "capn-system"
+    deployment: "capn-controller-manager"
+    condition:  "Available"
+
+# cert-manager deployments. clusterctl init installs cert-manager (a
+# hard prerequisite for CAPI webhooks) before the providers themselves;
+# we wait on these too because their absence would mask provider-init
+# failures with cryptic webhook errors downstream.
+_bootstrap_clusterctl_required_cert_manager_deployments:
+  - namespace:  "cert-manager"
+    deployment: "cert-manager"
+    condition:  "Available"
+  - namespace:  "cert-manager"
+    deployment: "cert-manager-cainjector"
+    condition:  "Available"
+  - namespace:  "cert-manager"
+    deployment: "cert-manager-webhook"
+    condition:  "Available"

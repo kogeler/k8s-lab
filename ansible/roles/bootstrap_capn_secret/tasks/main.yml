@@ -1,0 +1,57 @@
+---
+# Dispatcher-only (plan §2.6.2). Each include file covers one concern.
+
+- name: "bootstrap-capn-secret | preflight"
+  ansible.builtin.include_tasks:
+    file: preflight.yml
+    apply:
+      tags: [bootstrap_capn_secret, bootstrap-capn-secret, bootstrap_capn_secret_preflight]
+  tags: [bootstrap_capn_secret, bootstrap-capn-secret, bootstrap_capn_secret_preflight]
+
+- name: "bootstrap-capn-secret | lxd_https"
+  ansible.builtin.include_tasks:
+    file: lxd_https.yml
+    apply:
+      tags: [bootstrap_capn_secret, bootstrap-capn-secret, bootstrap_capn_secret_lxd_https]
+  when:
+    - bootstrap_capn_secret_enabled
+    - bootstrap_capn_secret_flow_control_lxd_https
+  tags: [bootstrap_capn_secret, bootstrap-capn-secret, bootstrap_capn_secret_lxd_https]
+
+- name: "bootstrap-capn-secret | client_cert"
+  ansible.builtin.include_tasks:
+    file: client_cert.yml
+    apply:
+      tags: [bootstrap_capn_secret, bootstrap-capn-secret, bootstrap_capn_secret_client_cert]
+  when:
+    - bootstrap_capn_secret_enabled
+    - bootstrap_capn_secret_flow_control_client_cert
+  tags: [bootstrap_capn_secret, bootstrap-capn-secret, bootstrap_capn_secret_client_cert]
+
+- name: "bootstrap-capn-secret | lxd_trust"
+  ansible.builtin.include_tasks:
+    file: lxd_trust.yml
+    apply:
+      tags: [bootstrap_capn_secret, bootstrap-capn-secret, bootstrap_capn_secret_lxd_trust]
+  when:
+    - bootstrap_capn_secret_enabled
+    - bootstrap_capn_secret_flow_control_lxd_trust
+  tags: [bootstrap_capn_secret, bootstrap-capn-secret, bootstrap_capn_secret_lxd_trust]
+
+- name: "bootstrap-capn-secret | secret"
+  ansible.builtin.include_tasks:
+    file: secret.yml
+    apply:
+      tags: [bootstrap_capn_secret, bootstrap-capn-secret, bootstrap_capn_secret_secret]
+  when:
+    - bootstrap_capn_secret_enabled
+    - bootstrap_capn_secret_flow_control_secret
+  tags: [bootstrap_capn_secret, bootstrap-capn-secret, bootstrap_capn_secret_secret]
+
+- name: "bootstrap-capn-secret | healthchecks"
+  ansible.builtin.include_tasks:
+    file: healthchecks.yml
+    apply:
+      tags: [bootstrap_capn_secret, bootstrap-capn-secret, bootstrap_capn_secret_healthchecks]
+  when: bootstrap_capn_secret_enabled
+  tags: [bootstrap_capn_secret, bootstrap-capn-secret, bootstrap_capn_secret_healthchecks]

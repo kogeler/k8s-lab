@@ -1,0 +1,60 @@
+---
+# Run `clusterctl init` against the bootstrap cluster.
+#
+# Idempotence model: clusterctl init is NOT idempotent on its own — a
+# second invocation against an already-initialised cluster fails with
+# `there is already an instance of the "<provider>" provider installed`.
+# We therefore probe with kubectl first: if the CAPN controller
+# Deployment exists in capn-system, every other provider is already in
+# place too (clusterctl init is all-or-nothing) and we skip the apply.
+
+- name: "bootstrap-clusterctl | init | probe CAPN controller deployment"
+  # k8s_info is read-only and does not fail when the resource is
+  # absent — `resources` is just an empty list. That makes the
+  # idempotence flag below a single boolean check, no rc-juggling.
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ bootstrap_clusterctl_kubeconfig_path }}"
+    api_version: "apps/v1"
+    kind: "Deployment"
+    namespace: "capn-system"
+    name: "capn-controller-manager"
+  register: _bootstrap_clusterctl_probe_register
+  changed_when: false
+
+- name: "bootstrap-clusterctl | init | record initialised flag"
+  ansible.builtin.set_fact:
+    _bootstrap_clusterctl_already_initialised: >-
+      {{ (_bootstrap_clusterctl_probe_register.resources | default([])) | length > 0 }}
+
+- name: "bootstrap-clusterctl | init | compose clusterctl init argv"
+  # Build the argv list as a fact rather than inline in the command
+  # task — keeps the YAML readable and makes the conditional `when:`
+  # below the only branching surface.
+  ansible.builtin.set_fact:
+    _bootstrap_clusterctl_init_argv: >-
+      {{
+        [
+          bootstrap_clusterctl_clusterctl_path,
+          'init',
+          '--config=' ~ bootstrap_clusterctl_config_path,
+          '--kubeconfig=' ~ bootstrap_clusterctl_kubeconfig_path,
+          '--infrastructure=' ~ _bootstrap_clusterctl_required_provider_name ~ ':' ~ bootstrap_clusterctl_capn_version,
+          '--wait-providers',
+        ] + (bootstrap_clusterctl_extra_init_flags | list)
+      }}
+
+- name: "bootstrap-clusterctl | init | run clusterctl init"
+  # Env: CLUSTER_TOPOLOGY=true flips the ClusterClass / managed-topology
+  # feature gate on the core controller (plan §8 capi.cluster_topology_enabled).
+  # async/poll: cold-cache image pulls (cert-manager + 4 providers) push
+  # init to ~3 minutes; foreground SSH timeouts on shared molecule runs
+  # would interrupt that. async + poll keeps the SSH session alive.
+  ansible.builtin.command:
+    argv: "{{ _bootstrap_clusterctl_init_argv }}"
+  environment:
+    CLUSTER_TOPOLOGY: "{{ 'true' if bootstrap_clusterctl_cluster_topology_enabled else 'false' }}"
+  register: _bootstrap_clusterctl_init_register
+  changed_when: _bootstrap_clusterctl_init_register.rc == 0
+  when: not _bootstrap_clusterctl_already_initialised
+  async: "{{ bootstrap_clusterctl_init_timeout | int }}"
+  poll: 5

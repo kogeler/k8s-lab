@@ -1,0 +1,105 @@
+---
+# Generate (once) the client TLS keypair LXD will accept as a trusted
+# `client` certificate. All three community.crypto modules below are
+# idempotent — they re-read the existing artefact and skip if it
+# satisfies the declared parameters.
+
+- name: "bootstrap-capn-secret | client_cert | ensure staging dir on host"
+  ansible.builtin.file:
+    path:  "{{ bootstrap_capn_secret_staging_dir }}"
+    state: directory
+    owner: "root"
+    group: "root"
+    mode:  "{{ bootstrap_capn_secret_staging_mode_dir }}"
+
+- name: "bootstrap-capn-secret | client_cert | private key"
+  community.crypto.openssl_privatekey:
+    path:  "{{ bootstrap_capn_secret_client_key_path }}"
+    type:  "{{ bootstrap_capn_secret_client_key_type }}"
+    size:  "{{ bootstrap_capn_secret_client_key_size | int }}"
+    owner: "root"
+    group: "root"
+    mode:  "{{ bootstrap_capn_secret_staging_mode_key }}"
+
+- name: "bootstrap-capn-secret | client_cert | CSR"
+  community.crypto.openssl_csr:
+    path:            "{{ bootstrap_capn_secret_client_csr_path }}"
+    privatekey_path: "{{ bootstrap_capn_secret_client_key_path }}"
+    common_name:     "{{ bootstrap_capn_secret_client_cert_cn }}"
+    country_name:    "{{ bootstrap_capn_secret_client_cert_country }}"
+    organization_name: "{{ bootstrap_capn_secret_client_cert_organization }}"
+    # LXD trust validates the cert as a client cert — extended key
+    # usage `clientAuth` is not strictly required (LXD checks the
+    # raw fingerprint against its trust store), but matching the
+    # standard X.509 v3 use makes the trust entry honest about its
+    # intent and quiets `lxc config trust list` warnings.
+    extended_key_usage:
+      - "clientAuth"
+    owner: "root"
+    group: "root"
+    mode:  "{{ bootstrap_capn_secret_staging_mode_cert }}"
+
+- name: "bootstrap-capn-secret | client_cert | self-signed certificate"
+  community.crypto.x509_certificate:
+    path:            "{{ bootstrap_capn_secret_client_cert_path }}"
+    privatekey_path: "{{ bootstrap_capn_secret_client_key_path }}"
+    csr_path:        "{{ bootstrap_capn_secret_client_csr_path }}"
+    provider:        "selfsigned"
+    selfsigned_not_after: "+{{ bootstrap_capn_secret_client_cert_validity_days | int }}d"
+    owner: "root"
+    group: "root"
+    mode:  "{{ bootstrap_capn_secret_staging_mode_cert }}"
+
+# ---- Compute SHA256 fingerprint for trust-store membership lookup ------
+#
+# LXD identifies trusted certificates by their SHA256 fingerprint of
+# the DER bytes. community.crypto.x509_certificate_info returns it as
+# `fingerprints.sha256` in colon-separated upper-hex; we strip the
+# colons and lowercase to match LXD's path-segment format
+# (`/1.0/certificates/<lower-hex-no-colons>`).
+
+- name: "bootstrap-capn-secret | client_cert | inspect generated certificate"
+  community.crypto.x509_certificate_info:
+    path: "{{ bootstrap_capn_secret_client_cert_path }}"
+  register: _bootstrap_capn_secret_cert_info_register
+  changed_when: false
+
+- name: "bootstrap-capn-secret | client_cert | record fingerprint (lower-hex, no colons)"
+  ansible.builtin.set_fact:
+    _bootstrap_capn_secret_client_fingerprint: >-
+      {{
+        (_bootstrap_capn_secret_cert_info_register.fingerprints.sha256
+         | regex_replace(':', '')
+         | trim
+         | lower)
+      }}
+
+- name: "bootstrap-capn-secret | client_cert | assert fingerprint shape"
+  ansible.builtin.assert:
+    that:
+      - _bootstrap_capn_secret_client_fingerprint is match('^[0-9a-f]{64}$')
+    fail_msg: >-
+      bootstrap_capn_secret: x509_certificate_info returned malformed
+      sha256 fingerprint "{{ _bootstrap_capn_secret_client_fingerprint }}"
+      for {{ bootstrap_capn_secret_client_cert_path }}.
+
+- name: "bootstrap-capn-secret | client_cert | slurp client cert (PEM, for trust + Secret)"
+  ansible.builtin.slurp:
+    src: "{{ bootstrap_capn_secret_client_cert_path }}"
+  register: _bootstrap_capn_secret_client_cert_slurp
+
+- name: "bootstrap-capn-secret | client_cert | slurp client key (PEM, for Secret)"
+  ansible.builtin.slurp:
+    src: "{{ bootstrap_capn_secret_client_key_path }}"
+  register: _bootstrap_capn_secret_client_key_slurp
+
+- name: "bootstrap-capn-secret | client_cert | slurp LXD server cert (PEM, for Secret)"
+  ansible.builtin.slurp:
+    src: "{{ _bootstrap_capn_secret_lxd_server_cert_path }}"
+  register: _bootstrap_capn_secret_server_cert_slurp
+
+- name: "bootstrap-capn-secret | client_cert | record decoded PEM bodies"
+  ansible.builtin.set_fact:
+    _bootstrap_capn_secret_client_cert_pem: "{{ _bootstrap_capn_secret_client_cert_slurp.content | b64decode }}"
+    _bootstrap_capn_secret_client_key_pem:  "{{ _bootstrap_capn_secret_client_key_slurp.content | b64decode }}"
+    _bootstrap_capn_secret_server_cert_pem: "{{ _bootstrap_capn_secret_server_cert_slurp.content | b64decode }}"

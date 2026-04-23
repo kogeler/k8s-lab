@@ -13,3 +13,13 @@ collections:
     version: ">=12.6.0"
   - name: community.crypto
     version: ">=3.2.0"
+  # kubernetes.core ships k8s / k8s_info modules used by Phase 4 roles
+  # that talk to the bootstrap k3s cluster (bootstrap_clusterctl,
+  # bootstrap_capn_secret) and downstream Phase 5+ work that touches
+  # CAPI / CAPN CRDs. Hard requirement on the EXECUTOR node (the host
+  # the module runs on — for our roles, the LXD host VM): the
+  # `kubernetes` PyPI package, installed via `apt install
+  # python3-kubernetes` on Debian Trixie. Added to the shared Molecule
+  # prepare playbook so test scenarios get it for free.
+  - name: kubernetes.core
+    version: ">=6.4.0"

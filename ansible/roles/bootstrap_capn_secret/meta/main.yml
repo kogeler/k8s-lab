@@ -1,0 +1,29 @@
+---
+galaxy_info:
+  role_name: bootstrap_capn_secret
+  namespace: k8slab
+  author: k8s-lab contributors
+  description: >-
+    Materialise the LXD identity Secret CAPN reads to talk to the host
+    daemon (plan §16.4). Generates a client cert/key, trusts it into
+    LXD restricted to the capi-lab project, exposes the LXD HTTPS
+    listener on the capi-int bridge, and applies the Secret to
+    capn-system in the bootstrap k3s cluster.
+  license: MIT
+  min_ansible_version: "2.16"
+  platforms:
+    - name: Debian
+      versions:
+        - trixie
+  galaxy_tags:
+    - kubernetes
+    - clusterapi
+    - lxd
+    - bootstrap
+
+dependencies:
+  # bootstrap_clusterctl creates the capn-system namespace (via
+  # clusterctl init --infrastructure incus) and brings the host-side
+  # kubeconfig + kubectl binary in scope. It transitively pulls
+  # bootstrap_k3s and the rest of the substrate chain.
+  - role: bootstrap_clusterctl
