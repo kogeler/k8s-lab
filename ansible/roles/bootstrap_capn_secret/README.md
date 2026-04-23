@@ -1,7 +1,7 @@
 # bootstrap_capn_secret
 
 Materialise the LXD identity Secret CAPN reads to talk to the host
-LXD daemon. Plan §16.4.
+LXD daemon. Plan §15.4.
 
 ## Scope
 
@@ -22,10 +22,10 @@ LXD daemon. Plan §16.4.
 ## Out of scope
 
 * publishing the bootstrap API on a host port — opt-in LXD proxy
-  device on the bootstrap instance, plan §16.5; host firewall is
+  device on the bootstrap instance, plan §15.5; host firewall is
   out-of-project-scope, plan §11.4;
 * exporting `bootstrap.kubeconfig` to the runner side
-  (`export_artifacts`, plan §16.6);
+  (`export_artifacts`, plan §15.6);
 * Cluster CR lifecycle (Phase 5+).
 
 ## Idempotence
@@ -52,7 +52,7 @@ these values:
   by the upstream CAPN release manifest (v0.8.x);
 * `_bootstrap_capn_secret_required_lxd_https_port` (`8443`) — the
   CAPN-wide port convention; CAPN tutorials and host firewall rules
-  in §16.5 target it;
+  in §15.5 target it;
 * `_bootstrap_capn_secret_required_keys` — the five identity-spec
   data keys CAPN demands;
 * `_bootstrap_capn_secret_required_trust_type` (`client`) — only
@@ -71,10 +71,10 @@ single global flip stays coordinated with downstream consumers:
 
 * `bootstrap_capn_secret_name` ← `k8s_lab_infrastructure_secret_name` —
   must match the Cluster CR's `identityRef.name` in Phase 5+
-  (`§17.4` / `§17.5`);
+  (`§16.4` / `§16.5`);
 * `bootstrap_capn_secret_pivot_enabled` ← `k8s_lab_pivot_enabled` —
   drives the `clusterctl.cluster.x-k8s.io/move=true` label that
-  `clusterctl move` (`§19`) follows.
+  `clusterctl move` (`§18`) follows.
 
 ## Testing
 

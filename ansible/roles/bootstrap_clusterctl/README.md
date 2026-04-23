@@ -2,7 +2,7 @@
 
 Run `clusterctl init` against the bootstrap k3s cluster to install
 cert-manager, the core Cluster API providers and the CAPN
-(`cluster-api-provider-incus`) infrastructure provider. Plan §16.3.
+(`cluster-api-provider-incus`) infrastructure provider. Plan §15.3.
 
 ## Scope
 
@@ -20,17 +20,17 @@ cert-manager, the core Cluster API providers and the CAPN
 ## Out of scope
 
 * publishing the bootstrap API outside the host — opt-in LXD proxy
-  device on the bootstrap instance, plan §16.5; host firewall is
+  device on the bootstrap instance, plan §15.5; host firewall is
   out-of-project-scope, plan §11.4;
 * creating the LXD identity Secret CAPN reads to talk to the host
-  daemon (`bootstrap_capn_secret`, plan §16.4);
+  daemon (`bootstrap_capn_secret`, plan §15.4);
 * exporting `bootstrap.kubeconfig` to the runner side
-  (`export_artifacts`, plan §16.6).
+  (`export_artifacts`, plan §15.6).
 
 ## Execution model
 
 clusterctl + kubectl land on the LXD host through `binary_fetch` (plan
-§16.1). This role drives them from the host — never from inside the
+§15.1). This role drives them from the host — never from inside the
 bootstrap container — using a kubeconfig fetched via `lxc file pull`
 and rewritten so `clusters[].cluster.server` points at the container's
 eth0 IPv4 instead of the in-container `127.0.0.1`. Same SSH→host

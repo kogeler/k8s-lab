@@ -64,7 +64,7 @@ repo, so disabling any of them silently breaks downstream:
   LXD-managed bridge and tighten this back).
 * `restricted.devices.unix-char = allow` — profiles map host
   `/dev/kmsg` into k8s nodes for kubelet's oomWatcher.
-* `restricted.devices.proxy = allow` — plan §16.5 publish path:
+* `restricted.devices.proxy = allow` — plan §15.5 publish path:
   consumers pass an LXD proxy device through
   `lxd_bootstrap_instance_devices` to expose a container port on
   the host (default LXD policy forbids proxy devices in restricted

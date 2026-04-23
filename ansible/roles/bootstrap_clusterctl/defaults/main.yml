@@ -3,7 +3,7 @@
 # bootstrap_clusterctl — role defaults
 # ==========================================================================
 #
-# Purpose (plan §16.3): turn the bare bootstrap k3s cluster into a CAPI
+# Purpose (plan §15.3): turn the bare bootstrap k3s cluster into a CAPI
 # management cluster by running `clusterctl init` with cert-manager,
 # core CAPI, kubeadm bootstrap / control-plane, and the CAPN
 # infrastructure provider.
@@ -52,7 +52,7 @@ bootstrap_clusterctl_container_ifname: "eth0"
 
 # -- Host binary location -------------------------------------------------
 
-# Host-side bin dir owned by binary_fetch (plan §16.1). clusterctl
+# Host-side bin dir owned by binary_fetch (plan §15.1). clusterctl
 # binary lives here.
 bootstrap_clusterctl_host_bin_dir:    "/opt/capi-lab/bin"
 bootstrap_clusterctl_clusterctl_path: "{{ bootstrap_clusterctl_host_bin_dir }}/clusterctl"

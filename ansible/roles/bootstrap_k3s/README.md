@@ -5,7 +5,7 @@ bring the single-node management cluster up.
 
 ## Purpose
 
-Plan §16.2. The role owns "k3s on the bootstrap node" and nothing else:
+Plan §15.2. The role owns "k3s on the bootstrap node" and nothing else:
 
 * pushes the `k3s` binary from `/opt/capi-lab/bin` (delivered by
   [`binary_fetch`](../binary_fetch/README.md)) into the container at
@@ -20,13 +20,13 @@ It does **not**:
 
 * install `kubectl` / `clusterctl` inside the container — those are
   the lane of [`bootstrap_clusterctl`](../bootstrap_clusterctl/README.md)
-  in Phase 4 (plan §16.3);
+  in Phase 4 (plan §15.3);
 * publish the kube-apiserver outside the host — passes through an
   opt-in LXD proxy device configured via
-  `lxd_bootstrap_instance_devices` (plan §16.5); host firewall stays
+  `lxd_bootstrap_instance_devices` (plan §15.5); host firewall stays
   out-of-project-scope (plan §11.4);
 * write CAPN identity / CAPI provider resources — `bootstrap_capn_secret`
-  (plan §16.4).
+  (plan §15.4).
 
 ## Execution model
 

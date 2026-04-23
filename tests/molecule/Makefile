@@ -60,8 +60,6 @@ SCENARIOS := \
 	bootstrap-clusterctl \
 	bootstrap-capn-secret \
 	export-artifacts \
-	gate-ext-l2 \
-	gate-cni \
 	bootstrap-cluster \
 	cluster-addons-helm \
 	pivot \
@@ -105,7 +103,7 @@ destroy-all:
 
 # ---- Pattern rule: <scenario>-<driver>-<action> --------------------------
 #
-# Matches e.g. `base-system-delegated-converge`, `gate-cni-vagrant-verify`.
+# Matches e.g. `base-system-delegated-converge`, `lxd-profiles-vagrant-verify`.
 # `%` captures the scenario name (kebab-case, matches the directory under
 # tests/molecule/); the literal `-<driver>-<action>` suffix is what
 # disambiguates the target. The driver segment is informational — the

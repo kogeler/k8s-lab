@@ -3,7 +3,7 @@
 # bootstrap_capn_secret — role defaults
 # ==========================================================================
 #
-# Purpose (plan §16.4): materialise the LXD identity Secret CAPN reads
+# Purpose (plan §15.4): materialise the LXD identity Secret CAPN reads
 # to talk to the host LXD daemon. Three cross-cutting pieces:
 #
 #   1) host LXD HTTPS listener — `core.https_address` bound to the
@@ -91,7 +91,7 @@ bootstrap_capn_secret_trust_name: "k8slab-capn"
 # -- Kubernetes Secret payload --------------------------------------------
 #
 # Secret name coordinated with the Cluster CR's `identityRef.name` in
-# Phase 5+ (§17.4 / §17.5). Sources from the project-wide contract
+# Phase 5+ (§16.4 / §16.5). Sources from the project-wide contract
 # variable `k8s_lab_infrastructure_secret_name` (plan §8) so a single
 # global change keeps both ends — the Secret produced here AND the
 # Cluster CR identityRef downstream — in sync. Falls back to the CAPN
@@ -101,7 +101,7 @@ bootstrap_capn_secret_name: "{{ k8s_lab_infrastructure_secret_name | default('in
 # Whether `clusterctl.cluster.x-k8s.io/move: "true"` label is added.
 # Sources from the project-wide `k8s_lab_pivot_enabled` (plan §8) so a
 # single global flag flip propagates: pivot ON → label present →
-# `clusterctl move` (plan §19) carries the Secret across to the
+# `clusterctl move` (plan §18) carries the Secret across to the
 # post-pivot management cluster. For MVP default (k8s_lab_pivot_enabled=false)
 # the label is omitted; flipping the global and re-running the role
 # adds the label idempotently via server-side apply.

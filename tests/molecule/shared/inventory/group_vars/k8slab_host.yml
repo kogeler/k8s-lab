@@ -104,13 +104,13 @@ lxd_storage_pools_pools:
     config:
       source: "{{ k8s_lab_lxd_pool_device }}"
 
-# --- lxd_bootstrap_instance (plan §13.7 + §16.5) -----------------
+# --- lxd_bootstrap_instance (plan §13.7 + §15.5) -----------------
 #
 # Cold-cache image pull budget on first converge.
 lxd_bootstrap_instance_wait_timeout: 300
 
 # Publish the bootstrap k3s API on the LXD host via a native LXD
-# proxy device (plan §16.5). Runner reaches the API via
+# proxy device (plan §15.5). Runner reaches the API via
 # `<vagrant_vm_ip>:16443`; LXD proxy userspace-forwards to the
 # container's 127.0.0.1:6443. TLS identity is decoupled from the URL
 # — shipped kubeconfig carries `tls-server-name: kubernetes.default.svc`
@@ -138,7 +138,7 @@ bootstrap_clusterctl_init_timeout: 600
 bootstrap_clusterctl_wait_retries: 90
 bootstrap_clusterctl_wait_delay:   5
 
-# --- export_artifacts (plan §13.12 + §16.6) ----------------------
+# --- export_artifacts (plan §13.12 + §15.6) ----------------------
 #
 # Runner-side artefact root: repo-root/.artifacts. MOLECULE_PROJECT_DIRECTORY
 # = <repo_root>/tests/molecule, so two dirname strips land on repo

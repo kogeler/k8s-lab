@@ -31,7 +31,7 @@ _bootstrap_capn_secret_lxd_server_cert_path: "/var/snap/lxd/common/lxd/server.cr
 
 # 8443 is the documented LXD/Incus HTTPS port — CAPN identityRef.server
 # always carries it, every CAPN tutorial assumes it, and the host-side
-# firewall rules (when published in Phase 4 §16.5) target it. Override
+# firewall rules (when published in Phase 4 §15.5) target it. Override
 # would cascade as broken `server: https://...:<port>` in the Secret;
 # CAPN would then emit confused TLS-handshake errors.
 _bootstrap_capn_secret_required_lxd_https_port: 8443

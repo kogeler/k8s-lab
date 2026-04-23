@@ -4,7 +4,7 @@ galaxy_info:
   namespace: k8slab
   author: k8s-lab contributors
   description: >-
-    Materialise Phase 4 handoff artefacts on the runner (plan §16.6):
+    Materialise Phase 4 handoff artefacts on the runner (plan §15.6):
     `.artifacts/bootstrap.kubeconfig` pulled from the LXD host, and
     `.artifacts/bootstrap.auto.tfvars.json` carrying the facts Phase 5
     Terraform fixtures consume (cluster identity, CAPN version,

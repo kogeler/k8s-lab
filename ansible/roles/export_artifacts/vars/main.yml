@@ -16,7 +16,7 @@
 # ---- Artefact filename conventions ------------------------------------
 
 # Phase 5 Terraform fixtures reference `bootstrap.kubeconfig` by that
-# exact name (plan §17.7 uses the `.artifacts/` subtree as an opaque
+# exact name (plan §16.7 uses the `.artifacts/` subtree as an opaque
 # data handoff). Changing this filename would orphan every fixture that
 # hardcodes it.
 _export_artifacts_required_bootstrap_kubeconfig_filename: "bootstrap.kubeconfig"

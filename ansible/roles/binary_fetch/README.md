@@ -6,7 +6,7 @@ verification.
 
 ## Purpose
 
-Plan §16.1. The role owns exactly the "binary delivery" step:
+Plan §15.1. The role owns exactly the "binary delivery" step:
 
 * downloads each binary from its upstream release asset URL;
 * extracts the expected sha256 from the corresponding upstream

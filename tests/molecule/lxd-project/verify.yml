@@ -34,7 +34,7 @@
       # Low-level config needed for kubeadm profiles
       # (linux.kernel_modules, raw.lxc).
       restricted.containers.lowlevel:  "allow"
-      # Proxy devices must be allowed for the plan §16.5 publish path
+      # Proxy devices must be allowed for the plan §15.5 publish path
       # (optional port publication via LXD proxy device in
       # `lxd_bootstrap_instance_devices`).
       restricted.devices.proxy:        "allow"

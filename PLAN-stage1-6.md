@@ -1,66 +1,53 @@
-Этот файл владеет §19: Phases 6 + 7 — optional pivot + post-pivot
-workload cluster creation. Нумерация §N сквозная по всем plan-файлам;
-перекрёстные ссылки вида `§<номер>` валидны без указания имени файла —
-см. `PLAN-stage1-common.md` header для полного file lineup. Атомарный
-scope этого шарда — Stage 2 pivot path (optional by default) плюс
-workload cluster flow, который становится актуален только при включённом
-`k8s_lab_pivot_enabled=true`.
+Этот файл владеет §19: Phase 8 — destroy contract. Нумерация §N сквозная
+по всем plan-файлам; перекрёстные ссылки вида `§<номер>` валидны без
+указания имени файла — см. `PLAN-stage1-common.md` header для полного
+file lineup. Атомарный scope этого шарда — реверс всех create-paths
+Stage 1 в чистое состояние, чтобы coding-agent мог работать над
+cleanup-ролью и phase-контрактом независимо от forward-paths.
 
 ```
 PLAN-stage1-common.md ............ §1..§12  (project contract, architecture, test harness, risk catalog)
 PLAN-stage1-1.md ................. §13..§14 (completed roles + phases)
-PLAN-stage1-2.md ................. §15      (Phase 2.5 external L2 gate)
-PLAN-stage1-3.md ................. §16      (Phases 3.5 + 4 bootstrap management cluster)
-PLAN-stage1-4.md ................. §17      (Phases 5 + 5.05 Terraform CAPI + kubeconfig)
-PLAN-stage1-5.md ................. §18      (Phases 5.1 + 5.2 + 5.3 Helm add-ons + CNI / MetalLB gates)
-PLAN-stage1-6.md ................. §19      (Phases 6 + 7 pivot + workload clusters)      <-- этот файл
-PLAN-stage1-7.md ................. §20      (Phase 8 destroy)
-PLAN-stage1-8.md ................. §21..§23 (Stage 1 meta: out-of-scope, self-review, recommendation)
+PLAN-stage1-2.md ................. §15      (Phases 3.5 + 4 bootstrap management cluster)
+PLAN-stage1-3.md ................. §16      (Phases 5 + 5.05 Terraform CAPI + kubeconfig)
+PLAN-stage1-4.md ................. §17      (Phases 5.1 + 5.2 + 5.3 Helm add-ons + in-cluster tests)
+PLAN-stage1-5.md ................. §18      (Phases 6 + 7 pivot + workload clusters)
+PLAN-stage1-6.md ................. §19      (Phase 8 destroy)                             <-- этот файл
+PLAN-stage1-7.md ................. §20..§22 (Stage 1 meta: out-of-scope, self-review, recommendation)
 ```
 
 ---
 
-# 19. Phases 6 + 7 — Optional pivot + workload cluster creation
+# 19. Phase 8 — Destroy contract
 
-Этот раздел группирует pivot-specific role (§19.1), phase 6 (actual
-`clusterctl move` на target mgmt) и phase 7 (post-pivot workload
-cluster creation через self-hosted mgmt cluster).
+Этот раздел описывает destroy role (§19.1) и phase (§19.2), которые
+должны уметь откатить Stage-1 create-paths в чистое локальное
+состояние.
 
-## 19.1. Role: `pivot_clusterctl_move`
+## 19.1. Role: `cleanup_bootstrap`
 
-Только если `k8s_lab_pivot_enabled=true`:
+Удаляет:
 
-* wait target mgmt cluster
-* get kubeconfig
-* `clusterctl init` on target
-* `clusterctl move`
+* bootstrap LXC
+* bootstrap API publication
+* временные artifacts where appropriate
 
-Cluster API docs требуют именно такой порядок, а также наличие хотя бы одного worker node в target management cluster. ([Cluster API][8])
+## 19.2. Phase 8 — Destroy
 
-## 19.2. Phase 6 — Pivot (optional)
+Must support:
 
-Only when `k8s_lab_pivot_enabled=true`:
-
-* `clusterctl init` on target mgmt
-* `clusterctl move`
-* delete bootstrap container
-
-Acceptance:
-
-* providers alive in target mgmt
-* bootstrap deleted
-
-## 19.3. Phase 7 — Workload clusters
-
-If pivot enabled:
-
-* Terraform CAPI pass now uses `.artifacts/mgmt.kubeconfig`
-* workload cluster add-ons pass now uses `.artifacts/clusters/<workload-cluster>.kubeconfig`
+* destroy local workload clusters created by test fixtures
+* destroy local mgmt cluster if applicable
+* destroy Helm-managed add-ons before destroying the underlying clusters
+* remove local bootstrap publication
+* remove local bootstrap LXC
+* cleanup `capi-lab` project assets inside test VM if requested
+* keep shared external bridge unless explicitly owned by test harness
+* return Vagrant/libvirt harness to clean state
 
 Acceptance:
 
-* workload cluster creation works from self-hosted mgmt cluster
-* workload add-ons install works through Helm pass
+* clean local redeploy from scratch possible
 
 [1]: https://capn.linuxcontainers.org/?utm_source=chatgpt.com "Introduction - The cluster-api-provider-incus book"
 [2]: https://documentation.ubuntu.com/lxd/latest/reference/network_bridge/?utm_source=chatgpt.com "Bridge network - LXD documentation"

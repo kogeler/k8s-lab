@@ -39,7 +39,7 @@ _lxd_project_required_restricted: true
 # - devices.disk          → lxd_storage_pools attaches managed-pool disks
 # - devices.nic           → lxd_profiles attaches eth1 to br-ext6 (unmanaged)
 # - devices.unix-char     → lxd_profiles maps host /dev/kmsg into k8s nodes
-# - devices.proxy         → plan §16.5 — опциональная публикация портов
+# - devices.proxy         → plan §15.5 — опциональная публикация портов
 #                          контейнера наружу (k3s API для Terraform
 #                          runner) выполняется через LXD proxy device,
 #                          передаваемый консумером в

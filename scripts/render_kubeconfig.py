@@ -3,7 +3,7 @@
 Render a kubeconfig artifact from a source (e.g. a k3s node or an exported
 CAPI cluster kubeconfig) into `.artifacts/clusters/<cluster>.kubeconfig`.
 
-Consumed by later phases (plan §17.8 / §15.1 / §16.6). Current stage: stub.
+Consumed by later phases (plan §15.6 export_artifacts / §16.8 Phase 5.05). Current stage: stub.
 
 Usage (planned):
     render_kubeconfig.py --source /var/lib/rancher/k3s/server/cred/admin.kubeconfig \\
@@ -22,7 +22,7 @@ import sys
 def main() -> int:
     print(
         "render_kubeconfig.py: not implemented yet (phase 5.05). "
-        "See plan §15.1 / §16.6 / §17.8 (Phase 5.05).",
+        "See plan §15.6 (export_artifacts) / §16.8 (Phase 5.05).",
         file=sys.stderr,
     )
     return 2

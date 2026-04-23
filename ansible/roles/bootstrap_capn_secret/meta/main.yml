@@ -5,7 +5,7 @@ galaxy_info:
   author: k8s-lab contributors
   description: >-
     Materialise the LXD identity Secret CAPN reads to talk to the host
-    daemon (plan §16.4). Generates a client cert/key, trusts it into
+    daemon (plan §15.4). Generates a client cert/key, trusts it into
     LXD restricted to the capi-lab project, exposes the LXD HTTPS
     listener on the capi-int bridge, and applies the Secret to
     capn-system in the bootstrap k3s cluster.

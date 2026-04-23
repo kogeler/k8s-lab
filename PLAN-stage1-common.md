@@ -3,20 +3,19 @@
 networking, gates, repo layout, typed variables, test harness, local
 workflows, secrets policy и risk catalog.
 
-Нумерация §1..§23 **сквозная по всем plan-файлам** и разделена так,
+Нумерация §1..§22 **сквозная по всем plan-файлам** и разделена так,
 чтобы каждый файл оставался атомарным по scope и перекрёстные ссылки
 внутри `§<номер>` были валидными без указания имени файла:
 
 ```
 PLAN-stage1-common.md ............ §1..§12  (project contract, architecture, test harness, risk catalog)
 PLAN-stage1-1.md ................. §13..§14 (completed roles + phases)
-PLAN-stage1-2.md ................. §15      (Phase 2.5 external L2 gate)
-PLAN-stage1-3.md ................. §16      (Phases 3.5 + 4 bootstrap management cluster)
-PLAN-stage1-4.md ................. §17      (Phases 5 + 5.05 Terraform CAPI + kubeconfig)
-PLAN-stage1-5.md ................. §18      (Phases 5.1 + 5.2 + 5.3 Helm add-ons + CNI / MetalLB gates)
-PLAN-stage1-6.md ................. §19      (Phases 6 + 7 pivot + workload clusters)
-PLAN-stage1-7.md ................. §20      (Phase 8 destroy)
-PLAN-stage1-8.md ................. §21..§23 (Stage 1 meta: out-of-scope, self-review, recommendation)
+PLAN-stage1-2.md ................. §15      (Phases 3.5 + 4 bootstrap management cluster)
+PLAN-stage1-3.md ................. §16      (Phases 5 + 5.05 Terraform CAPI + kubeconfig)
+PLAN-stage1-4.md ................. §17      (Phases 5.1 + 5.2 + 5.3 Helm add-ons + in-cluster tests)
+PLAN-stage1-5.md ................. §18      (Phases 6 + 7 pivot + workload clusters)
+PLAN-stage1-6.md ................. §19      (Phase 8 destroy)
+PLAN-stage1-7.md ................. §20..§22 (Stage 1 meta: out-of-scope, self-review, recommendation)
 ```
 
 Будущие stage-файлы подцепляются к этой же сквозной нумерации как
@@ -84,64 +83,58 @@ PLAN-stage1-8.md ................. §21..§23 (Stage 1 meta: out-of-scope, self-
   - §14.5. Phase 3.5 — `binary_fetch` (Step 4)
   - §14.6. Phase 4 — bootstrap management cluster (Step 4 partial)
 
-### PLAN-stage1-2.md — §15 (Phase 2.5 external L2 gate)
+### PLAN-stage1-2.md — §15 (Phases 3.5 + 4 bootstrap management cluster)
 
-- §15. Phase 2.5 — External L2 viability gate
-  - §15.1. Role: `gate_ext_l2`
-  - §15.2. Phase 2.5 execution
+- §15. Phases 3.5 + 4 — Bootstrap management cluster
+  - §15.1. Role: `binary_fetch`
+  - §15.2. Role: `bootstrap_k3s`
+  - §15.3. Role: `bootstrap_clusterctl`
+  - §15.4. Role: `bootstrap_capn_secret`
+  - §15.5. Публикация bootstrap API (LXD proxy device, не отдельная роль)
+  - §15.6. Role: `export_artifacts`
+  - §15.7. Phase 3.5 execution
+  - §15.8. Phase 4 execution
 
-### PLAN-stage1-3.md — §16 (Phases 3.5 + 4 bootstrap management cluster)
+### PLAN-stage1-3.md — §16 (Phases 5 + 5.05 Terraform CAPI + kubeconfig)
 
-- §16. Phases 3.5 + 4 — Bootstrap management cluster
-  - §16.1. Role: `binary_fetch`
-  - §16.2. Role: `bootstrap_k3s`
-  - §16.3. Role: `bootstrap_clusterctl`
-  - §16.4. Role: `bootstrap_capn_secret`
-  - §16.5. Публикация bootstrap API (LXD proxy device, не отдельная роль)
-  - §16.6. Role: `export_artifacts`
-  - §16.7. Phase 3.5 execution
-  - §16.8. Phase 4 execution
+- §16. Phases 5 + 5.05 — Terraform CAPI + kubeconfig export
+  - §16.1. Terraform modules ownership context
+  - §16.2. Module: `capi_cluster_class`
+  - §16.3. Module: `capi_lxc_templates`
+  - §16.4. Module: `capi_management_cluster`
+  - §16.5. Module: `capi_workload_cluster`
+  - §16.6. Test fixtures — CAPI
+  - §16.7. Phase 5 execution
+  - §16.8. Phase 5.05 execution
 
-### PLAN-stage1-4.md — §17 (Phases 5 + 5.05 Terraform CAPI + kubeconfig)
+### PLAN-stage1-4.md — §17 (Phases 5.1 + 5.2 + 5.3 Helm add-ons + in-cluster tests)
 
-- §17. Phases 5 + 5.05 — Terraform CAPI + kubeconfig export
-  - §17.1. Terraform modules ownership context
-  - §17.2. Module: `capi_cluster_class`
-  - §17.3. Module: `capi_lxc_templates`
-  - §17.4. Module: `capi_management_cluster`
-  - §17.5. Module: `capi_workload_cluster`
-  - §17.6. Test fixtures — CAPI
-  - §17.7. Phase 5 execution
-  - §17.8. Phase 5.05 execution
+- §17. Phases 5.1 + 5.2 + 5.3 — Helm add-ons + in-cluster validation
+  - §17.1. Module: `cluster_addons_helm`
+  - §17.2. Test fixtures — Helm add-ons
+  - §17.3. Helm test hooks contract (CNI + external L2 validation)
+  - §17.4. Phase 5.1 execution — Helm add-ons apply
+  - §17.5. Phase 5.2 execution — CNI Helm test
+  - §17.6. Phase 5.3 execution — MetalLB Helm test (covers external L2 acceptance)
 
-### PLAN-stage1-5.md — §18 (Phases 5.1 + 5.2 + 5.3 Helm add-ons + gates)
+### PLAN-stage1-5.md — §18 (Phases 6 + 7 pivot + workload clusters)
 
-- §18. Phases 5.1 + 5.2 + 5.3 — Helm add-ons + CNI gate + MetalLB smoke
-  - §18.1. Module: `cluster_addons_helm`
-  - §18.2. Test fixtures — Helm add-ons
-  - §18.3. Role: `gate_cni`
-  - §18.4. Phase 5.1 execution
-  - §18.5. Phase 5.2 execution
-  - §18.6. Phase 5.3 execution
+- §18. Phases 6 + 7 — Optional pivot + workload cluster creation
+  - §18.1. Role: `pivot_clusterctl_move`
+  - §18.2. Phase 6 execution
+  - §18.3. Phase 7 execution
 
-### PLAN-stage1-6.md — §19 (Phases 6 + 7 pivot + workload clusters)
+### PLAN-stage1-6.md — §19 (Phase 8 destroy)
 
-- §19. Phases 6 + 7 — Optional pivot + workload cluster creation
-  - §19.1. Role: `pivot_clusterctl_move`
-  - §19.2. Phase 6 execution
-  - §19.3. Phase 7 execution
+- §19. Phase 8 — Destroy contract
+  - §19.1. Role: `cleanup_bootstrap`
+  - §19.2. Phase 8 execution
 
-### PLAN-stage1-7.md — §20 (Phase 8 destroy)
+### PLAN-stage1-7.md — §20..§22 (Stage 1 meta)
 
-- §20. Phase 8 — Destroy contract
-  - §20.1. Role: `cleanup_bootstrap`
-  - §20.2. Phase 8 execution
-
-### PLAN-stage1-8.md — §21..§23 (Stage 1 meta)
-
-- §21. Stage 1 — Explicitly out of scope for v1.0
-- §22. Stage 1 — Саморевью контракта
-- §23. Stage 1 — Финальная рекомендация
+- §20. Stage 1 — Explicitly out of scope for v1.0
+- §21. Stage 1 — Саморевью контракта
+- §22. Stage 1 — Финальная рекомендация
 
 ---
 
@@ -476,7 +469,13 @@ Phase 2):
 
 * `Flannel`, `Calico` и `MetalLB` не ставятся через `kubernetes_manifest`;
 * test fixtures должны запускать отдельный Terraform add-ons pass после того, как появился kubeconfig target cluster;
-* chart versions должны быть pinned в variable contract и обновляться осознанно.
+* chart versions должны быть pinned в variable contract и обновляться осознанно;
+* in-cluster validation (CNI viability, external L2 viability) — **часть
+  этой же Terraform+Helm delivery policy**, реализована как
+  `helm.sh/hook: test` Job'ы в wrapper chart'ах (§17.3) и запускается
+  тем же `terraform apply`. Failed hook Job фейлит `helm_release`, что
+  фейлит `terraform apply` — **валидация не вне этой policy, а внутри
+  неё**. Отдельных Ansible-ролей для сетевой валидации нет.
 
 ## 2.10. Политика по образам нод
 
@@ -490,7 +489,14 @@ Phase 2):
 
 * в этом repo agent должен строить код вокруг prebuilt kubeadm image path;
 * `k8s_lab_install_kubeadm` по умолчанию должен быть `false`;
-* риск использования evaluation-oriented CAPN images должен быть явно отмечен и не маскироваться под production-ready supply path.
+* риск использования evaluation-oriented CAPN images должен быть явно отмечен и не маскироваться под production-ready supply path;
+* **cloud-init-capability — substrate-required для любого образа**,
+  идущего в `k8s_lab_images_controlplane` / `k8s_lab_images_worker`.
+  `capi-worker` и `capi-controlplane` LXD profile'ы несут
+  `cloud-init.vendor-data` (§13.6 Step 9) который конфигурирует
+  eth1 RA reception на first boot. CAPN-prebuilt `capi:kubeadm/*`
+  образы это гарантируют; custom-образ консумера без cloud-init'а
+  = неработающий external L2 plane на всех worker'ах.
 
 ## 2.11a. Политика «тестируй до коммита»
 
@@ -503,6 +509,13 @@ Phase 2):
   `converge → idempotence → verify`), а не против podman/docker-driver;
 * для любого нового или изменённого `Makefile`-target — target
   реально исполняется против того же harness;
+* для любого нового или изменённого Helm chart'а (upstream values
+  override, local wrapper chart, probe chart) — chart ставится
+  Terraform'ом в интеграционный scenario (`cluster-addons-helm`)
+  против real target cluster в локальном harness, `helm test
+  <release>` должен вернуть exit=0. Probe chart'ы (§17.3) тоже
+  подпадают — Gate A/Gate B acceptance доказывается live прогоном,
+  не static review;
 * для любого plan-deviation, добавляющего новое проверяемое поведение
   (например, btrfs pool contract из stage 1) — verify должен **реально
   срабатывать на настоящем state**, а не просто парситься;
@@ -568,7 +581,7 @@ runtime-баги в Ansible / Molecule / Vagrant, а локальный harness 
 ## 2.11b. Политика «план — live-документ; отдельного progress-файла нет»
 
 Набор файлов `PLAN-stage1-common.md` + `PLAN-stage1-1.md` ..
-`PLAN-stage1-8.md` (и аналогичный набор `PLAN-stage<N>-*.md` для
+`PLAN-stage1-7.md` (и аналогичный набор `PLAN-stage<N>-*.md` для
 будущих stage'ей) является **единственным источником истины** и по
 замыслу, и по статусу выполнения плана. Актуальная карта file lineup
 с §N-диапазонами и названиями под-секций живёт в
@@ -627,7 +640,7 @@ variable). Общие политики / contract / architecture — в
 по умолчанию = `2` именно для того, чтобы workload cluster был
 полноценной HA-площадкой, а не «1+1 расширенным single-node». Из
 этого следует обязательный контракт для всего, что Phase 5.1
-(§18.4) ставит в workload cluster через Terraform Helm pass:
+(§17.4) ставит в workload cluster через Terraform Helm pass:
 
 * **Replica contract.** Любой компонент, чья архитектура допускает
   multi-replica active/active либо leader-elected active/standby
@@ -652,7 +665,7 @@ variable). Общие политики / contract / architecture — в
   без leader-election) — допускается `replicas: 1` с явным
   inline-комментарием в Terraform `helm_release` values, объясняющим
   почему. Это исключение, а не норма.
-* **Test contract — обе реплики работают в тандеме.** §18.4
+* **Test contract — обе реплики работают в тандеме.** §17.4
   acceptance НЕ ограничивается `kubectl wait deployment <X>
   --for=condition=Available`: condition=Available разрешает
   `availableReplicas >= maxUnavailable`, что для `replicas: 2 +
@@ -673,7 +686,7 @@ variable). Общие политики / contract / architecture — в
   `k8s_lab_management_worker_count >= 2`, тот же replica-contract
   активируется через Terraform-условие на `var.worker_count >= 2`.
 
-Этот контракт документируется и enforce'ится в §18.4 acceptance, и
+Этот контракт документируется и enforce'ится в §17.4 acceptance, и
 зеркалится конкретными assertion'ами в §9.4 Integration / Full E2E
 test scope.
 
@@ -878,49 +891,90 @@ MetalLB docs отдельно предупреждают, что `interfaces` se
 
 ---
 
-# 6. Gate-фазы, обязательные как checkpoint-ы в основном implementation path
+# 6. Validation gates — in-cluster через Helm test hooks
 
-Эти gate-фазы:
+Validation gates (CNI viability, external L2 viability) реализуются
+как **Helm test hooks** на тех Helm release'ах, которые в steady-state
+path и так ставят соответствующий компонент: CNI-chart
+(Flannel/Calico) в Phase 5.1, MetalLB-chart в Phase 5.3. Валидация
+встроена в `helm_release` lifecycle и запускается одним
+`terraform apply`; провалившийся test Job фейлит Terraform apply и
+останавливает пайплайн.
 
-* **не** являются отдельными research spikes;
-* **не** разрешают временный ad hoc substrate;
-* должны выполняться через те же reusable roles/modules/manifests/test fixtures, которые останутся в repo как production-like implementation path.
+Доктрина:
+
+* **Production-path mirror.** Worker-ноды создаются CAPN'ом через
+  manifest change → CAPN controller → LXD API → cloud-init внутри
+  контейнера. Валидация идёт через тот же механизм — Helm test Job
+  запускается как Pod на real worker-нод'е, использует production
+  LXD profile и cloud-init-сконфигурированный eth1.
+* **One-tool pipeline.** Phase 5.x управляется через Terraform
+  (`helm_release` provider). Helm нативно поддерживает test hooks
+  (`helm.sh/hook: test` annotation на Job), Terraform запускает их
+  как часть release lifecycle без переключения инструмента.
+* **Real data plane.** Helm test Job с `hostNetwork: true` и
+  anti-affinity по worker-нодам использует те же самые eth1 /
+  br-ext6 / LXD profiles, что и production workload. RA/NDP/
+  multi-MAC/ingress проверяются на реальном data plane.
 
 ## Gate A — External L2 viability
 
-Это теперь **обязательный gate**, а не “риск на потом”.
+Реализация: Helm test hook на `metallb` release'е (§17.6 Phase 5.3).
+MetalLB сам является единственным consumer'ом внешней L2 capability
+(NDP для IPv6 VIP announcement), поэтому логично валидировать L2
+именно там, где она впервые реально нужна.
 
-Он должен запускаться только после того, как в local harness уже есть минимально рабочий host/LXD substrate через реальные роли `base_system`, `binary_fetch`, `lxd_host`, `lxd_project`, `lxd_storage_pools`, `lxd_network_int_managed`, `lxd_profiles`.
+Acceptance criteria (Job завершается exit=0 если все выполнены):
 
-Нужно автоматизировать validation scenario, который:
+1. **multiple MAC pass** — 2 worker-нод'ы на разных хостах держат
+   eth1 на br-ext6 с distinct MAC, host bridge форвардит оба;
+2. **RA reception** — eth1 каждой worker-нод'ы получил global IPv6
+   через SLAAC из rev-advertised `k8s_lab_external_ipv6_prefix`;
+3. **NDP works** — Pod с `hostNetwork: true` на одной worker-нод'е
+   ping6'ит eth1 другой worker-нод'ы через br-ext6 (NDP
+   resolution обязан отработать);
+4. **inbound IPv6 from probe endpoint** — тот же hostNetwork Pod
+   ping6'ит `k8s_lab_external_probe_address` (§8, в local harness —
+   libvirt ext6-mock gateway `2001:db8:42:100::1`; в consumer'ском
+   prod — border router или probe VM в том же L2-сегменте). Значение
+   прокидывается в MetalLB test Job через Helm chart values.
 
-1. поднимает `br-ext6` на test environment;
-2. поднимает 2 test LXC, подключённые к `br-ext6`;
-3. проверяет:
+Если test hook Job проваливается — Terraform `helm_release` фейлится,
+Phase 5.3 не проходит, дальнейшая реализация останавливается (MetalLB
+без рабочего L2 бесполезен). Fallback ветка (routed / proxy-NDP) —
+consumer'ская decision point, не часть Stage 1 scope.
 
-   * multiple MAC на uplink;
-   * RA reception;
-   * NDP;
-   * внешний IPv6 ingress;
-   * не ломается ли bridge/filtering/firewall.
-
-Если этот gate провален, текущий external L2 design должен быть остановлен, и начинается отдельная fallback ветка (routed/proxy-NDP/etc.). MetalLB L2 для IPv6 завязан на NDP и корректном L2 behavior, поэтому без этого gate продолжать нельзя. ([metallb.io][11])
-
-Важно: local pass этого gate валидирует **reusable code path и mocked segment model**, но не доказывает свойства конкретного реального uplink/switch/provider. Поэтому consumer repo для реального окружения обязан прогонять эквивалентный gate повторно на actual external segment перед тем, как считать дизайн пригодным.
+Важно: local pass валидирует **reusable code path и libvirt
+ext6-mock segment model**, но не доказывает свойства конкретного
+реального uplink/switch/provider. Consumer repo для реального
+окружения обязан прогнать эквивалентный Helm test на actual
+external segment — это уже тот же chart, те же профили, только
+другой probe_address.
 
 ## Gate B — CNI compatibility
 
-Нужно заранее выбрать и проверить CNI.
+Реализация: Helm test hook на CNI release'е (Flannel/Calico), §17.5
+Phase 5.2. Это первый Helm release после Terraform CAPI pass, и без
+рабочего CNI остальные add-ons даже не поедут — поэтому валидация
+именно здесь.
 
-Этот gate должен валидировать **первый кластер, созданный теми же Terraform modules и test fixtures**, которые останутся в steady-state path. Отдельные ad hoc manifests для gate запрещены.
+Acceptance criteria:
 
-Проверка должна идти уже после:
+* **nodes become Ready** — все контрольные и worker-нод'ы в состоянии
+  Ready после CNI install (test hook читает `kubectl get nodes`);
+* **pod-to-pod works** — test hook разворачивает 2 Pod'а на разных
+  worker-нод'ах, проверяет прямой pod-IP reachability в том наборе
+  address families, который заявляет выбранный CNI;
+* **Service networking works** — test hook создаёт Service тип
+  ClusterIP, проверяет что trafффик через Service endpoint доходит;
+* **не упираемся в nested LXC restrictions** — CNI bringup не падает
+  на отсутствии каких-либо kernel features; если падает — gate
+  фейлит с понятным сообщением;
+* **MetalLB preparation** — iptables/ipvs chains выглядят так, как
+  ожидает MetalLB (не проверяется напрямую здесь, валидация в
+  Phase 5.3 Gate A покрывает).
 
-* Terraform CAPI pass, который создал target cluster;
-* export target kubeconfig;
-* Terraform Helm add-ons pass, который поставил выбранный CNI.
-
-### Принятое решение
+### Принятое решение (CNI-baseline, не зависит от test-механизма)
 
 * **unprivileged LXC substrate фиксируется заранее и не подлежит торгу из-за удобства CNI**
 * **official known-good baseline для unprivileged/userns path: kube-flannel с backend `vxlan`**
@@ -937,13 +991,37 @@ MetalLB docs отдельно предупреждают, что `interfaces` se
   * затем выбрать минимально достаточный CNI,
   * и только потом расширять feature set вроде richer policy/data-plane behavior.
 
-Что проверять в gate:
+## Substrate предусловие — `capi-worker` / `capi-controlplane` cloud-init
 
-* nodes become Ready;
-* pod-to-pod works на том наборе address families, который заявляет выбранный CNI path;
-* Service networking works на том наборе address families, который заявляет выбранный CNI path;
-* не упираемся в nested LXC restrictions;
-* не ломается дальнейшая интеграция с MetalLB.
+Для того чтобы gate Helm test'ы в Phase 5.2/5.3 вообще имели работающий
+eth1 на worker-нод'ах — external nic должен быть сконфигурирован
+**до первого Helm install'а**. В production-path этим владеет CAPN
+cloud-init; в рамках этого repo substrate-baseline задаётся на уровне
+LXD-профилей:
+
+* `capi-worker` и `capi-controlplane` профили (§13.6 extended spec)
+  несут `cloud-init.vendor-data` ключ в substrate-required конфиге
+  (`vars/main.yml`);
+* vendor-data содержит systemd-networkd drop-in для eth1
+  (`IPv6AcceptRA=yes`, `LinkLocalAddressing=ipv6`) + sysctl.d файл с
+  kernel knob'ами (`disable_ipv6=0`, `accept_ra=2`, `accept_ra_defrtr=1`);
+* `vendor-data` (а не `user-data`) выбран намеренно: CAPN на Phase 5+
+  ставит собственный `cloud-init.user-data` на instance-level для
+  kubeadm bootstrap, и LXD replaces (не merges) user-data на
+  instance-level. `vendor-data` — отдельный cloud-init slot, который
+  cloud-init применяет **вместе** с user-data из любого источника;
+* любой инстанс, созданный с этим профилем — CAPN'ом через Machine
+  template, оператором руками через `lxc launch`, Helm test probe
+  Job'ом в cluster'е — получает идентичную baseline-конфигурацию
+  eth1 на first boot через cloud-init;
+* consumer `k8s_lab_images_controlplane` / `k8s_lab_images_worker`
+  **обязан** быть cloud-init-capable (CAPN-prebuilt `capi:kubeadm/*`
+  образы это уже обеспечивают, см. §8a).
+
+Это закрывает «кто настраивает eth1 на эфимерных worker'ах» без
+Ansible-mutation внутри контейнера: профиль, привязанный к инстансу
+при создании, — производственный mechanism, работающий одинаково для
+gate-теста и реального worker'а.
 
 ---
 
@@ -971,14 +1049,14 @@ repo/
       pivot_clusterctl_move/
       cleanup_bootstrap/
       export_artifacts/
-      gate_ext_l2/
-      gate_cni/
 
   clusterctl/
     clusterctl.yaml
 
   charts/
     metallb-config/
+    cni-probe/           # Helm test hook Job — Gate B (CNI viability), §17.5
+    metallb-probe/       # Helm test hook Job — Gate A (external L2), §17.6
 
   terraform/
     modules/
@@ -1018,8 +1096,6 @@ repo/
       lxd-profiles/
       lxd-bootstrap-instance/
       bootstrap-k3s/
-      gate-ext-l2/
-      gate-cni/
       bootstrap-cluster/
       cluster-addons-helm/
       pivot/
@@ -1147,6 +1223,7 @@ k8s_lab_internal_ipv4_nat: {type: bool, default: true}
 k8s_lab_internal_ipv6_nat: {type: bool, default: true}
 k8s_lab_external_ipv6_prefix: {type: string, required: true}
 k8s_lab_external_node_ipv6_range: {type: string, required: true}
+k8s_lab_external_probe_address: {type: string, required: true}   # IPv6 внутри external prefix — потребляет MetalLB Helm test hook §17.6
 k8s_lab_metallb_vip_range_v6: {type: string, required: true}
 k8s_lab_guest_internal_ifname: {type: string, default: "eth0"}
 k8s_lab_guest_external_ifname: {type: string, default: "eth1"}
@@ -1163,7 +1240,7 @@ k8s_lab_kubectl_version: {type: string, default: "v1.35.3"}          # verified 
 k8s_lab_clusterctl_version: {type: string, default: "v1.12.5"}       # verified 2026-04-21
 k8s_lab_capn_provider_version: {type: string, default: "v0.8.5"}     # verified 2026-04-21
 # Внешняя публикация bootstrap API cluster'а, если нужна, делается
-# через LXD proxy device на инстансе bootstrap LXC — см. §16.5 + role
+# через LXD proxy device на инстансе bootstrap LXC — см. §15.5 + role
 # lxd_bootstrap_instance (parameter `lxd_bootstrap_instance_devices`).
 # Отдельных глобалов для этого не заведено: listen/connect/bind
 # передаются консумером в host_vars той роли, потому что это свойство
@@ -1171,6 +1248,15 @@ k8s_lab_capn_provider_version: {type: string, default: "v0.8.5"}     # verified 
 # хостовом файрволе в scope этого repo не входит (§11.4).
 
 # ---- images ----
+# Контракт: оба образа ОБЯЗАНЫ быть cloud-init-capable. Профили
+# capi-controlplane / capi-worker несут `cloud-init.vendor-data` в
+# substrate-required config (§13.6), который задаёт eth1 RA reception
+# на каждом инстансе. Vendor-data (slot отдельный от user-data)
+# применяется cloud-init'ом вместе с CAPN'ским instance-level
+# user-data (который CAPN шлёт через Machine template для kubeadm) —
+# оба применяются на first boot без конфликта. CAPN-prebuilt
+# `capi:kubeadm/*` образы это гарантируют; custom-образ консумера
+# должен сохранять cloud-init в том же виде.
 k8s_lab_images_controlplane: {type: string, default: "capi:kubeadm/VERSION"}
 k8s_lab_images_worker: {type: string, default: "capi:kubeadm/VERSION"}
 k8s_lab_images_source_policy: {type: string, default: "capn-prebuilt"}   # capn-prebuilt|consumer-custom
@@ -1222,9 +1308,9 @@ k8s_lab_kubernetes_version: {type: string, default: "v1.35.3"}           # verif
 # since add-ons + Terraform state live elsewhere on the runner. The
 # workload cluster runs a 2+2 (HA control plane, two workers) so the
 # local lab actually exercises multi-CP kubeadm reconciliation and
-# MetalLB / Calico failover paths in §18.x. All four counts are
+# MetalLB / Calico failover paths in §17.x. All four counts are
 # tunable via Terraform vars on the corresponding fixture roots
-# (§17.6) — they are NOT substrate-required.
+# (§16.6) — they are NOT substrate-required.
 k8s_lab_management_controlplane_count: {type: int, default: 1}
 k8s_lab_management_worker_count:       {type: int, default: 1}
 k8s_lab_workload_controlplane_count:   {type: int, default: 2}
@@ -1425,11 +1511,11 @@ Libvirt network XML officially supports:
 
 ### Integration-level
 
-* `gate_ext_l2`
-* `gate_cni`
 * `bootstrap_cluster`
-* `cluster_addons_helm` — обязан, помимо проверки факта установки
-  Helm releases, ассертить **HA pair contract §2.12** для каждого
+* `cluster_addons_helm` — помимо проверки факта установки Helm
+  releases, отвечает за прогон **Helm test hooks** (§6, §17.3),
+  реализующих Gate A (§17.6, external L2) и Gate B (§17.5, CNI
+  viability). Также ассертит **HA pair contract §2.12** для каждого
   workload-cluster компонента с `replicas >= 2`:
   * `kubectl get deploy <X> -o jsonpath='{.status.readyReplicas}'`
     и `availableReplicas` равны `.status.replicas`
@@ -1484,17 +1570,17 @@ Libvirt network XML officially supports:
 
 1. `vagrant up`
 2. host bootstrap
-3. LXD substrate
-4. external L2 gate
-5. bootstrap cluster
-6. apply first Terraform CAPI fixture
-7. export target kubeconfig
-8. apply first Terraform Helm add-ons fixture
-9. CNI gate
-10. MetalLB smoke
-11. optional pivot / post-pivot workload create + kubeconfig export + add-ons apply
-12. verify
-13. destroy
+3. LXD substrate (включая расширенный `lxd_profiles` cloud-init
+   baseline для worker/controlplane профилей — §13.6)
+4. bootstrap cluster
+5. apply first Terraform CAPI fixture
+6. export target kubeconfig
+7. apply first Terraform Helm add-ons fixture (CNI chart + MetalLB
+   chart, каждый со своим Helm test hook'ом — §17.5 / §17.6 покрывают
+   CNI и external L2 acceptance)
+8. optional pivot / post-pivot workload create + kubeconfig export + add-ons apply
+9. verify
+10. destroy
 
 ## 9.5. Shared inventory architecture
 
@@ -1626,8 +1712,12 @@ make test-local-e2e
 3. host/bootstrap/substrate phases through local VM
 4. apply the selected Terraform CAPI fixture path
 5. export target kubeconfig artifact
-6. apply the selected Terraform Helm add-ons fixture path
-7. run gate checks and verify
+6. apply the selected Terraform Helm add-ons fixture path — Helm
+   test hooks на CNI и MetalLB chart'ах отрабатывают as part of
+   `helm_release` lifecycle и закрывают CNI + external L2
+   acceptance (§6, §17.5, §17.6)
+7. optional pivot / post-pivot workload create + kubeconfig export
+   + add-ons apply (если `k8s_lab_pivot_enabled=true`)
 8. destroy
 
 ## 10.3. Local cleanup
@@ -1693,7 +1783,7 @@ Backend strategy для реальных окружений определяет
   несёт admin-cert, доступен только runner-у (mode 0600, gitignore).
 * **LXD API auth** — отдельно, через restricted TLS secret
   (`capi-lab` project-scoped client cert). Реализует
-  `bootstrap_capn_secret` (§16.4); подтверждён CAPN identity-secret
+  `bootstrap_capn_secret` (§15.4); подтверждён CAPN identity-secret
   format. ([capn.linuxcontainers.org][19])
 
 **Host firewall — ВНЕ scope этого repo.** Решения:
@@ -1726,14 +1816,20 @@ Backend strategy для реальных окружений определяет
 
 Mitigation:
 
-* Phase 2.5 gate before дальнейшим продвижением по cluster path
+* Phase 5.3 external L2 Helm test hook (§6 Gate A → §17.6)
+  валит `terraform apply` до того, как MetalLB pretends to serve VIPs
+  на нерабочем L2 сегменте; CAPN workers всё равно уже созданы но
+  кластерный data plane не выпускается в production-like state до
+  прохождения теста.
 
 ## 12.2. Unprivileged LXC node path may fail on userns/runtime/CNI edges
 
 Mitigation:
 
 * pin CAPN-tested unprivileged kubeadm image path (`v1.32.4+`)
-* Phase 5.2 gate on first Terraform-created cluster after Helm add-ons pass
+* Phase 5.2 CNI Helm test hook (§6 Gate B → §17.5) на первом
+  Terraform-created cluster после Helm add-ons pass валит
+  `terraform apply` если CNI bring-up сломался
 * keep unprivileged substrate fixed and vary CNI inside that constraint
 * use `kube-flannel` `vxlan` as known-good baseline; promote `Calico` only if the gate passes on the same substrate
 * never switch to privileged LXC as silent fallback

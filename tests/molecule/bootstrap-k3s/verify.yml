@@ -242,7 +242,7 @@
       register: _verify_strip_register
       changed_when: false
 
-    # ---- LXD proxy device publishes k3s API on the host (plan §16.5) ---
+    # ---- LXD proxy device publishes k3s API on the host (plan §15.5) ---
     # molecule.yml host_vars adds a `k3s-api` proxy device with
     # listen=tcp:0.0.0.0:16443 → connect=tcp:127.0.0.1:6443 bind=host.
     # Assert that:

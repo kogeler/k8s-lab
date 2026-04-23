@@ -6,8 +6,8 @@ galaxy_info:
   description: >-
     Install k3s inside the LXC bootstrap container and start a single-node
     cluster with Stage 1 defaults (no Traefik, no servicelb). Does NOT
-    install kubectl/clusterctl inside the container (plan §16.3) and
-    does NOT publish the API outside the host (plan §16.5) — those
+    install kubectl/clusterctl inside the container (plan §15.3) and
+    does NOT publish the API outside the host (plan §15.5) — those
     live in dedicated Phase 4 roles.
   license: MIT
   min_ansible_version: "2.16"

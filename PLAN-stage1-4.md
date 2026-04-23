@@ -1,174 +1,385 @@
-Этот файл владеет §17: Phases 5 + 5.05 — Terraform CAPI pass + export
-target kubeconfig. Нумерация §N сквозная по всем plan-файлам;
-перекрёстные ссылки вида `§<номер>` валидны без указания имени файла —
-см. `PLAN-stage1-common.md` header для полного file lineup. Атомарный
-scope этого шарда — Terraform modules и CAPI-only test fixtures плюс
-phases, которые применяют CAPI pass и материализуют target kubeconfig
-(без Helm add-ons — они живут в §18).
+Этот файл владеет §17: Phases 5.1 + 5.2 + 5.3 — Terraform Helm
+add-ons pass + in-cluster validation через Helm test hooks.
+Нумерация §N сквозная по всем plan-файлам; перекрёстные ссылки
+вида `§<номер>` валидны без указания имени файла — см.
+`PLAN-stage1-common.md` header для полного file lineup. Атомарный
+scope этого шарда — всё, что касается cluster add-ons layer поверх
+уже существующего target kubeconfig (см. §16.8) плюс два connected
+in-cluster gate'а (CNI viability и external L2 viability), которые
+реализованы как Helm test hooks на соответствующих release'ах, а
+не как отдельные Ansible/Terraform phases.
 
 ```
 PLAN-stage1-common.md ............ §1..§12  (project contract, architecture, test harness, risk catalog)
 PLAN-stage1-1.md ................. §13..§14 (completed roles + phases)
-PLAN-stage1-2.md ................. §15      (Phase 2.5 external L2 gate)
-PLAN-stage1-3.md ................. §16      (Phases 3.5 + 4 bootstrap management cluster)
-PLAN-stage1-4.md ................. §17      (Phases 5 + 5.05 Terraform CAPI + kubeconfig) <-- этот файл
-PLAN-stage1-5.md ................. §18      (Phases 5.1 + 5.2 + 5.3 Helm add-ons + CNI / MetalLB gates)
-PLAN-stage1-6.md ................. §19      (Phases 6 + 7 pivot + workload clusters)
-PLAN-stage1-7.md ................. §20      (Phase 8 destroy)
-PLAN-stage1-8.md ................. §21..§23 (Stage 1 meta: out-of-scope, self-review, recommendation)
+PLAN-stage1-2.md ................. §15      (Phases 3.5 + 4 bootstrap management cluster)
+PLAN-stage1-3.md ................. §16      (Phases 5 + 5.05 Terraform CAPI + kubeconfig)
+PLAN-stage1-4.md ................. §17      (Phases 5.1 + 5.2 + 5.3 Helm add-ons + in-cluster tests)  <-- этот файл
+PLAN-stage1-5.md ................. §18      (Phases 6 + 7 pivot + workload clusters)
+PLAN-stage1-6.md ................. §19      (Phase 8 destroy)
+PLAN-stage1-7.md ................. §20..§22 (Stage 1 meta: out-of-scope, self-review, recommendation)
 ```
 
 ---
 
-# 17. Phases 5 + 5.05 — Terraform CAPI + kubeconfig export
+# 17. Phases 5.1 + 5.2 + 5.3 — Helm add-ons + in-cluster tests
 
-Terraform modules в этом repo являются **единственным владельцем**:
+Этот раздел группирует Helm add-ons module (§17.1), его test fixtures
+(§17.2), контракт Helm test hook'ов которые реализуют acceptance
+Gate A + Gate B из §6 (§17.3), и три phases: 5.1 (apply Helm add-ons
+pass), 5.2 (CNI Helm test на первом Terraform-created cluster),
+5.3 (MetalLB Helm test покрывающий external L2 acceptance).
 
-* Cluster API objects;
-* machine templates и bootstrap data;
-* guest networking configuration CAPN-managed nodes;
-* kube-proxy policy;
-* cluster add-ons и cluster-scoped manifests.
+Gate'ы реализованы как `helm.sh/hook: test` Job'ы внутри тех же chart
+release'ов, которые ставят CNI/MetalLB. Single-tool Terraform→Helm
+пайплайн; тестируют реальный data plane на real worker-нодах;
+используют production-path LXD profiles + cloud-init.
 
-## 17.1. Terraform modules ownership context
-
-`manifests/*`, `networkd/*`, `kube-proxy/*`, `kubeadm-patches/*` здесь считаются reusable inputs для Terraform modules, а не самостоятельным ownership layer.
-
-## 17.2. Module: `modules/capi_cluster_class`
-
-Содержит:
-
-* ClusterClass contract;
-* `KubeadmControlPlaneTemplate`;
-* `KubeadmConfigTemplate` для workers;
-* общие variables:
-
-  * secretRef
-  * loadBalancer
-  * instance config
-  * Kubernetes version
-  * image refs
-  * profiles/devices
-  * node bootstrap/networking policy references
-
-Это модуль, который собирает bootstrap/control-plane contract и связывает его с infrastructure templates. CABPK даёт для этого `files`, `preKubeadmCommands`, `postKubeadmCommands`, `kubeletExtraArgs` и patch delivery mechanisms. ([20], [29], [28])
-
-## 17.3. Module: `modules/capi_lxc_templates`
+## 17.1. Module: `modules/cluster_addons_helm`
 
 Содержит:
 
-* `LXCClusterTemplate`
-* `LXCMachineTemplate` для CP
-* `LXCMachineTemplate` для workers
+* Terraform `helm_release` resources for cluster add-ons;
+* pinned `hashicorp/helm` provider contract;
+* official upstream Helm charts for:
 
-В templates должны параметризоваться:
+  * Flannel `flannel/flannel`; ([38], [39])
+  * Calico `projectcalico/tigera-operator`; ([26])
+  * MetalLB `metallb/metallb`; ([27])
+* local wrapper Helm charts when cluster-specific CRs/policies are not cleanly expressible through upstream chart values alone.
 
-* `instanceType: container`
-* `profiles`
-* `devices`
-* `image`
-* `installKubeadm`
-* target/flavor
+Этот модуль применяется **только после** того, как у runner уже есть kubeconfig целевого кластера. Он является единственным владельцем:
 
-Этот модуль отвечает только за **infrastructure templates** и не владеет kubeadm/bootstrap contents. CAPN API и default template это поддерживают. ([capn.linuxcontainers.org][21])
+* selected CNI installation (`Flannel` baseline or `Calico` advanced path);
+* `MetalLB` installation;
+* MetalLB configuration CR delivery via Helm-managed wrapper charts where needed.
 
-## 17.4. Module: `modules/capi_management_cluster`
+Важно:
 
-Содержит:
+* `kube-proxy` policy остаётся Terraform-owned, но задаётся через kubeadm/bootstrap path, а не через Helm;
+* Helm add-ons pass intentionally отделён от CAPI cluster creation pass, потому что provider configuration требует уже существующий kubeconfig target cluster.
 
-* target self-hosted management cluster;
-* default topology = `k8s_lab_management_controlplane_count` (1)
-  + `k8s_lab_management_worker_count` (1) — см. §8 контракт
-  переменных. Это **single-CP + single-worker** footprint, минимально
-  жизнеспособный для self-hosted CAPI: один controller на каждой роли,
-  достаточно квоты в LXD под bootstrap-LXC, никакого HA;
-* Cluster topology instantiation на базе shared ClusterClass.
-
-Не содержит Helm releases и не является владельцем add-ons pass.
-
-## 17.5. Module: `modules/capi_workload_cluster`
-
-Содержит:
-
-* любой lab/workload cluster;
-* default topology = `k8s_lab_workload_controlplane_count` (2)
-  + `k8s_lab_workload_worker_count` (2) — см. §8 контракт
-  переменных. Это **multi-CP + multi-worker** footprint: 2 CP-ноды
-  заставляют kubeadm-control-plane controller реально проходить
-  multi-CP reconciliation (etcd quorum, leader-election на CP), а 2
-  worker-ноды дают MetalLB / Calico failover-плоскость для §18.x add-on
-  тестов;
-* dual-stack params;
-* Cluster topology instantiation на базе shared ClusterClass;
-* wiring к shared templates/class variables.
-
-Не содержит Helm releases и не является владельцем add-ons pass.
-
-## 17.6. Test fixtures — CAPI
+## 17.2. Test fixtures — Helm add-ons
 
 Test root modules в этом repo допускаются **только как test fixtures**
-под локальный harness. Ниже — CAPI-only subset (Helm add-ons fixtures
-живут в §18.2). Реальные environment root modules должны жить в
-отдельных private repos.
+под локальный harness. Ниже — Helm add-ons subset (CAPI-only fixtures
+живут в §16.6).
 
-### `tests/fixtures/terraform/management-cluster/capi`
+### `tests/fixtures/terraform/management-cluster/addons`
 
-Используется только если `k8s_lab_pivot_enabled=true` в local e2e или integration test.
 Provider:
 
-* `kubernetes` via `.artifacts/bootstrap.kubeconfig`
+* `helm` via `.artifacts/clusters/<management-cluster>.kubeconfig`
 
 Назначение:
 
-* создать target management cluster через CAPI objects;
-* не ставить add-ons.
+* поставить selected CNI/MetalLB и связанные Helm-managed cluster add-ons в target management cluster.
 
-### `tests/fixtures/terraform/workload-clusters/lab-default/capi`
+### `tests/fixtures/terraform/workload-clusters/lab-default/addons`
 
-В MVP:
+Provider:
 
-* provider = bootstrap cluster kubeconfig
-  В Stage 2:
-* provider = `.artifacts/mgmt.kubeconfig`
+* `helm` via `.artifacts/clusters/<workload-cluster>.kubeconfig`
 
 Назначение:
 
-* создать workload cluster через CAPI objects;
-* не ставить add-ons.
+* поставить selected CNI/MetalLB и связанные Helm-managed cluster add-ons в workload cluster.
 
-Terraform provider configuration for `kubernetes`/`helm` требует live API access уже на этапе plan/apply, поэтому bootstrap or target kubeconfig must exist before the corresponding Terraform pass starts. ([25])
+## 17.3. Helm test hooks contract (CNI + external L2 validation)
 
-## 17.7. Phase 5 — Terraform against bootstrap cluster
+Acceptance Gate A (external L2) и Gate B (CNI) реализуются как
+Helm test Job'ы с annotation `helm.sh/hook: test`, упакованные в
+wrapper chart'ы (`charts/cni-probe/`, `charts/metallb-probe/` — см.
+§7 repo layout). Chart'ы — локальные в этом repo, ссылаются из
+Terraform `helm_release` по relative path:
+`chart = "${path.module}/../../../../../charts/cni-probe"`.
+Запуск — `helm test <release>` после `terraform apply`, обёрнутый в
+Terraform `null_resource` с `local-exec` provisioner'ом, чтобы
+результат теста влиял на состояние `terraform apply`.
 
-### MVP
+### Wrapper chart layout
 
-Terraform CAPI test root:
+Каждый probe chart содержит:
 
-* `tests/fixtures/terraform/workload-clusters/lab-default/capi`
+```
+charts/<probe-name>/
+  Chart.yaml
+  values.yaml
+  values.schema.json
+  templates/
+    rbac.yaml          # ServiceAccount + ClusterRole + ClusterRoleBinding
+    job-test.yaml      # helm.sh/hook: test Job spec
+    _helpers.tpl       # name/label helpers
+```
 
-### Stage 2
+Chart ставится тем же Terraform Helm add-ons pass'ом (§17.4) как
+отдельный `helm_release` рядом с основным CNI/MetalLB release'ом
+(зависимость управляется через `depends_on` на Terraform-уровне).
 
-Terraform CAPI test root:
+### Шейп Job'ов
 
-* `tests/fixtures/terraform/management-cluster/capi`
+**CNI probe Job (Phase 5.2, §17.5) — `charts/cni-probe/`:**
 
-Acceptance:
+* `kind: Job`, `metadata.annotations."helm.sh/hook": test`,
+  `helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded`;
+* `spec.template.spec.tolerations` — допускаем control-plane taint'ы
+  для flexibility;
+* `spec.template.spec.serviceAccountName: cni-probe-sa` (chart
+  создаёт ServiceAccount + RoleBinding — details в «RBAC» ниже);
+* Pod 1 (readiness checker): `kubectl get nodes -o
+  jsonpath='{range .items[*]}{.status.conditions[?(@.type=="Ready")].status}{"\n"}{end}'`
+  через `kubectl` image (`bitnami/kubectl:<k8s_version>` или
+  equivalent); ассертит все ноды `True`;
+* `parallelism: 2` + `podAntiAffinity` по `kubernetes.io/hostname`
+  + `nodeSelector` на worker-ноды → 2 Pod'а на разных worker'ах
+  ping'ают друг друга по Pod IP (pod-to-pod reachability). Pod IP
+  discovery через downward API: `env: - name: PEER_IP valueFrom:
+  fieldRef: fieldPath: status.podIP` + sidecar-Service с headless
+  resolution;
+* Pod также создаёт ClusterIP Service (через `kubectl apply`) и
+  ping'ает его VIP — Service networking coverage.
 
-* Terraform CAPI fixtures create Cluster API objects successfully
-* target cluster control plane is reachable enough to export kubeconfig
+**MetalLB probe Job (Phase 5.3, §17.6) — `charts/metallb-probe/`:**
 
-## 17.8. Phase 5.05 — Export target kubeconfig
+* `kind: Job`, `metadata.annotations."helm.sh/hook": test`,
+  `helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded`;
+* `spec.template.spec.hostNetwork: true` — Pod видит eth1
+  worker-нод'ы напрямую, что необходимо для теста L2-уровня
+  external segment'а;
+* `spec.template.spec.dnsPolicy: ClusterFirstWithHostNet` — чтобы
+  Service DNS продолжал работать при hostNetwork;
+* **`securityContext.capabilities.add: [NET_RAW]`** — `ping6`
+  требует `CAP_NET_RAW` для raw ICMPv6 socket'а; без этого Job
+  падает с `Lacking privilege for raw socket`. `NET_ADMIN` НЕ
+  нужен (мы только читаем, не меняем);
+* `nodeSelector` или worker-node affinity (не controlplane);
+* `parallelism: 2` + anti-affinity по `kubernetes.io/hostname` →
+  2 Pod'а на разных worker'ах;
+* каждый Pod (image с `iproute2` + `iputils-ping`, например
+  `alpine` или собственный `ghcr.io/<org>/metallb-probe:vX`):
+  1. читает локальный MAC eth1 через `ip -j link show eth1 | jq`
+     (IFNAME приходит из chart values `probe.ifname`);
+  2. читает локальный global IPv6 eth1 (`ip -j -6 addr show eth1`);
+  3. peer'а обнаруживает через headless Service resolution (chart
+     создаёт Service + ENDPOINTSLICE на Pod'ах Job'а);
+  4. ping6'ит peer's global IPv6 через eth1;
+  5. ping6'ит `probe.address` через eth1;
+* probe address приходит через chart values (`probe.address`),
+  биндится из §8 `k8s_lab_external_probe_address`. Полная схема
+  проброса — в subsection «Probe address flow».
+
+### RBAC
+
+CNI probe нуждается в доступе к Node/Pod/Service API:
+
+```yaml
+# charts/cni-probe/templates/rbac.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: cni-probe-sa
+  annotations:
+    "helm.sh/hook": test
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "cni-probe.fullname" . }}
+  annotations:
+    "helm.sh/hook": test
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+rules:
+  - apiGroups: [""]
+    resources: ["nodes", "pods", "services"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["services"]
+    verbs: ["create", "delete"]    # для Service networking проверки
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "cni-probe.fullname" . }}
+  annotations:
+    "helm.sh/hook": test
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+subjects:
+  - kind: ServiceAccount
+    name: cni-probe-sa
+    namespace: {{ .Release.Namespace }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "cni-probe.fullname" . }}
+```
+
+MetalLB probe нуждается только в peer discovery через собственный
+headless Service — ClusterRole на чтение Endpoints/EndpointSlice:
+
+```yaml
+rules:
+  - apiGroups: ["discovery.k8s.io"]
+    resources: ["endpointslices"]
+    verbs: ["get", "list"]
+```
+
+Все RBAC-объекты несут тот же `helm.sh/hook: test` annotation, что
+и Job — чтобы они создавались/удалялись синхронно с test lifecycle.
+
+### Probe address flow
+
+Путь `k8s_lab_external_probe_address` из §8 глобала до `ping6`
+argument'а внутри Job'а:
+
+1. **Shared inventory** (`tests/molecule/shared/inventory/group_vars/k8slab_host.yml`
+   для local harness; real production inventory — в consumer repo):
+   ```yaml
+   k8s_lab_external_probe_address: "2001:db8:42:100::1"
+   ```
+2. **Terraform tfvars** (`.artifacts/bootstrap.auto.tfvars.json`,
+   эмиттится ролью `export_artifacts` §15.6 через вариант в §8
+   `k8s_lab_*` контракте):
+   ```json
+   { "k8s_lab_external_probe_address": "2001:db8:42:100::1" }
+   ```
+3. **Terraform fixture root** (`tests/fixtures/terraform/.../addons/variables.tf`):
+   ```hcl
+   variable "k8s_lab_external_probe_address" { type = string }
+   ```
+4. **`helm_release` values block** (`.../addons/main.tf`):
+   ```hcl
+   resource "helm_release" "metallb_probe" {
+     name       = "metallb-probe"
+     chart      = "${path.module}/../../../../../charts/metallb-probe"
+     namespace  = "metallb-system"
+     values = [yamlencode({
+       probe = {
+         address = var.k8s_lab_external_probe_address
+         ifname  = "eth1"
+       }
+     })]
+     depends_on = [helm_release.metallb]
+   }
+   ```
+5. **Chart values.yaml** (`charts/metallb-probe/values.yaml`):
+   ```yaml
+   probe:
+     address: ""      # required, no safe default
+     ifname:  "eth1"
+   ```
+6. **Job template** (`charts/metallb-probe/templates/job-test.yaml`):
+   ```yaml
+   env:
+     - name: PROBE_ADDRESS
+       value: {{ .Values.probe.address | quote }}
+     - name: PROBE_IFNAME
+       value: {{ .Values.probe.ifname | quote }}
+   command: ["/bin/sh", "-c"]
+   args: ["ping6 -c 3 -W 5 -I $PROBE_IFNAME $PROBE_ADDRESS"]
+   ```
+7. **Pod runtime:** `ping6 -c 3 -W 5 -I eth1 2001:db8:42:100::1` —
+   фактический тест L2 reachability.
+
+`values.schema.json` в chart'е валидирует `probe.address` как
+non-empty string matching IPv6 regex, чтобы ошибка миссинговой
+переменной детектилась на `helm template` стадии, а не во время
+rollout'а Job'а.
+
+## 17.4. Phase 5.1 — Helm add-ons pass
+
+Terraform add-ons test root:
+
+* `tests/fixtures/terraform/workload-clusters/lab-default/addons`
+* или `tests/fixtures/terraform/management-cluster/addons` для Stage 2
 
 Сделать:
 
-* дождаться доступности target cluster API;
-* экспортировать kubeconfig в `.artifacts/clusters/<cluster>.kubeconfig`;
-* зафиксировать artifact path для последующего Helm add-ons pass.
+* использовать `hashicorp/helm` provider `3.1.1`;
+* поставить выбранный CNI через официальный chart source:
+  * `flannel/flannel` для known-good unprivileged baseline,
+  * либо `projectcalico/tigera-operator` для experimental advanced path;
+* поставить MetalLB через официальный chart source;
+* поставить локальный wrapper Helm chart для MetalLB configuration
+  CRs, если он нужен для `IPAddressPool`/`L2Advertisement`;
+* применить **HA replica contract** (§2.12) ко всему, что
+  ставится в workload cluster: каждый multi-replica-capable
+  Deployment / StatefulSet → `replicas: 2` с antiaffinity на
+  `kubernetes.io/hostname`. Если выбран Calico path —
+  `calico-typha` с `replicas: 2`; MetalLB controller с
+  `replicas: 2`. DaemonSet-компоненты (MetalLB speaker, Calico
+  node, Flannel agent) автоматически получают по одной реплике
+  на каждый worker — отдельный override не нужен.
 
 Acceptance:
 
-* target cluster kubeconfig materialized on runner
-* next Terraform pass can use Helm provider against target cluster
+* Helm releases applied successfully to target cluster;
+* cluster add-ons delivered only through Terraform Helm path;
+* repeated Terraform apply/plan for the same add-ons pass is expected
+  to be no-op;
+* **HA pair contract (§2.12) выполнен:** для каждого workload-cluster
+  Deployment / StatefulSet с replicas≥2 ассерт'ятся
+  `status.readyReplicas == status.replicas` и
+  `status.availableReplicas == status.replicas`; пара Pod'ов реально
+  на двух разных worker-нодах (`spec.nodeName` уникален); для
+  leader-elected компонентов (MetalLB controller, cert-manager если
+  есть) ровно один holder lease, второй pod в standby.
+
+## 17.5. Phase 5.2 — CNI Helm test
+
+CNI release из §17.4 автоматически включает `helm.sh/hook: test` Job
+(шейп в §17.3 — CNI probe Job). Phase 5.2 — это `helm test <cni-release>`
+после `terraform apply`, который прогоняет этот Job и закрывает
+acceptance Gate B из §6.
+
+Сделать:
+
+* первый Terraform-created cluster через selected fixture path;
+* CNI delivered Terraform Helm add-ons module'ом (§17.1);
+* `helm test` прогон: CNI probe Job валидирует Pod/Service networking
+  для address-family контракта выбранного CNI;
+* если `calico` провалил unprivileged path — controlled fallback на
+  `flannel` через module inputs; fallback на privileged LXC запрещён
+  (§2.8).
+
+Acceptance:
+
+* первый Terraform-created cluster usable с выбранным CNI;
+* CNI probe Job завершается exit=0;
+* результат зафиксирован как module/contract decision, не ad hoc test
+  note.
+
+## 17.6. Phase 5.3 — MetalLB Helm test (covers external L2 acceptance)
+
+MetalLB release из §17.4 автоматически включает `helm.sh/hook: test`
+Job (шейп в §17.3 — MetalLB probe Job). Phase 5.3 — это
+`helm test <metallb-release>` после `terraform apply`, который закрывает
+acceptance Gate A из §6 (external L2 viability) плюс smoke-тест MetalLB
+VIP allocation.
+
+Install MetalLB + prove:
+
+* `IPAddressPool` и `L2Advertisement` применены;
+* VIP allocation работает: LoadBalancer Service получает IPv6 VIP из
+  `k8s_lab_metallb_vip_range_v6`;
+* MetalLB probe Job завершается exit=0, что означает все четыре
+  acceptance criteria Gate A выполнены (multiple MAC, RA reception,
+  NDP, inbound from probe — §6);
+* **HA pair контракт для MetalLB на workload cluster (§2.12):**
+  `metallb-controller` Deployment имеет 2 ready replicas на разных
+  worker-нодах, ровно один из них держит leader-election lease;
+  `metallb-speaker` DaemonSet работает на обоих worker'ах. Failover-
+  smoke допустим, но не обязателен на этой phase: достаточно
+  доказать что обе реплики активно участвуют (один — active leader,
+  второй — hot standby с up-to-date config).
+
+Acceptance:
+
+* LoadBalancer service gets IPv6 VIP;
+* VIP reachable на `ext6-mock` / equivalent external segment model
+  (доказывается ping'ом от external probe endpoint'а);
+* Gate A четырёхкритериевая acceptance (§6) зелёная;
+* HA pair контракт §2.12 для MetalLB выполнен.
 
 [1]: https://capn.linuxcontainers.org/?utm_source=chatgpt.com "Introduction - The cluster-api-provider-incus book"
 [2]: https://documentation.ubuntu.com/lxd/latest/reference/network_bridge/?utm_source=chatgpt.com "Bridge network - LXD documentation"

@@ -3,7 +3,7 @@
 # binary_fetch — role defaults
 # ==========================================================================
 #
-# Purpose (plan §16.1): fetch pinned upstream release binaries for
+# Purpose (plan §15.1): fetch pinned upstream release binaries for
 # kubectl / clusterctl / k3s into /opt/capi-lab/bin with checksum
 # verification. No APT repos, no install.sh; the role lays the binaries
 # with deterministic owner/group/mode and nothing else.

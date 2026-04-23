@@ -3,7 +3,7 @@
 # bootstrap_k3s — role defaults
 # ==========================================================================
 #
-# Purpose (plan §16.2): install k3s inside the already-running LXC
+# Purpose (plan §15.2): install k3s inside the already-running LXC
 # bootstrap container and bring the single-node cluster up. The role owns
 # "k3s on the bootstrap node" and nothing else — clusterctl / CAPN
 # secrets / API publish are separate Phase 4 roles.
@@ -44,7 +44,7 @@ bootstrap_k3s_lxc_cli: "/snap/bin/lxc"
 
 # -- Binary delivery -------------------------------------------------------
 
-# Host-side directory owned by binary_fetch (plan §16.1). `k3s` landed
+# Host-side directory owned by binary_fetch (plan §15.1). `k3s` landed
 # here is pushed into the container with 0755 on every converge.
 bootstrap_k3s_host_bin_dir: "/opt/capi-lab/bin"
 bootstrap_k3s_host_k3s_filename: "k3s"

@@ -30,7 +30,7 @@ base_system_enabled: true
 # opt root stays consistent when the consumer overrides the global.
 base_system_opt_root: "{{ k8s_lab_opt_root | default('/opt/capi-lab') }}"
 
-# Owner/group/mode for the opt root. Deterministic per plan §16.1.
+# Owner/group/mode for the opt root. Deterministic per plan §15.1.
 base_system_opt_owner: "root"
 base_system_opt_group: "root"
 base_system_opt_mode:  "0755"

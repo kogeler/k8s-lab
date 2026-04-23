@@ -1,7 +1,7 @@
 # export_artifacts
 
 Close Phase 4 by shipping the bootstrap-management-cluster handoff
-bundle from the LXD host to the runner's `.artifacts/` dir. Plan §16.6
+bundle from the LXD host to the runner's `.artifacts/` dir. Plan §15.6
 / §11.1.
 
 ## Scope
@@ -25,7 +25,7 @@ Produces on the runner:
 
 * materialising `mgmt.kubeconfig` / `clusters/<cluster>.kubeconfig` —
   those are Phase 5 / 5.05 deliverables and depend on a workload
-  cluster existing first (plan §17.8);
+  cluster existing first (plan §16.8);
 * generating trust material for the runner — CAPN identity cert/key
   stay in LXD trust store, not in `.artifacts/`;
 * committing the bundle — `.artifacts/` is gitignored; plan §11.1

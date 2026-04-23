@@ -1,169 +1,65 @@
-Этот файл владеет §18: Phases 5.1 + 5.2 + 5.3 — Terraform Helm
-add-ons pass + CNI gate + early MetalLB smoke. Нумерация §N сквозная
-по всем plan-файлам; перекрёстные ссылки вида `§<номер>` валидны без
-указания имени файла — см. `PLAN-stage1-common.md` header для полного
-file lineup. Атомарный scope этого шарда — всё, что касается cluster
-add-ons layer поверх уже существующего target kubeconfig (см. §17.8)
-плюс два connected gate'а (CNI viability и MetalLB VIP reachability),
-чтобы coding-agent мог взять его в контекст отдельно от CAPI pass'а.
+Этот файл владеет §18: Phases 6 + 7 — optional pivot + post-pivot
+workload cluster creation. Нумерация §N сквозная по всем plan-файлам;
+перекрёстные ссылки вида `§<номер>` валидны без указания имени файла —
+см. `PLAN-stage1-common.md` header для полного file lineup. Атомарный
+scope этого шарда — Stage 2 pivot path (optional by default) плюс
+workload cluster flow, который становится актуален только при включённом
+`k8s_lab_pivot_enabled=true`.
 
 ```
 PLAN-stage1-common.md ............ §1..§12  (project contract, architecture, test harness, risk catalog)
 PLAN-stage1-1.md ................. §13..§14 (completed roles + phases)
-PLAN-stage1-2.md ................. §15      (Phase 2.5 external L2 gate)
-PLAN-stage1-3.md ................. §16      (Phases 3.5 + 4 bootstrap management cluster)
-PLAN-stage1-4.md ................. §17      (Phases 5 + 5.05 Terraform CAPI + kubeconfig)
-PLAN-stage1-5.md ................. §18      (Phases 5.1 + 5.2 + 5.3 Helm add-ons + CNI / MetalLB gates)  <-- этот файл
-PLAN-stage1-6.md ................. §19      (Phases 6 + 7 pivot + workload clusters)
-PLAN-stage1-7.md ................. §20      (Phase 8 destroy)
-PLAN-stage1-8.md ................. §21..§23 (Stage 1 meta: out-of-scope, self-review, recommendation)
+PLAN-stage1-2.md ................. §15      (Phases 3.5 + 4 bootstrap management cluster)
+PLAN-stage1-3.md ................. §16      (Phases 5 + 5.05 Terraform CAPI + kubeconfig)
+PLAN-stage1-4.md ................. §17      (Phases 5.1 + 5.2 + 5.3 Helm add-ons + in-cluster tests)
+PLAN-stage1-5.md ................. §18      (Phases 6 + 7 pivot + workload clusters)      <-- этот файл
+PLAN-stage1-6.md ................. §19      (Phase 8 destroy)
+PLAN-stage1-7.md ................. §20..§22 (Stage 1 meta: out-of-scope, self-review, recommendation)
 ```
 
 ---
 
-# 18. Phases 5.1 + 5.2 + 5.3 — Helm add-ons + CNI gate + MetalLB smoke
+# 18. Phases 6 + 7 — Optional pivot + workload cluster creation
 
-Этот раздел группирует Helm add-ons module (§18.1), его test fixtures
-(§18.2), harness-only CNI gate role (§18.3), и три phases: 5.1
-(apply Helm add-ons pass), 5.2 (CNI gate на первом Terraform-created
-cluster) и 5.3 (early MetalLB smoke).
+Этот раздел группирует pivot-specific role (§18.1), phase 6 (actual
+`clusterctl move` на target mgmt) и phase 7 (post-pivot workload
+cluster creation через self-hosted mgmt cluster).
 
-## 18.1. Module: `modules/cluster_addons_helm`
+## 18.1. Role: `pivot_clusterctl_move`
 
-Содержит:
+Только если `k8s_lab_pivot_enabled=true`:
 
-* Terraform `helm_release` resources for cluster add-ons;
-* pinned `hashicorp/helm` provider contract;
-* official upstream Helm charts for:
+* wait target mgmt cluster
+* get kubeconfig
+* `clusterctl init` on target
+* `clusterctl move`
 
-  * Flannel `flannel/flannel`; ([38], [39])
-  * Calico `projectcalico/tigera-operator`; ([26])
-  * MetalLB `metallb/metallb`; ([27])
-* local wrapper Helm charts when cluster-specific CRs/policies are not cleanly expressible through upstream chart values alone.
+Cluster API docs требуют именно такой порядок, а также наличие хотя бы одного worker node в target management cluster. ([Cluster API][8])
 
-Этот модуль применяется **только после** того, как у runner уже есть kubeconfig целевого кластера. Он является единственным владельцем:
+## 18.2. Phase 6 — Pivot (optional)
 
-* selected CNI installation (`Flannel` baseline or `Calico` advanced path);
-* `MetalLB` installation;
-* MetalLB configuration CR delivery via Helm-managed wrapper charts where needed.
+Only when `k8s_lab_pivot_enabled=true`:
 
-Важно:
-
-* `kube-proxy` policy остаётся Terraform-owned, но задаётся через kubeadm/bootstrap path, а не через Helm;
-* Helm add-ons pass intentionally отделён от CAPI cluster creation pass, потому что provider configuration требует уже существующий kubeconfig target cluster.
-
-## 18.2. Test fixtures — Helm add-ons
-
-Test root modules в этом repo допускаются **только как test fixtures**
-под локальный harness. Ниже — Helm add-ons subset (CAPI-only fixtures
-живут в §17.6).
-
-### `tests/fixtures/terraform/management-cluster/addons`
-
-Provider:
-
-* `helm` via `.artifacts/clusters/<management-cluster>.kubeconfig`
-
-Назначение:
-
-* поставить selected CNI/MetalLB и связанные Helm-managed cluster add-ons в target management cluster.
-
-### `tests/fixtures/terraform/workload-clusters/lab-default/addons`
-
-Provider:
-
-* `helm` via `.artifacts/clusters/<workload-cluster>.kubeconfig`
-
-Назначение:
-
-* поставить selected CNI/MetalLB и связанные Helm-managed cluster add-ons в workload cluster.
-
-## 18.3. Role: `gate_cni`
-
-Harness-only validation role.
-
-Делает:
-
-* запускает проверку первого Terraform-created cluster;
-* валидирует, что CNI, guest networking, kube-proxy policy и cluster add-ons, установленные Terraform CAPI + Helm passes, работают как ожидается;
-* не устанавливает CNI и cluster add-ons самостоятельно.
-
-## 18.4. Phase 5.1 — Helm add-ons pass
-
-Terraform add-ons test root:
-
-* `tests/fixtures/terraform/workload-clusters/lab-default/addons`
-* или `tests/fixtures/terraform/management-cluster/addons` для Stage 2
-
-Сделать:
-
-* использовать `hashicorp/helm` provider `3.1.1`;
-* поставить выбранный CNI через официальный chart source:
-  * `flannel/flannel` для known-good unprivileged baseline,
-  * либо `projectcalico/tigera-operator` для experimental advanced path;
-* поставить MetalLB через официальный chart source;
-* поставить локальный wrapper Helm chart для MetalLB configuration
-  CRs, если он нужен для `IPAddressPool`/`L2Advertisement`;
-* применить **HA replica contract** (§2.12) ко всему, что
-  ставится в workload cluster: каждый multi-replica-capable
-  Deployment / StatefulSet → `replicas: 2` с antiaffinity на
-  `kubernetes.io/hostname`. Если выбран Calico path —
-  `calico-typha` с `replicas: 2`; MetalLB controller с
-  `replicas: 2`. DaemonSet-компоненты (MetalLB speaker, Calico
-  node, Flannel agent) автоматически получают по одной реплике
-  на каждый worker — отдельный override не нужен.
+* `clusterctl init` on target mgmt
+* `clusterctl move`
+* delete bootstrap container
 
 Acceptance:
 
-* Helm releases applied successfully to target cluster;
-* cluster add-ons delivered only through Terraform Helm path;
-* repeated Terraform apply/plan for the same add-ons pass is expected
-  to be no-op;
-* **HA pair contract (§2.12) выполнен:** для каждого workload-cluster
-  Deployment / StatefulSet с replicas≥2 ассерт'ятся
-  `status.readyReplicas == status.replicas` и
-  `status.availableReplicas == status.replicas`; пара Pod'ов реально
-  на двух разных worker-нодах (`spec.nodeName` уникален); для
-  leader-elected компонентов (MetalLB controller, cert-manager если
-  есть) ровно один holder lease, второй pod в standby.
+* providers alive in target mgmt
+* bootstrap deleted
 
-## 18.5. Phase 5.2 — CNI gate
+## 18.3. Phase 7 — Workload clusters
 
-Сделать:
+If pivot enabled:
 
-* first Terraform-created cluster through the selected fixture path
-* selected CNI delivered by Terraform Helm add-ons module, not by Ansible
-* validate Pod/Service networking for the address-family contract claimed by the chosen CNI path
-* if `calico` fails on unprivileged path, only controlled fallback to `flannel` through module inputs is allowed
-* fallback to privileged LXC is explicitly forbidden
+* Terraform CAPI pass now uses `.artifacts/mgmt.kubeconfig`
+* workload cluster add-ons pass now uses `.artifacts/clusters/<workload-cluster>.kubeconfig`
 
 Acceptance:
 
-* first Terraform-created cluster usable with chosen CNI
-* result stored as module/contract decision, not as ad hoc test note
-
-## 18.6. Phase 5.3 — Early MetalLB smoke
-
-Install MetalLB on first usable cluster stage and verify:
-
-* `IPAddressPool`;
-* `L2Advertisement`;
-* VIP allocation;
-* external reachability from probe endpoint;
-* **HA pair контракт для MetalLB на workload cluster (§2.12):**
-  `metallb-controller` Deployment имеет 2 ready replicas на разных
-  worker-нодах, ровно один из них держит leader-election lease;
-  `metallb-speaker` DaemonSet работает на обоих worker'ах. Failover-
-  smoke допустим, но не обязателен на этой phase: достаточно
-  доказать что обе реплики активно участвуют (один — active leader,
-  второй — hot standby с up-to-date config).
-
-Acceptance:
-
-* LoadBalancer service gets IPv6 VIP;
-* VIP reachable on `ext6-mock` / equivalent external segment model;
-* HA pair контракт §2.12 для MetalLB выполнен (ассертится в
-  тесте — см. §9.4).
+* workload cluster creation works from self-hosted mgmt cluster
+* workload add-ons install works through Helm pass
 
 [1]: https://capn.linuxcontainers.org/?utm_source=chatgpt.com "Introduction - The cluster-api-provider-incus book"
 [2]: https://documentation.ubuntu.com/lxd/latest/reference/network_bridge/?utm_source=chatgpt.com "Bridge network - LXD documentation"

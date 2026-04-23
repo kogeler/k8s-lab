@@ -19,7 +19,7 @@ import sys
 def main() -> int:
     print(
         "export_bootstrap_facts.py: not implemented yet. "
-        "See plan §16.8 (Phase 4) and §11.1 (`.artifacts/` spec).",
+        "See plan §15.8 (Phase 4) and §11.1 (`.artifacts/` spec).",
         file=sys.stderr,
     )
     return 2

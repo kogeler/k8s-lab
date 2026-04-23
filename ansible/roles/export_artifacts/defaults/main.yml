@@ -3,7 +3,7 @@
 # export_artifacts — role defaults
 # ==========================================================================
 #
-# Purpose (plan §16.6): close Phase 4 by shipping the handoff bundle to
+# Purpose (plan §15.6): close Phase 4 by shipping the handoff bundle to
 # the runner's `.artifacts/` dir — specifically:
 #
 #   1) bootstrap.kubeconfig — the admin kubeconfig the bootstrap
@@ -74,7 +74,7 @@ export_artifacts_bootstrap_kubeconfig_source: "{{ k8s_lab_opt_root | default('/o
 # the runner's `.artifacts/`.
 #
 # The URL MUST be what the RUNNER can actually reach — usually an LXD
-# proxy device listener on the LXD host (plan §16.5), e.g.
+# proxy device listener on the LXD host (plan §15.5), e.g.
 # `https://<lxd_host_ip>:16443`. TLS identity is decoupled from the URL
 # via `tls-server-name` (pinned by bootstrap_clusterctl to a stable
 # SAN baked into the k3s cert), so any URL that TCP-reaches the API

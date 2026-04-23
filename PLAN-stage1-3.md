@@ -1,271 +1,173 @@
-Этот файл владеет §16: Phases 3.5 + 4 — bootstrap management cluster.
-Нумерация §N сквозная по всем plan-файлам; перекрёстные ссылки вида
-`§<номер>` валидны без указания имени файла — см.
-`PLAN-stage1-common.md` header для полного file lineup. Атомарный scope
-этого шарда — всё, что нужно, чтобы из голого LXC-bootstrap-инстанса
-получить работающий management cluster с CAPN provider (binaries
-фетч, k3s, clusterctl init, CAPN identity secret, API publishing,
-артефакты).
+Этот файл владеет §16: Phases 5 + 5.05 — Terraform CAPI pass + export
+target kubeconfig. Нумерация §N сквозная по всем plan-файлам;
+перекрёстные ссылки вида `§<номер>` валидны без указания имени файла —
+см. `PLAN-stage1-common.md` header для полного file lineup. Атомарный
+scope этого шарда — Terraform modules и CAPI-only test fixtures плюс
+phases, которые применяют CAPI pass и материализуют target kubeconfig
+(без Helm add-ons — они живут в §17).
 
 ```
 PLAN-stage1-common.md ............ §1..§12  (project contract, architecture, test harness, risk catalog)
 PLAN-stage1-1.md ................. §13..§14 (completed roles + phases)
-PLAN-stage1-2.md ................. §15      (Phase 2.5 external L2 gate)
-PLAN-stage1-3.md ................. §16      (Phases 3.5 + 4 bootstrap management cluster)  <-- этот файл
-PLAN-stage1-4.md ................. §17      (Phases 5 + 5.05 Terraform CAPI + kubeconfig)
-PLAN-stage1-5.md ................. §18      (Phases 5.1 + 5.2 + 5.3 Helm add-ons + CNI / MetalLB gates)
-PLAN-stage1-6.md ................. §19      (Phases 6 + 7 pivot + workload clusters)
-PLAN-stage1-7.md ................. §20      (Phase 8 destroy)
-PLAN-stage1-8.md ................. §21..§23 (Stage 1 meta: out-of-scope, self-review, recommendation)
+PLAN-stage1-2.md ................. §15      (Phases 3.5 + 4 bootstrap management cluster)
+PLAN-stage1-3.md ................. §16      (Phases 5 + 5.05 Terraform CAPI + kubeconfig) <-- этот файл
+PLAN-stage1-4.md ................. §17      (Phases 5.1 + 5.2 + 5.3 Helm add-ons + in-cluster tests)
+PLAN-stage1-5.md ................. §18      (Phases 6 + 7 pivot + workload clusters)
+PLAN-stage1-6.md ................. §19      (Phase 8 destroy)
+PLAN-stage1-7.md ................. §20..§22 (Stage 1 meta: out-of-scope, self-review, recommendation)
 ```
 
 ---
 
-# 16. Phases 3.5 + 4 — Bootstrap management cluster
+# 16. Phases 5 + 5.05 — Terraform CAPI + kubeconfig export
 
-Этот раздел группирует всё, что нужно для standing up bootstrap
-management cluster в LXC: роли (§16.1..§16.6) и сами phases — 3.5
-(binary_fetch, отодвинутый из Phase 1) и 4 (k3s + clusterctl + CAPN
-identity secret + API publish + artifacts export).
+Terraform modules в этом repo являются **единственным владельцем**:
 
-## 16.1. Role: `binary_fetch`
+* Cluster API objects;
+* machine templates и bootstrap data;
+* guest networking configuration CAPN-managed nodes;
+* kube-proxy policy;
+* cluster add-ons и cluster-scoped manifests.
 
-**Статус: выполнено в Step 4 (2026-04-22) — полное описание, deviation
-notes и checksum-style breakdown живут в §13.8.**
+## 16.1. Terraform modules ownership context
 
-Скачивает в `/opt/capi-lab/bin`:
+`manifests/*`, `networkd/*`, `kube-proxy/*`, `kubeadm-patches/*` здесь считаются reusable inputs для Terraform modules, а не самостоятельным ownership layer.
 
-* `kubectl`
-* `clusterctl`
-* `k3s`
-* optional `jq`, `yq` (отложено — потребители не запросили)
+## 16.2. Module: `modules/capi_cluster_class`
 
-Требования:
+Содержит:
 
-* version pinning (трекают §8a verified version log)
-* checksum verification (см. §13.8 implementation note про три
-  checksum styles: `plain`/`manifest`/`pinned`)
-* no custom apt repos
-* owner/group/mode deterministic
+* ClusterClass contract;
+* `KubeadmControlPlaneTemplate`;
+* `KubeadmConfigTemplate` для workers;
+* общие variables:
 
-## 16.2. Role: `bootstrap_k3s`
+  * secretRef
+  * loadBalancer
+  * instance config
+  * Kubernetes version
+  * image refs
+  * profiles/devices
+  * node bootstrap/networking policy references
 
-**Статус: выполнено в Step 4 (2026-04-22) — полное описание,
-substrate-required hardcoded флаги, execution-model rationale
-(`lxc exec` shell вместо `community.general.lxd` connection plugin)
-и end-to-end verify живут в §13.9. Step 4 также потребовал
-substrate-расширений в §13.3 / §13.6 (interception=allow,
-unix-char=allow, `/dev/kmsg` device, syscalls.intercept.*,
-raw.lxc apparmor=unconfined, restart-on-profile-change) — см.
-их Step 4 deviation секции.**
+Это модуль, который собирает bootstrap/control-plane contract и связывает его с infrastructure templates. CABPK даёт для этого `files`, `preKubeadmCommands`, `postKubeadmCommands`, `kubeletExtraArgs` и patch delivery mechanisms. ([20], [29], [28])
 
-Внутри bootstrap LXC:
+## 16.3. Module: `modules/capi_lxc_templates`
 
-* раскладывает `k3s` (kubectl / clusterctl остаются на host'е,
-  потребляются `bootstrap_clusterctl` §16.3 в следующих Step'ах);
-* стартует `k3s server` с:
+Содержит:
 
-  * `--disable-cloud-controller` (substrate-required, hardcoded)
-  * `--kubelet-arg=feature-gates=KubeletInUserNamespace=true`
-    (substrate-required, hardcoded)
-  * `--disable=servicelb` (default)
-  * `--disable=traefik` (default)
-  * `--tls-san <host IP/FQDN>` опционально через
-    `bootstrap_k3s_tls_san: []`
-  * `--cluster-cidr` / `--service-cidr` опционально (Step 4 не
-    требовал — k3s defaults достаточно)
-  * `--disable=local-storage` отложено (см. §16.6 export_artifacts —
-    локальный storage может потребоваться pivot'у)
+* `LXCClusterTemplate`
+* `LXCMachineTemplate` для CP
+* `LXCMachineTemplate` для workers
 
-K3s docs и FAQ explicitly support disabling packaged components like `traefik` and `servicelb`, and `server` docs support `--tls-san`. ([K3s][18])
+В templates должны параметризоваться:
 
-## 16.3. Role: `bootstrap_clusterctl`
+* `instanceType: container`
+* `profiles`
+* `devices`
+* `image`
+* `installKubeadm`
+* target/flavor
 
-**Статус: выполнено в Step 6 (2026-04-23) — полное описание,
-implementation notes (k8s_info native-first, idempotence pre-check
-на existing CAPN deployment, async clusterctl init, server URL
-rewrite в host-side kubeconfig, jsonpath quirk для CAPI Provider CR
-top-level fields), substrate-required values в `vars/main.yml`
-живут в §13.10.**
+Этот модуль отвечает только за **infrastructure templates** и не владеет kubeadm/bootstrap contents. CAPN API и default template это поддерживают. ([capn.linuxcontainers.org][21])
 
-Делает:
+## 16.4. Module: `modules/capi_management_cluster`
 
-* кладёт pinned `clusterctl.yaml`;
-* выполняет `clusterctl init --infrastructure incus[:version]`;
-* включает `CLUSTER_TOPOLOGY=true`, если используем CAPN default
-  ClusterClass/topology;
-* материализует host-side kubeconfig из in-container `k3s.yaml` с
-  переписанным `clusters[].cluster.server` под container-eth0 IPv4.
+Содержит:
 
-`clusterctl init` automatically installs core, kubeadm bootstrap and kubeadm control-plane providers; clusterctl config file supports repository and cert-manager overrides. ([main.cluster-api.sigs.k8s.io][7])
+* target self-hosted management cluster;
+* default topology = `k8s_lab_management_controlplane_count` (1)
+  + `k8s_lab_management_worker_count` (1) — см. §8 контракт
+  переменных. Это **single-CP + single-worker** footprint, минимально
+  жизнеспособный для self-hosted CAPI: один controller на каждой роли,
+  достаточно квоты в LXD под bootstrap-LXC, никакого HA;
+* Cluster topology instantiation на базе shared ClusterClass.
 
-## 16.4. Role: `bootstrap_capn_secret`
+Не содержит Helm releases и не является владельцем add-ons pass.
 
-**Статус: выполнено в Step 6 (2026-04-23) — полное описание,
-deviation notes (PEM→base64 DER strip для LXD trust API, async PATCH
-core.https_address с readiness poll, restriction-drift assertion на
-existing trust entries) и substrate-required values в `vars/main.yml`
-живут в §13.11.**
+## 16.5. Module: `modules/capi_workload_cluster`
 
-Создаёт Secret с:
+Содержит:
 
-* `server`
-* `server-crt`
-* `client-crt`
-* `client-key`
-* `project`
-* label `clusterctl.cluster.x-k8s.io/move: "true"` если `k8s_lab_pivot_enabled=true`
+* любой lab/workload cluster;
+* default topology = `k8s_lab_workload_controlplane_count` (2)
+  + `k8s_lab_workload_worker_count` (2) — см. §8 контракт
+  переменных. Это **multi-CP + multi-worker** footprint: 2 CP-ноды
+  заставляют kubeadm-control-plane controller реально проходить
+  multi-CP reconciliation (etcd quorum, leader-election на CP), а 2
+  worker-ноды дают MetalLB / Calico failover-плоскость для §17.x add-on
+  тестов;
+* dual-stack params;
+* Cluster topology instantiation на базе shared ClusterClass;
+* wiring к shared templates/class variables.
 
-CAPN identity secret format это прямо описывает. ([capn.linuxcontainers.org][19])
+Не содержит Helm releases и не является владельцем add-ons pass.
 
-Дополнительно к собственно Secret-материализации, роль владеет двумя
-host/LXD-уровневыми операциями (минимально-инвазивный scope, не
-пересекается с lxd_host's snap/socket-ownership):
+## 16.6. Test fixtures — CAPI
 
-* PATCH `core.https_address: <bridge-ipv4>:8443` на LXD daemon —
-  binding только на `capi-int` LXD-managed bridge IP, чтобы CAPN
-  внутри bootstrap LXC мог дотянуться до `/1.0/...` через project
-  internal subnet, а на host'овые внешние NIC ничего не торчало;
-* регистрация client TLS cert как `restricted: true + projects:
-  [capi-lab]` trust entry — CAPN не сможет коснуться чужих проектов
-  (даже если будут операторские LXD-сущности вне `capi-lab`).
+Test root modules в этом repo допускаются **только как test fixtures**
+под локальный harness. Ниже — CAPI-only subset (Helm add-ons fixtures
+живут в §17.2). Реальные environment root modules должны жить в
+отдельных private repos.
 
-Public defaults `bootstrap_capn_secret_name` и
-`bootstrap_capn_secret_pivot_enabled` sourced из плана §8 globals
-(`k8s_lab_infrastructure_secret_name` и `k8s_lab_pivot_enabled`
-соответственно), что обеспечивает single-source-of-truth для
-координации с Phase 5+ Cluster CR's `identityRef` и `clusterctl move`
-workflow.
+### `tests/fixtures/terraform/management-cluster/capi`
 
-## 16.5. Публикация bootstrap API (LXD proxy device, не отдельная роль)
+Используется только если `k8s_lab_pivot_enabled=true` в local e2e или integration test.
+Provider:
 
-Ранее Stage 1 содержал отдельную роль `bootstrap_api_publish`,
-которая разворачивала nftables DNAT + ACL поверх хостового файрвола.
-Это решение removed в Step 7 (2026-04-23) по двум причинам:
+* `kubernetes` via `.artifacts/bootstrap.kubeconfig`
 
-* **Host firewall — вне scope этого repo** (см. §11.4). В проде
-  хостовой файрвол — собственность оператора; роль не имеет права
-  писать в distro-owned nftables tables, даже в изолированную
-  `table inet k8slab_api_publish`.
-* **Source-IP ACL избыточен поверх mTLS** kubeconfig'а. Bootstrap
-  API всегда требует клиентский cert; дополнительная IP-фильтрация
-  не даёт полезной защиты и удваивает поверхность ошибок.
+Назначение:
 
-Публикация TCP-порта bootstrap-контейнера наружу (если оператор
-хочет прокинуть API, например, для Terraform с dev-машины)
-реализуется **декларативно через LXD proxy device**, управляемый
-уже существующей ролью `lxd_bootstrap_instance` (§13.7). Роль
-прокидывает любой словарь `lxd_bootstrap_instance_devices` в
-нативный модуль `community.general.lxd_container`, который
-patch'ит live config инстанса через LXD REST.
+* создать target management cluster через CAPI objects;
+* не ставить add-ons.
 
-Пример host_vars публикации k3s API на `<host>:16443`:
+### `tests/fixtures/terraform/workload-clusters/lab-default/capi`
 
-```yaml
-lxd_bootstrap_instance_devices:
-  k3s-api:
-    type:    proxy
-    listen:  "tcp:0.0.0.0:16443"
-    connect: "tcp:127.0.0.1:6443"
-    bind:    host    # LXD daemon слушает на хосте, forward в контейнер
-```
+В MVP:
 
-Семантика proxy device bind=host:
+* provider = bootstrap cluster kubeconfig
+  В Stage 2:
+* provider = `.artifacts/mgmt.kubeconfig`
 
-* LXD daemon поднимает userspace listener на `<listen>` на хосте,
-  принимает соединения, делает `connect()` в контейнер по
-  `<connect>`. Никаких правил в distro-owned nftables.
-* При `lxc delete` контейнера или `lxc config device remove`
-  listener гасится автоматически. Rollback — zero-code.
-* Source-IP filter, если всё-таки нужен в конкретном окружении, —
-  задача внешнего хостового файрвола consumer repo (например
-  `iptables`/`ufw`-based роль оператора), а не Stage 1 substrate.
+Назначение:
 
-LXD proxy device также поддерживает `bind: instance` (listener
-внутри контейнера) и `nat: true` (LXD сам ставит kernel DNAT в
-СВОЕЙ изолированной nftables table). Для Stage 1 lab нам достаточно
-простейшего `bind: host`.
+* создать workload cluster через CAPI objects;
+* не ставить add-ons.
 
-## 16.6. Role: `export_artifacts`
+Terraform provider configuration for `kubernetes`/`helm` требует live API access уже на этапе plan/apply, поэтому bootstrap or target kubeconfig must exist before the corresponding Terraform pass starts. ([25])
 
-**Статус: выполнено в Step 8 (2026-04-23) — полное описание,
-execution model (`delegate_to: localhost` с `become: false + run_once:
-true` для runner-side файлов), substrate-required filename
-conventions + file mode контракт, идемпотентный slurp+copy паттерн,
-optional server URL rewrite (runner-reach handling через публичный
-`export_artifacts_bootstrap_api_server_url`), Phase 5 smoke-test через
-`kubernetes.core.k8s_info` из verify scenario'а — живут в §13.12.
-End-to-end прогон зелёный (2026-04-23).**
+## 16.7. Phase 5 — Terraform against bootstrap cluster
 
-Stage 1 MVP-скоуп (Step 8):
+### MVP
 
-* `.artifacts/bootstrap.kubeconfig` — shipped с host'а (материализован
-  `bootstrap_clusterctl` §16.3), mode 0600 на runner'е;
-* `.artifacts/bootstrap.auto.tfvars.json` — fact-bundle для Phase 5
-  Terraform fixture'ов (TF auto-load'ит `*.auto.tfvars.json` glob'ом);
-  ключи зеркалят §8 `k8s_lab_*` globals 1:1 + производные
-  `k8s_lab_bootstrap_kubeconfig_path` / `_api_server_url`;
-* `.artifacts/clusters/` — пустой subdir, зарезервирован для Phase
-  5.05 per-cluster kubeconfig'ов.
+Terraform CAPI test root:
 
-Отложено до Phase 5+:
+* `tests/fixtures/terraform/workload-clusters/lab-default/capi`
 
-* `.artifacts/mgmt.kubeconfig` — зависит от target self-hosted
-  management cluster'а (Phase 6+ / §19); роль расширяется новой
-  `tasks/mgmt_kubeconfig.yml` без breaking change для Phase 4 caller'ов.
-* `.artifacts/clusters/<cluster>.kubeconfig` — Phase 5.05 / §17.8.
+### Stage 2
 
-## 16.7. Phase 3.5 — binary_fetch (отложен из Phase 1)
+Terraform CAPI test root:
 
-**Статус: выполнено в Step 4 (2026-04-22) — см. §14.5.**
+* `tests/fixtures/terraform/management-cluster/capi`
 
-Перенесён из Phase 1 в Step 2 — kubectl / clusterctl / k3s впервые
-нужны только на Phase 4 (`bootstrap_k3s`). См. §16.1 / §13.8.
+Acceptance:
 
-Сделано:
+* Terraform CAPI fixtures create Cluster API objects successfully
+* target cluster control plane is reachable enough to export kubeconfig
 
-* скачаны pinned версии `kubectl`, `clusterctl`, `k3s` в
-  `/opt/capi-lab/bin` с checksum verification;
-* `jq` / `yq` отложены — на Step 4 потребители не запросили; могут
-  быть добавлены позже без breaking-change ролей через
-  `binary_fetch_*_enabled` toggles или новый бинарь в каталоге.
+## 16.8. Phase 5.05 — Export target kubeconfig
 
-Acceptance: достигнуто (см. §14.5).
+Сделать:
 
-## 16.8. Phase 4 — bootstrap management cluster
+* дождаться доступности target cluster API;
+* экспортировать kubeconfig в `.artifacts/clusters/<cluster>.kubeconfig`;
+* зафиксировать artifact path для последующего Helm add-ons pass.
 
-**Статус: выполнено в Step 4 + Step 6 + Step 8 — см. §14.6.**
-`bootstrap_k3s` готов с Step 4; `bootstrap_clusterctl` +
-`bootstrap_capn_secret` готовы с Step 6. Отдельная роль для публикации
-API (§16.5) removed в Step 7 (2026-04-23) — заменена LXD proxy device
-поверх `lxd_bootstrap_instance`. В Step 8 реализована `export_artifacts`
-(§13.12 / §16.6) + `tls-server-name` pin в `bootstrap_clusterctl`
-(§13.10 Step 8 deviation) — runner теперь реально дотягивается до
-API через LXD proxy на VM host'е с криптографически чистым TLS
-identity (без IP в cert'е, без `insecure-skip-tls-verify`).
+Acceptance:
 
-Роли:
-
-* `bootstrap_k3s` ✓ (Step 4 — §13.9)
-* `bootstrap_clusterctl` ✓ (Step 6 + Step 8 — §13.10)
-* `bootstrap_capn_secret` ✓ (Step 6 — §13.11)
-* ~~`bootstrap_api_publish`~~ — removed, §16.5
-* `export_artifacts` ✓ (Step 8 — §13.12)
-
-Acceptance (целая phase) — **закрыта** 2026-04-23:
-
-* `clusterctl init` done                          ✓ (Step 6)
-* providers healthy                               ✓ (Step 6)
-* LXD identity secret present                     ✓ (Step 6)
-* bootstrap API reachable из runner'а             ✓ (Step 8 — LXD
-  proxy device + shipped kubeconfig с runner-reachable URL +
-  `tls-server-name` pin)
-* handoff bundle shipped на runner (`.artifacts/bootstrap.kubeconfig`
-  + `.artifacts/bootstrap.auto.tfvars.json`) ✓ (Step 8 — §13.12)
-
-Acceptance Step 4 + Step 6 + Step 8 частей (доказано verify
-scenario'ями, end-to-end smoke через `kubernetes.core.k8s_info` с
-`delegate_to: localhost`) — см. §14.6.
+* target cluster kubeconfig materialized on runner
+* next Terraform pass can use Helm provider against target cluster
 
 [1]: https://capn.linuxcontainers.org/?utm_source=chatgpt.com "Introduction - The cluster-api-provider-incus book"
 [2]: https://documentation.ubuntu.com/lxd/latest/reference/network_bridge/?utm_source=chatgpt.com "Bridge network - LXD documentation"
