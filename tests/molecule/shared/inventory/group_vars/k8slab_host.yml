@@ -1,0 +1,158 @@
+---
+# ==========================================================================
+# shared inventory group_vars for ALL Molecule scenarios (plan §9.5.1)
+# ==========================================================================
+#
+# Represents the unified production-like host inventory. Each scenario's
+# `molecule.yml` consumes this file via `provisioner.inventory.links`
+# and adds **only** its scenario-local host_vars (typically just
+# `_shared_target_role` and true scenario-unique overrides).
+#
+# This matches how a real playbook runs: one host_vars file is loaded
+# by Ansible and every role applied to the host sees the same values.
+# The previous per-scenario host_vars duplication was a harness bug
+# that let scenarios silently diverge from each other (Step 8 exposed
+# this via the missing `lxd_bootstrap_instance_devices` in the
+# `export-artifacts` scenario — see §13.12 Step 8 notes).
+#
+# Organisation:
+#   1) connection coordinates sourced from molecule_run.py env exports;
+#   2) k8s_lab_* globals (plan §8 contract — version pins, subnets, etc.);
+#   3) substrate host_vars that every scenario sharing this inventory
+#      inherits (role-specific knobs for lxd_host, lxd_storage_pools,
+#      lxd_bootstrap_instance, bootstrap_k3s, bootstrap_clusterctl,
+#      base_system).
+
+# --- SSH connection (plan §9.1) ------------------------------------
+#
+# molecule_run.py queries `vagrant ssh-config` once and exports
+# K8SLAB_HOST_* before exec'ing molecule; every scenario reads these
+# through env lookups so the Molecule config stays declarative.
+ansible_host:                 "{{ lookup('env', 'K8SLAB_HOST_ADDR') }}"
+ansible_user:                 "{{ lookup('env', 'K8SLAB_HOST_USER') }}"
+ansible_port:                 "{{ lookup('env', 'K8SLAB_HOST_PORT') | int }}"
+ansible_ssh_private_key_file: "{{ lookup('env', 'K8SLAB_HOST_KEY') }}"
+ansible_ssh_common_args:      "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
+
+# --- Project roots and identity (plan §8) --------------------------
+k8s_lab_opt_root:     "/opt/capi-lab"
+k8s_lab_project_name: "capi-lab"
+
+# --- Host policy (consumed by role lxd_host — plan §13.2) ----------
+lxd_host_snap_channel:       "6/stable"
+lxd_host_snap_refresh_mode:  "hold"
+lxd_host_snap_refresh_timer: "fri,03:00-04:00"
+
+# --- Networking (match libvirt-networks/ext6-mock.xml) -------------
+k8s_lab_uplink_interface:         "eth1"
+k8s_lab_external_bridge_name:     "br-ext6"
+k8s_lab_internal_network_name:    "capi-int"
+k8s_lab_internal_ipv4_subnet:     "10.77.0.0/24"
+k8s_lab_internal_ipv6_subnet:     "fd42:77:1::/64"
+k8s_lab_external_ipv6_prefix:     "2001:db8:42:100::/64"
+k8s_lab_external_node_ipv6_range: "2001:db8:42:100::10-2001:db8:42:100::3f"
+k8s_lab_metallb_vip_range_v6:     "2001:db8:42:100::200-2001:db8:42:100::2ff"
+
+# --- Binary pinning (latest stable, verified 2026-04-21) -----------
+k8s_lab_k3s_version:           "v1.35.3+k3s1"
+k8s_lab_kubectl_version:       "v1.35.3"
+k8s_lab_clusterctl_version:    "v1.12.5"
+k8s_lab_capn_provider_version: "v0.8.5"
+
+# --- Cluster identity ---------------------------------------------
+k8s_lab_management_cluster_name: "mgmt-1"
+k8s_lab_workload_cluster_name:   "lab-default"
+k8s_lab_kubernetes_version:      "v1.35.3"
+
+# --- LXD btrfs pool contract (shared across prepare + base_system) -
+#
+# Vagrant attaches a dedicated disk with the serial `k8slab-lxdpool`;
+# Molecule shared prepare formats it as btrfs and mounts it at the
+# path below. base_system's preflight then asserts the mount exists
+# and is btrfs when `base_system_btrfs_pool_required: true`.
+k8s_lab_lxd_pool_device:     "/dev/disk/by-id/virtio-k8slab-lxdpool"
+k8s_lab_lxd_pool_label:      "k8slab-lxdpool"
+k8s_lab_lxd_pool_mountpoint: "/var/lib/k8slab/lxd-pool"
+k8s_lab_lxd_pool_fstype:     "btrfs"
+k8s_lab_lxd_pool_mkfs_opts:  ""
+k8s_lab_lxd_pool_mount_opts: "defaults,noatime,space_cache=v2"
+
+# --- base_system (plan §13.1) -------------------------------------
+#
+# Prod-like default: btrfs pool IS provisioned and asserted. The only
+# scenario that overrides this to `false` is `binary-fetch`, because
+# binary_fetch role doesn't touch the btrfs pool contract — that
+# override lives in binary-fetch/molecule.yml as a scenario-local.
+base_system_btrfs_pool_required: true
+
+# --- lxd_host (plan §13.2) ----------------------------------------
+#
+# External bridge uplink NIC on the Vagrant VM — eth2 is the third
+# NIC attached to the ext6-mock libvirt network.
+lxd_host_ext_bridge_uplink: "eth2"
+
+# --- lxd_storage_pools (plan §13.4) -------------------------------
+#
+# btrfs pool on the dedicated Vagrant disk. The `btrfs.mount_options`
+# required config key is baked into `lxd_storage_pools` role
+# vars/main.yml per §feedback_required_values_hardcoded — consumers
+# only declare name/driver/source.
+lxd_storage_pools_pools:
+  - name:        "capi-fast"
+    driver:      "btrfs"
+    description: "k8s-lab primary pool (btrfs on dedicated disk)"
+    config:
+      source: "{{ k8s_lab_lxd_pool_device }}"
+
+# --- lxd_bootstrap_instance (plan §13.7 + §16.5) -----------------
+#
+# Cold-cache image pull budget on first converge.
+lxd_bootstrap_instance_wait_timeout: 300
+
+# Publish the bootstrap k3s API on the LXD host via a native LXD
+# proxy device (plan §16.5). Runner reaches the API via
+# `<vagrant_vm_ip>:16443`; LXD proxy userspace-forwards to the
+# container's 127.0.0.1:6443. TLS identity is decoupled from the URL
+# — shipped kubeconfig carries `tls-server-name: kubernetes.default.svc`
+# (substrate-locked in bootstrap_clusterctl), so no host-IP SAN
+# override is required.
+lxd_bootstrap_instance_devices:
+  k3s-api:
+    type:    "proxy"
+    listen:  "tcp:0.0.0.0:16443"
+    connect: "tcp:127.0.0.1:6443"
+    bind:    "host"
+
+# --- bootstrap_k3s (plan §13.9) -----------------------------------
+#
+# k3s first-boot pulls the bundled images on cold cache — enlarge
+# the readiness poll budget beyond the role's conservative default.
+bootstrap_k3s_wait_retries: 90
+bootstrap_k3s_wait_delay:   4
+
+# --- bootstrap_clusterctl (plan §13.10) --------------------------
+#
+# Cold-cache cert-manager + 4 CAPI/CAPN provider image pulls can
+# take ~3 min; enlarge init + readiness budgets accordingly.
+bootstrap_clusterctl_init_timeout: 600
+bootstrap_clusterctl_wait_retries: 90
+bootstrap_clusterctl_wait_delay:   5
+
+# --- export_artifacts (plan §13.12 + §16.6) ----------------------
+#
+# Runner-side artefact root: repo-root/.artifacts. MOLECULE_PROJECT_DIRECTORY
+# = <repo_root>/tests/molecule, so two dirname strips land on repo
+# root. The role's preflight rejects `..`/`.` segments so we resolve
+# them here via the dirname chain (canonical absolute path).
+export_artifacts_root: >-
+  {{ lookup('env', 'MOLECULE_PROJECT_DIRECTORY') | dirname | dirname }}/.artifacts
+
+# Rewrite the shipped kubeconfig's server URL to the runner-reachable
+# endpoint (LXD proxy device on the Vagrant VM, listener :16443
+# — see lxd_bootstrap_instance_devices above). K8SLAB_HOST_ADDR is
+# the Vagrant VM's IP exported by molecule_run.py from
+# `vagrant ssh-config`. Runner-side Terraform (Phase 5+) will consume
+# the shipped kubeconfig via this URL + `tls-server-name:
+# kubernetes.default.svc` baked by bootstrap_clusterctl.
+export_artifacts_bootstrap_api_server_url: >-
+  https://{{ lookup('env', 'K8SLAB_HOST_ADDR') }}:16443

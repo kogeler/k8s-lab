@@ -188,12 +188,32 @@ LXD proxy device также поддерживает `bind: instance` (listener
 
 ## 16.6. Role: `export_artifacts`
 
-Создаёт:
+**Статус: выполнено в Step 8 (2026-04-23) — полное описание,
+execution model (`delegate_to: localhost` с `become: false + run_once:
+true` для runner-side файлов), substrate-required filename
+conventions + file mode контракт, идемпотентный slurp+copy паттерн,
+optional server URL rewrite (runner-reach handling через публичный
+`export_artifacts_bootstrap_api_server_url`), Phase 5 smoke-test через
+`kubernetes.core.k8s_info` из verify scenario'а — живут в §13.12.
+End-to-end прогон зелёный (2026-04-23).**
 
-* `.artifacts/bootstrap.kubeconfig`
-* `.artifacts/mgmt.kubeconfig`
-* `.artifacts/clusters/<cluster>.kubeconfig`
-* `.artifacts/*.auto.tfvars.json`
+Stage 1 MVP-скоуп (Step 8):
+
+* `.artifacts/bootstrap.kubeconfig` — shipped с host'а (материализован
+  `bootstrap_clusterctl` §16.3), mode 0600 на runner'е;
+* `.artifacts/bootstrap.auto.tfvars.json` — fact-bundle для Phase 5
+  Terraform fixture'ов (TF auto-load'ит `*.auto.tfvars.json` glob'ом);
+  ключи зеркалят §8 `k8s_lab_*` globals 1:1 + производные
+  `k8s_lab_bootstrap_kubeconfig_path` / `_api_server_url`;
+* `.artifacts/clusters/` — пустой subdir, зарезервирован для Phase
+  5.05 per-cluster kubeconfig'ов.
+
+Отложено до Phase 5+:
+
+* `.artifacts/mgmt.kubeconfig` — зависит от target self-hosted
+  management cluster'а (Phase 6+ / §19); роль расширяется новой
+  `tasks/mgmt_kubeconfig.yml` без breaking change для Phase 4 caller'ов.
+* `.artifacts/clusters/<cluster>.kubeconfig` — Phase 5.05 / §17.8.
 
 ## 16.7. Phase 3.5 — binary_fetch (отложен из Phase 1)
 
@@ -214,32 +234,38 @@ Acceptance: достигнуто (см. §14.5).
 
 ## 16.8. Phase 4 — bootstrap management cluster
 
-**Статус: частично выполнено в Step 4 + Step 6 — см. §14.6.**
+**Статус: выполнено в Step 4 + Step 6 + Step 8 — см. §14.6.**
 `bootstrap_k3s` готов с Step 4; `bootstrap_clusterctl` +
 `bootstrap_capn_secret` готовы с Step 6. Отдельная роль для публикации
 API (§16.5) removed в Step 7 (2026-04-23) — заменена LXD proxy device
-поверх `lxd_bootstrap_instance`. Из Phase 4 остаётся `export_artifacts`
-(§16.6).
+поверх `lxd_bootstrap_instance`. В Step 8 реализована `export_artifacts`
+(§13.12 / §16.6) + `tls-server-name` pin в `bootstrap_clusterctl`
+(§13.10 Step 8 deviation) — runner теперь реально дотягивается до
+API через LXD proxy на VM host'е с криптографически чистым TLS
+identity (без IP в cert'е, без `insecure-skip-tls-verify`).
 
 Роли:
 
 * `bootstrap_k3s` ✓ (Step 4 — §13.9)
-* `bootstrap_clusterctl` ✓ (Step 6 — §13.10)
+* `bootstrap_clusterctl` ✓ (Step 6 + Step 8 — §13.10)
 * `bootstrap_capn_secret` ✓ (Step 6 — §13.11)
 * ~~`bootstrap_api_publish`~~ — removed, §16.5
-* `export_artifacts` ☐ (§16.6)
+* `export_artifacts` ✓ (Step 8 — §13.12)
 
-Acceptance (целая phase, после оставшихся ролей):
+Acceptance (целая phase) — **закрыта** 2026-04-23:
 
 * `clusterctl init` done                          ✓ (Step 6)
 * providers healthy                               ✓ (Step 6)
 * LXD identity secret present                     ✓ (Step 6)
-* bootstrap API reachable на in-cluster kubeconfig ✓ (уже через
-  substrate chain; внешняя публикация опциональна через LXD
-  proxy device на `lxd_bootstrap_instance` — §16.5)
+* bootstrap API reachable из runner'а             ✓ (Step 8 — LXD
+  proxy device + shipped kubeconfig с runner-reachable URL +
+  `tls-server-name` pin)
+* handoff bundle shipped на runner (`.artifacts/bootstrap.kubeconfig`
+  + `.artifacts/bootstrap.auto.tfvars.json`) ✓ (Step 8 — §13.12)
 
-Acceptance Step 4 + Step 6 частей (доказано verify scenario'ями) —
-см. §14.6.
+Acceptance Step 4 + Step 6 + Step 8 частей (доказано verify
+scenario'ями, end-to-end smoke через `kubernetes.core.k8s_info` с
+`delegate_to: localhost`) — см. §14.6.
 
 [1]: https://capn.linuxcontainers.org/?utm_source=chatgpt.com "Introduction - The cluster-api-provider-incus book"
 [2]: https://documentation.ubuntu.com/lxd/latest/reference/network_bridge/?utm_source=chatgpt.com "Bridge network - LXD documentation"

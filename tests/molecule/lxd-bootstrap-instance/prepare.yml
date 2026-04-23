@@ -18,8 +18,6 @@
   become: true
   vars:
     _molecule_project_dir: "{{ lookup('ansible.builtin.env', 'MOLECULE_PROJECT_DIRECTORY') }}"
-  vars_files:
-    - "../shared/vars/common.yml"
   tasks:
     - name: "Prepare | lxd_bootstrap_instance | shared base"
       ansible.builtin.include_tasks:

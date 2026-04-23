@@ -1,0 +1,31 @@
+---
+galaxy_info:
+  role_name: export_artifacts
+  namespace: k8slab
+  author: k8s-lab contributors
+  description: >-
+    Materialise Phase 4 handoff artefacts on the runner (plan §16.6):
+    `.artifacts/bootstrap.kubeconfig` pulled from the LXD host, and
+    `.artifacts/bootstrap.auto.tfvars.json` carrying the facts Phase 5
+    Terraform fixtures consume (cluster identity, CAPN version,
+    topology toggles, bootstrap API endpoint).
+  license: MIT
+  min_ansible_version: "2.16"
+  platforms:
+    - name: Debian
+      versions:
+        - trixie
+  galaxy_tags:
+    - kubernetes
+    - clusterapi
+    - artifacts
+    - bootstrap
+
+dependencies:
+  # bootstrap_capn_secret closes the Phase 4 substrate chain — by the
+  # time we run, the bootstrap k3s cluster exists, clusterctl init has
+  # run, the CAPN identity Secret has been applied, and the host-side
+  # kubeconfig under `/opt/capi-lab/etc/bootstrap_clusterctl/` is ready
+  # to be shipped to the runner. The chain transitively pulls every
+  # earlier substrate role.
+  - role: bootstrap_capn_secret

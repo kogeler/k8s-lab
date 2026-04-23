@@ -26,11 +26,14 @@ PLAN-stage1-8.md ................. §21..§23 (Stage 1 meta: out-of-scope, self-
 
 Этот раздел охватывает Ansible-роли Stage 1, которые уже реализованы и
 прогнаны end-to-end в локальном Vagrant/libvirt-контуре по состоянию на
-Step 6 (2026-04-23):
+Step 6 (2026-04-23). Step 8 (2026-04-23) добавил `export_artifacts`
+(§13.12, Phase 4 закрывающая роль, §16.6); её Molecule-цикл ещё не
+прогон (см. секцию Step 8 ниже):
 
 * §13.1 `base_system` (Step 1 + Step 5 required-values refactor);
 * §13.2 `lxd_host` (Step 2);
-* §13.3 `lxd_project` (Step 3 + Step 4 substrate расширение);
+* §13.3 `lxd_project` (Step 3 + Step 4 substrate расширение + Step 7
+  `restricted.devices.proxy` allow);
 * §13.4 `lxd_storage_pools` (Step 3 + Step 5 required-config refactor);
 * §13.5 `lxd_network_int_managed` (Step 3 + Step 5 required-config refactor);
 * §13.6 `lxd_profiles` (Step 3 lean baseline + Step 4 full CAPN unprivileged kubeadm baseline);
@@ -38,7 +41,9 @@ Step 6 (2026-04-23):
 * §13.8 `binary_fetch` (Step 4 — отложенная Phase 1.5 / §16.1);
 * §13.9 `bootstrap_k3s` (Step 4 + Step 5 required-disables refactor);
 * §13.10 `bootstrap_clusterctl` (Step 6 — Phase 4 продолжение, §16.3);
-* §13.11 `bootstrap_capn_secret` (Step 6 — Phase 4 продолжение, §16.4).
+* §13.11 `bootstrap_capn_secret` (Step 6 — Phase 4 продолжение, §16.4);
+* §13.12 `export_artifacts` (Step 8 — Phase 4 закрытие, §16.6;
+  Molecule-цикл ещё не прогон).
 
 Ещё не выполненные Stage-1-роли живут в последующих шардах (§15..§20)
 вместе со своими phases.
@@ -857,7 +862,10 @@ hardcoded `--disable-cloud-controller` и
 
 ## 13.10. `bootstrap_clusterctl`
 
-**Статус: выполнено в Step 6 (2026-04-23) — Phase 4 продолжение, §16.3.**
+**Статус: выполнено в Step 6 (2026-04-23) — Phase 4 продолжение, §16.3.
+Step 8 (2026-04-23) добавил pin `tls-server-name: kubernetes.default.svc`
+в rewritten kubeconfig (см. Step 8 расширения ниже) — один kubeconfig
+теперь работает с любого vantage point'а без IP в cert'е.**
 
 Превращает голый bootstrap k3s кластер в CAPI management cluster:
 
@@ -919,6 +927,42 @@ hardcoded `--disable-cloud-controller` и
   (cert-manager + 4 провайдера) могут занять ~3 мин; foreground SSH
   timeouts на shared molecule прогонах прервали бы. async с poll=5s,
   budget = `bootstrap_clusterctl_init_timeout` (default 600s).
+
+### Step 8 расширения (2026-04-23)
+
+Driver: `export_artifacts` (§13.12) ship'ит kubeconfig на runner, и
+runner должен реально достучаться до bootstrap API через LXD proxy
+device (§16.5). Если server URL в kubeconfig указывает на
+`https://<proxy_endpoint>:<port>`, а клиент делает TLS verify по
+host-части URL, то `<proxy_endpoint>` **обязан** быть в SAN k3s
+cert'а — иначе TLS fail. Раньше это значило либо `--tls-san <host_ip>`
+(привязка к IP → хрупко; ломается при смене host IP), либо
+`insecure-skip-tls-verify` (security trade-off).
+
+Step 8 вводит криптографически корректный третий путь: pin
+`tls-server-name: kubernetes.default.svc` в `clusters[].cluster`
+rewritten kubeconfig'а. `kubernetes.default.svc` — стандартный
+Kubernetes internal service DNS name, **всегда** embedded как DNS
+SAN в k3s (и любом conformant distribution) server cert'е по
+дефолту. Kubectl/client-go/terraform-kubernetes-provider нативно
+поддерживают `tls-server-name` — оно override'ит SNI + hostname
+match на это значение, **не** на host-часть URL. Результат: один
+kubeconfig байт-в-байт работает с любой vantage point'ы
+(in-container, LXD host, dev-машина через LXD proxy, production
+runner через тот же proxy) — без IP в cert'е, без `--tls-san`
+overrides, без `insecure-skip-tls-verify`. Fix в одну строку:
+`tasks/kubeconfig.yml` добавляет `tls-server-name` к combine-rewrite
+поверх `server` переписывания.
+
+* **Substrate-required добавлен:**
+  - `_bootstrap_clusterctl_required_tls_server_name: "kubernetes.default.svc"`
+    — стандарт k8s, baked-in SAN k3s cert'а.
+* **Regression-safe для `bootstrap_capn_secret`** (§13.11): его
+  k8s_info calls используют тот же kubeconfig; TLS match переезжает
+  с `IP:10.77.0.176` на `DNS:kubernetes.default.svc` — оба в SAN
+  list'е, оба валидны. Идемпотентность `bootstrap_capn_secret`
+  сохранена (доказано Step 8 regression run'ом: changed=0 на
+  повторных converge'ах).
 
 ## 13.11. `bootstrap_capn_secret`
 
@@ -1003,6 +1047,142 @@ hardcoded `--disable-cloud-controller` и
   локальный scope в `bootstrap_capn_secret` минимально-инвазивен и
   не пересекается с lxd_host's snap/socket-ownership.
 
+## 13.12. `export_artifacts`
+
+**Статус: выполнено в Step 8 (2026-04-23) — Phase 4 закрытие, §16.6.
+End-to-end прогон на Vagrant VM зелёный (`converge ok=296 changed=4`,
+`idempotence ok=296 changed=0`, `verify ok=16 changed=0 failed=0`);
+`kubectl --kubeconfig=.artifacts/bootstrap.kubeconfig get nodes` с
+dev-машины возвращает Ready control-plane node.**
+
+Закрывает Phase 4: ship'ит handoff bundle с LXD host'а на runner в
+`.artifacts/`:
+
+* **`.artifacts/bootstrap.kubeconfig`** — admin kubeconfig bootstrap
+  k3s кластера; источник — host-side
+  `/opt/capi-lab/etc/bootstrap_clusterctl/bootstrap.kubeconfig`
+  (материализованный `bootstrap_clusterctl`, с уже переписанным server
+  URL под container-eth0 IPv4). Phase 5 Terraform fixture'ы
+  (`kubernetes` / `helm` providers) получают путь к файлу как input.
+* **`.artifacts/bootstrap.auto.tfvars.json`** — TF-native `*.auto.tfvars.json`
+  handoff для Phase 5 root'ов (Terraform auto-load'ит файлы по
+  glob'у, `-var-file` flag не нужен). Ключи зеркалят §8 `k8s_lab_*`
+  globals 1:1 (project_name, management/workload cluster names,
+  topology counts, kubernetes_version, capn_provider_version,
+  infrastructure_secret_name, topology_enabled, pivot_enabled,
+  unprivileged_nodes) + производные `k8s_lab_bootstrap_kubeconfig_path`
+  и `k8s_lab_bootstrap_api_server_url`. API URL derived из shipped
+  kubeconfig'а (второй LXD REST probe не нужен).
+* **`.artifacts/clusters/`** — пустой subdir, зарезервирован для
+  Phase 5.05 per-cluster kubeconfig'ов (§17.8); создаётся здесь чтобы
+  downstream phases имели куда писать без bootstrap'а структуры.
+
+### Implementation notes (Step 8)
+
+* **Execution model: `delegate_to: localhost, become: false, run_once:
+  true`** на artefact-write тасках. Роль запускается на LXD host'е
+  через meta-dep цепочку (bootstrap_capn_secret транзитивно тянет всю
+  Phase 4), читает source kubeconfig как root (через `slurp`, bypass
+  `/opt/capi-lab/etc/bootstrap_clusterctl/` mode 0750), а потом флипается
+  на controller user'а для `copy` — файлы ложатся с UID runner'а и
+  mode 0600 (§11.1). Controller-side `sudo` не требуется.
+* **`export_artifacts_root` — обязательный public input.** Плана
+  §11.1 фиксирует контракт `.artifacts/` (gitignore, mode 0600, owner
+  = runner), но не путь — policy-decision остаётся за consumer'ом.
+  Auto-guess через `playbook_dir` был бы хрупким (зависит от где
+  оператор запускает playbook), поэтому роль fail'ится на preflight'е
+  без этой переменной. Preflight также режёт `..`/`.` сегменты —
+  path должен быть каноническим (регрессия первой итерации Step 8:
+  scenario передавал `MOLECULE_PROJECT_DIRECTORY/../../.artifacts` →
+  в tfvars попадал уродский путь; исправлено на
+  `MOLECULE_PROJECT_DIRECTORY | dirname | dirname + /.artifacts`).
+* **Runner-reach через LXD proxy + `tls-server-name`.** Step 8
+  archichtectural fix: runner (dev-машина для harness'а, сервер для
+  production) должен достучаться до bootstrap API, но в cert'е k3s
+  нет SAN для IP host'а. Решено через:
+  - `bootstrap_clusterctl` pin'ит `tls-server-name: kubernetes.default.svc`
+    (стандартный k8s SAN, всегда в k3s cert) — см. §13.10 Step 8
+    deviation;
+  - `export_artifacts` опционально переписывает `clusters[].cluster.server`
+    на runner-reachable URL через публичную
+    `export_artifacts_bootstrap_api_server_url` (default empty = keep
+    host-side URL); `tls-server-name` остаётся `as-is` из source,
+    уже pin'нутый bootstrap_clusterctl'ом;
+  - `lxd_bootstrap_instance_devices.k3s-api` (LXD proxy
+    `bind: host, listen: tcp:0.0.0.0:16443, connect: tcp:127.0.0.1:6443`)
+    — публишит API на host'е VM. Scenario передаёт его через
+    host_vars **временно** (до §9.5.1 refactor'а).
+  Kubeconfig работает байт-в-байт с любой vantage point'ы (in-container,
+  LXD host, dev-машина через proxy, production runner с network reach)
+  — ни одного IP в cert'е. `insecure-skip-tls-verify` не используется.
+* **Substrate-required в `vars/main.yml`** (правило памяти
+  `feedback_required_values_hardcoded.md`):
+  - `_export_artifacts_required_bootstrap_kubeconfig_filename: "bootstrap.kubeconfig"`
+    — Phase 5 fixture'ы хардкодят именно это имя;
+  - `_export_artifacts_required_tfvars_filename: "bootstrap.auto.tfvars.json"`
+    — Terraform auto-load glob;
+  - `_export_artifacts_required_clusters_subdir: "clusters"`;
+  - `_export_artifacts_required_file_mode: "0600"` +
+    `_export_artifacts_required_dir_mode: "0700"` — §11.1 secret
+    contract.
+* **Public defaults — tunable:** whole-role toggle
+  (`export_artifacts_enabled`), per-artefact toggles
+  (`_bootstrap_kubeconfig_enabled`, `_tfvars_enabled`), source path
+  на host'е (`export_artifacts_bootstrap_kubeconfig_source`,
+  default'ом указывает на то, что bootstrap_clusterctl материализует),
+  `export_artifacts_bootstrap_api_server_url: ""` (empty → keep
+  source URL; non-empty → rewrite `clusters[].cluster.server` в
+  shipped kubeconfig — runner-reach handle),
+  `export_artifacts_tfvars_extra: {}` — merge-on-top dict для
+  environment-specific дополнений (baseline ключи всегда побеждают
+  на коллизии; если нужно shadow'нуть baseline — меняется §8 global,
+  не role extras).
+* **Idempotence.** `slurp` + `copy` сравнивает байты на destination'е
+  → skip write при совпадении. `to_nice_json(sort_keys=True)` даёт
+  deterministic body для идентичных inputs → tfvars rewrite
+  byte-stable. `ansible.builtin.file state=directory` — no-op при
+  совпадающем mode.
+* **Healthchecks** stat'ят оба файла на runner'е, проверяют mode 0600
+  и базовые size bounds. Extra: parse'им tfvars как JSON и
+  ассертим наличие baseline ключей (`k8s_lab_project_name`,
+  `k8s_lab_infrastructure_secret_name`, `k8s_lab_capn_provider_version`,
+  `k8s_lab_bootstrap_kubeconfig_path`, `k8s_lab_bootstrap_api_server_url`)
+  + что `k8s_lab_bootstrap_api_server_url` начинается с `https://` и
+  не содержит `127.0.0.1`.
+* **Scenario `export-artifacts`** ассертит всё то же на runner'е
+  (`delegate_to: localhost`): mode 0600 для обоих файлов, shipped
+  kubeconfig parseable YAML с server URL == scenario-provided URL и
+  `tls-server-name == kubernetes.default.svc`, tfvars JSON с baseline
+  `k8s_lab_*` ключами, API URL в tfvars матчит server URL kubeconfig'а.
+  Плюс end-to-end smoke: `kubernetes.core.k8s_info kind=Node` через
+  shipped kubeconfig с `delegate_to: localhost` — dev-машина реально
+  коннектится к bootstrap API через LXD proxy device, TLS verify по
+  `kubernetes.default.svc`, получает хотя бы одну Ready ноду. Этот
+  smoke доказывает end-to-end для Phase 5 TF: если runner видит API
+  в verify'е, Terraform Kubernetes/Helm provider с тем же kubeconfig'ом
+  поедет по тому же пути. `ansible_python_interpreter: "{{ ansible_playbook_python }}"`
+  per-task для delegated tasks пинит runner-side Python под venv'овский
+  (там `python3-kubernetes` уже есть — установлен для molecule).
+* **Ownership note.** Роль явно НЕ вмешивается в trust
+  material или кластерное состояние — она только **читает** уже
+  материализованные артефакты (kubeconfig, §8 globals в памяти
+  Ansible) и **пишет** их в `.artifacts/`. Идемпотентный
+  snapshot-only роли, не state-changing.
+
+### Not shipped в Step 8 (отложено)
+
+* **`.artifacts/mgmt.kubeconfig`** — Phase 5+ deliverable (target
+  self-hosted management cluster kubeconfig, после того как
+  `clusterctl move` pivot'нёт в него; §19). Роль
+  design'ена расширяемой — когда этот kubeconfig появится, добавится
+  новая `tasks/mgmt_kubeconfig.yml` по тому же паттерну (slurp с
+  host, copy delegate_to localhost), без breaking change для Phase 4
+  callers.
+* **`.artifacts/clusters/<cluster>.kubeconfig`** — Phase 5.05
+  deliverable (§17.8; workload cluster kubeconfig экспортится после
+  создания через Terraform CAPI). Subdir уже создаётся, задел
+  готов.
+
 ---
 
 # 14. Выполненные phases
@@ -1016,12 +1196,13 @@ Vagrant/libvirt-контуре по состоянию на Step 6 (2026-04-23):
 * §14.3 Phase 2 — LXD substrate (Step 3);
 * §14.4 Phase 3 — bootstrap instance (Step 3);
 * §14.5 Phase 3.5 — `binary_fetch` (Step 4);
-* §14.6 Phase 4 — bootstrap management cluster (Step 4 + Step 6 —
-  частично: `bootstrap_k3s` готов с Step 4; `bootstrap_clusterctl` +
-  `bootstrap_capn_secret` готовы с Step 6; отдельная роль
-  `bootstrap_api_publish` removed в Step 7 — публикация API перенесена
-  на LXD proxy device поверх `lxd_bootstrap_instance`, см. §16.5;
-  `export_artifacts` остаётся в §16.6).
+* §14.6 Phase 4 — bootstrap management cluster (Step 4 + Step 6 +
+  Step 8 — частично: `bootstrap_k3s` готов с Step 4;
+  `bootstrap_clusterctl` + `bootstrap_capn_secret` готовы с Step 6;
+  отдельная роль `bootstrap_api_publish` removed в Step 7 — публикация
+  API перенесена на LXD proxy device поверх `lxd_bootstrap_instance`,
+  см. §16.5; `export_artifacts` реализован в Step 8 / §13.12, но
+  Molecule-цикл ещё не прогон → фаза формально не закрыта).
 
 Step 5 — **сквозной refactor без новых phases**: substrate-required
 значения в `base_system` / `lxd_storage_pools` / `lxd_network_int_managed`
@@ -1106,6 +1287,64 @@ Step 7 (2026-04-23) — repo-wide naming refactor + переосмысление
   `feedback_pause_before_role_test.md`). Одноразовые инструкции,
   применённые и завершённые в предыдущих step'ах, удалены из
   памяти (policy-rules остались).
+
+**Step 8 расширения — harness refactor + Vagrantfile fixes.**
+
+* **Shared inventory архитектура** (§9.5). До Step 8 каждый
+  `molecule.yml` дублировал substrate host_vars. Инцидент:
+  `export-artifacts` scenario не задавал
+  `lxd_bootstrap_instance_devices`, роль reconciliate'ила proxy
+  device к `{}` на converge, runner-reach отваливался. Fix:
+  перенести весь substrate в `tests/molecule/shared/inventory/group_vars/k8slab_host.yml`,
+  scenario'ы подключают через `inventory.links.group_vars:
+  ../shared/inventory/group_vars`. Scenario-local overrides — в real
+  файлах `<scenario>/host_vars/k8slab-host.yml` (не через
+  `molecule.yml inventory.host_vars`, которое молча теряется при
+  наличии `links` — molecule provisioner/ansible.py:442
+  all-or-nothing). Target role определяется в `shared/converge.yml`
+  из `MOLECULE_SCENARIO_NAME` env var; контракт
+  `scenario.name == role dir name`. Полное описание — §9.5.
+  `shared/vars/common.yml` удалён, 24 `prepare.yml`/`verify.yml`
+  потеряли `vars_files:` reference.
+* **Vagrantfile self-sufficiency.** `config.trigger.before :up`
+  определяет + стартует libvirt networks через `virsh`, если
+  отсутствуют — bare `vagrant up` теперь работает standalone (до
+  этого падал `undefined method 'to_range' for nil` на pristine
+  system, нужен был `make networks` wrapper).
+  `config.vm.synced_folder ".", "/vagrant", disabled: true` — убран
+  бесполезный rsync всего репо в гость (ни одной reference на
+  `/vagrant` в `ansible/` или `tests/molecule/`); сэкономлено
+  ~2 мин на `make up` first-boot + `apt install rsync` в госте.
+* **End-to-end регрессия (2026-04-23, pristine VM).** Все 12
+  готовых scenario'ев прошли full-cycle последовательно (create →
+  prepare → converge → idempotence → verify → destroy):
+
+  | Scenario | Duration |
+  |---|---|
+  | base-system | 183s |
+  | binary-fetch | 67s |
+  | lxd-host | 107s |
+  | lxd-project | 75s |
+  | lxd-storage-pools | 77s |
+  | lxd-network-int-managed | 80s |
+  | lxd-profiles | 101s |
+  | lxd-bootstrap-instance | 118s |
+  | bootstrap-k3s | 213s |
+  | bootstrap-clusterctl | 225s |
+  | bootstrap-capn-secret | 199s |
+  | export-artifacts | 211s |
+  | **Total** | **~1656s (~27.6 min)** |
+
+  `export-artifacts` verify включает live
+  `kubernetes.core.k8s_info kind=Node` через shipped kubeconfig с
+  `delegate_to: localhost` — dev-машина реально доходит до
+  bootstrap API через LXD proxy с TLS verify по
+  `kubernetes.default.svc`. Доказательство что Phase 5 TF
+  Kubernetes/Helm provider с тем же kubeconfig'ом поедет.
+* **Memory.** Добавлено новое правило `feedback_makefile_only.md`:
+  всегда через Makefile entry points, никогда напрямую
+  vagrant/virsh/molecule — harness-бугбаги иначе остаются
+  незамеченными.
 * **Regression prove.** Sequential Molecule runner (`/tmp/
   run_all_scenarios.sh`) на свеже-созданной Vagrant VM прошёл все 11
   оставшихся готовых сценариев (base-system, binary-fetch, lxd-host,
@@ -1116,6 +1355,92 @@ Step 7 (2026-04-23) — repo-wide naming refactor + переосмысление
 
 Step 7 оставляет Phase 4 не до конца закрытой —
 `export_artifacts` (§16.6) переносится в следующий Step.
+
+Step 8 (2026-04-23) — закрытие Phase 4 + архитектурный фикс
+runner-reach. Реализована `export_artifacts` (§13.12 / §16.6) +
+Molecule scenario `export-artifacts`. `bootstrap_clusterctl` получил
+substrate-локированный pin `tls-server-name: kubernetes.default.svc`
+в rewritten kubeconfig (§13.10 Step 8 deviation) — это криптографически
+decouples TLS verify от connection URL: runner может стучаться по
+любому proxy-device endpoint'у, TLS handshake матчится против DNS SAN
+`kubernetes.default.svc`, который k3s кладёт в server cert по
+дефолту (стандарт k8s, не нужен `--tls-san`). Никаких IP в cert'е.
+
+Архитектурный вывод Step 8: handoff bundle бесполезен без того, чтобы
+runner (= dev машина для harness'а, = сервер для production) мог
+реально достучаться до API кластера. Plan §16.5 это и предусматривал
+— publish через нативный LXD proxy device на bootstrap инстансе
+(`bind: host, listen: tcp:0.0.0.0:16443, connect: tcp:127.0.0.1:6443`),
+никаких host-firewall костылей (§11.4 hard-lock). Сочетание proxy +
+`tls-server-name` pin даёт полностью портативный kubeconfig: один
+файл работает с VM изнутри (server=10.77.x:6443), из host'а VM
+(127.0.0.1:16443), из dev-машины (192.168.121.35:16443), из любого
+runner'а с network reach до host'а — TLS identity везде одна и та же.
+
+`export_artifacts` публикует на runner'е:
+
+* `.artifacts/bootstrap.kubeconfig` — через `slurp`+`copy` с
+  `delegate_to: localhost, become: false, run_once: true` (контракт
+  §11.1: file mode 0600, owner=runner user). Опциональный rewrite
+  `clusters[].cluster.server` через публичную `export_artifacts_bootstrap_api_server_url`
+  (empty → keep host-side URL; non-empty → подставить в shipped
+  kubeconfig). `tls-server-name` сохраняется `as-is` из source —
+  bootstrap_clusterctl уже pin'ит его.
+* `.artifacts/bootstrap.auto.tfvars.json` — TF-native auto-load
+  шаблон для Phase 5 fixture root'ов; ключи зеркалят §8 `k8s_lab_*`
+  globals 1:1 (project_name, cluster names, topology counts,
+  kubernetes_version, capn_provider_version, infrastructure_secret_name,
+  etc.) + производные `k8s_lab_bootstrap_kubeconfig_path`,
+  `k8s_lab_bootstrap_api_server_url` (деривится из уже shipped
+  kubeconfig'а — второй LXD REST probe не нужен).
+* `.artifacts/clusters/` — пустой subdir, зарезервирован для
+  Phase 5.05 per-cluster kubeconfig'ов.
+
+Substrate-required значения (filenames `bootstrap.kubeconfig` /
+`bootstrap.auto.tfvars.json`, subdir `clusters/` для Phase 5.05, file
+mode 0600 / dir mode 0700) — в `vars/main.yml` под
+`_export_artifacts_required_*` префиксом. Public defaults экспонируют
+только toggles, source path на host'е, `tfvars_extra` merge-on-top
+точку расширения и `export_artifacts_bootstrap_api_server_url` для
+runner-reach override'а; `export_artifacts_root` — обязательный
+consumer input (plan §11.1 фиксирует контракт, не путь; preflight
+режёт `..`/`.` сегменты для канонической формы). Meta-deps:
+`bootstrap_capn_secret` (закрывает Phase 4 substrate chain —
+транзитивно всё до `base_system`).
+
+Scenario `export-artifacts` в Makefile SCENARIOS зарегистрирован
+после `bootstrap-capn-secret`; передаёт proxy device + URL override
+в host_vars **временно** — до выполнения §9.5.1 (harness
+refactoring backlog: вынести общие substrate host_vars в
+shared inventory group_vars, чтобы proxy device жил в одном месте
+для всех scenario'ев как в production инвентаре).
+
+**End-to-end прогон (2026-04-23) на Vagrant VM зелёный:**
+`converge ok=296 changed=4 failed=0` → `idempotence ok=296 changed=0`
+→ `verify ok=16 changed=0 failed=0`. Verify делает live k8s_info
+через shipped kubeconfig с `delegate_to: localhost` — dev-машина
+доходит до bootstrap API через LXD proxy на `192.168.121.35:16443`,
+TLS проверка по `kubernetes.default.svc`, один Ready control-plane
+node возвращается. `kubectl --kubeconfig=.artifacts/bootstrap.kubeconfig
+get nodes` с dev-машины тоже работает — Phase 5 Terraform
+`kubernetes`/`helm` provider поедет out-of-the-box. Phase 4
+формально **закрыта**.
+
+**Step 8 — побочные изменения:**
+* `bootstrap_clusterctl` (§13.10) — одна строка в
+  `tasks/kubeconfig.yml` (`tls-server-name` в combine-rewrite) + 1
+  substrate-key в `vars/main.yml`. Regression-safe для
+  `bootstrap_capn_secret` — его k8s_info calls идут через тот же
+  kubeconfig, `tls-server-name: kubernetes.default.svc` матчится
+  against тот же SAN, что раньше матчился через IP; `bootstrap_capn_secret`
+  scenario проходит без изменений (ре-прогон Step 8 на том же VM —
+  idempotent).
+* §9.5.1 harness refactoring backlog добавлен (см. common.md §9.5) —
+  описывает перенос общих host_vars в shared inventory group_vars;
+  `lxd_bootstrap_instance_devices.k3s-api` и все прочие дубликаты
+  уедут туда; scenario-level override в export-artifacts исчезнет.
+  Запланировано **до старта Phase 5 scenario'ев**, чтобы не умножать
+  tech-debt при их добавлении.
 
 Ещё не выполненные phases живут в §15..§20.
 
@@ -1216,16 +1541,19 @@ Acceptance:
 * каждый бинарь runs и self-reports версию, совпадающую с pinned
   значением из §8a.
 
-## 14.6. Phase 4 — bootstrap management cluster (частично)
+## 14.6. Phase 4 — bootstrap management cluster
 
-**Статус: частично выполнено в Step 4 + Step 6.** На Step 4 (2026-04-22)
-готов `bootstrap_k3s`; на Step 6 (2026-04-23) добавлены
-`bootstrap_clusterctl` (§13.10) и `bootstrap_capn_secret` (§13.11).
-Step 7 (2026-04-23): отдельная роль `bootstrap_api_publish` removed
-из Phase 4 (§16.5) — публикация портов перенесена на LXD proxy
-device поверх `lxd_bootstrap_instance`; host-side firewall признан
-вне scope repo (§11.4). Остаётся `export_artifacts` (§16.6) — уйдёт
-в следующий Step.
+**Статус: выполнено в Step 4 + Step 6 + Step 8 (2026-04-23).** На
+Step 4 (2026-04-22) готов `bootstrap_k3s`; на Step 6 (2026-04-23)
+добавлены `bootstrap_clusterctl` (§13.10) и `bootstrap_capn_secret`
+(§13.11). Step 7 (2026-04-23): отдельная роль `bootstrap_api_publish`
+removed из Phase 4 (§16.5) — публикация портов перенесена на LXD
+proxy device поверх `lxd_bootstrap_instance`; host-side firewall
+признан вне scope repo (§11.4). Step 8 (2026-04-23): реализована
+закрывающая роль `export_artifacts` (§13.12 / §16.6) + архитектурный
+фикс runner-reach через LXD proxy + `tls-server-name: kubernetes.default.svc`
+pin в `bootstrap_clusterctl` (§13.10 Step 8 deviation). End-to-end
+прогон зелёный, Phase 4 закрыта.
 
 Сделано в Step 4:
 
@@ -1291,12 +1619,47 @@ Acceptance Step 6 части (доказано verify scenario'ями):
   `/var/snap/lxd/common/lxd/server.crt`, нет pivot label при
   `k8s_lab_pivot_enabled=false` (default).
 
-Acceptance целой Phase 4 (после остальных ролей §16.5..§16.6):
+Сделано в Step 8:
 
-* bootstrap API reachable from runner
-* `clusterctl init` done                          ✓ (Step 6 — §13.10)
-* providers healthy                               ✓ (Step 6 — §13.10)
-* LXD identity secret present                     ✓ (Step 6 — §13.11)
+* `export_artifacts` (см. §13.12) закрывает runner-side handoff:
+  `.artifacts/bootstrap.kubeconfig` (shipped с host'а на runner, mode
+  0600 по §11.1; опциональный rewrite `clusters[].cluster.server` на
+  runner-reachable URL через новый public
+  `export_artifacts_bootstrap_api_server_url`) +
+  `.artifacts/bootstrap.auto.tfvars.json` (§8 globals зеркалены 1:1,
+  Terraform auto-load'ит файл в Phase 5 fixture root'ах).
+  `.artifacts/clusters/` subdir создан для Phase 5.05.
+* `bootstrap_clusterctl` (см. §13.10 Step 8 deviation) pin'ит
+  `tls-server-name: kubernetes.default.svc` в rewritten kubeconfig —
+  один kubeconfig работает из любой точки reach'а без IP в cert'е.
+* `lxd_bootstrap_instance_devices.k3s-api` proxy device передаётся
+  через scenario host_vars как временный costыль — будет переехать в
+  shared inventory в §9.5.1 refactoring.
+
+Acceptance Step 8 части — **доказано end-to-end прогоном**
+(2026-04-23, `converge ok=296 changed=4, idempotence ok=296 changed=0,
+verify ok=16 changed=0 failed=0`):
+
+* оба файла present на runner'е с mode 0600;
+* shipped kubeconfig: `server=https://<vagrant_vm_ip>:16443`
+  (runner-reachable через LXD proxy), `tls-server-name=kubernetes.default.svc`;
+* tfvars парсится как JSON, содержит baseline `k8s_lab_*` ключи,
+  `k8s_lab_bootstrap_api_server_url` совпадает с
+  `clusters[].cluster.server` из shipped kubeconfig;
+* `kubernetes.core.k8s_info kind=Node` через shipped kubeconfig с
+  `delegate_to: localhost` возвращает Ready control-plane ноду —
+  доказательство что Phase 5 Terraform Kubernetes/Helm provider
+  поедет по тому же пути;
+* bonus: `kubectl --kubeconfig=.artifacts/bootstrap.kubeconfig
+  get nodes` с dev-машины тоже работает.
+
+Acceptance целой Phase 4 — **закрыта** (2026-04-23):
+
+* bootstrap API reachable from runner                ✓ (Step 8 — §13.12)
+* `clusterctl init` done                             ✓ (Step 6 — §13.10)
+* providers healthy                                  ✓ (Step 6 — §13.10)
+* LXD identity secret present                        ✓ (Step 6 — §13.11)
+* handoff bundle shipped to `.artifacts/`            ✓ (Step 8 — §13.12)
 
 ---
 

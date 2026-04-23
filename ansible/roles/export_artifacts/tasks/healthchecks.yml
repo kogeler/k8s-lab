@@ -1,0 +1,91 @@
+---
+# Re-assert every materialised artefact from the runner's perspective.
+# The role's own emit tasks already guarantee the bytes; healthchecks
+# protect against operator misconfiguration (wrong root, restrictive
+# umask, mis-matched mode) by failing loudly instead of letting
+# Phase 5 trip on a malformed handoff.
+
+- name: "export-artifacts | healthchecks | stat bootstrap.kubeconfig"
+  ansible.builtin.stat:
+    path: >-
+      {{ export_artifacts_root }}/{{
+        _export_artifacts_required_bootstrap_kubeconfig_filename
+      }}
+  register: _export_artifacts_kubeconfig_healthcheck
+  delegate_to: localhost
+  become: false
+  run_once: true
+  changed_when: false
+  when: export_artifacts_bootstrap_kubeconfig_enabled
+
+- name: "export-artifacts | healthchecks | kubeconfig present, non-empty, 0600"
+  ansible.builtin.assert:
+    that:
+      - _export_artifacts_kubeconfig_healthcheck.stat.exists
+      - _export_artifacts_kubeconfig_healthcheck.stat.size > 100
+      - (_export_artifacts_kubeconfig_healthcheck.stat.mode | string)
+        in [_export_artifacts_required_file_mode,
+            _export_artifacts_required_file_mode | regex_replace('^0', '')]
+    fail_msg: >-
+      export_artifacts healthcheck failed: bootstrap.kubeconfig
+      missing, empty, or wrong mode at
+      {{ export_artifacts_root }}/{{ _export_artifacts_required_bootstrap_kubeconfig_filename }}.
+  when: export_artifacts_bootstrap_kubeconfig_enabled
+
+- name: "export-artifacts | healthchecks | stat tfvars"
+  ansible.builtin.stat:
+    path: >-
+      {{ export_artifacts_root }}/{{
+        _export_artifacts_required_tfvars_filename
+      }}
+  register: _export_artifacts_tfvars_healthcheck
+  delegate_to: localhost
+  become: false
+  run_once: true
+  changed_when: false
+  when: export_artifacts_tfvars_enabled
+
+- name: "export-artifacts | healthchecks | tfvars present, non-empty, 0600"
+  ansible.builtin.assert:
+    that:
+      - _export_artifacts_tfvars_healthcheck.stat.exists
+      - _export_artifacts_tfvars_healthcheck.stat.size > 10
+      - (_export_artifacts_tfvars_healthcheck.stat.mode | string)
+        in [_export_artifacts_required_file_mode,
+            _export_artifacts_required_file_mode | regex_replace('^0', '')]
+    fail_msg: >-
+      export_artifacts healthcheck failed: bootstrap.auto.tfvars.json
+      missing, empty, or wrong mode at
+      {{ export_artifacts_root }}/{{ _export_artifacts_required_tfvars_filename }}.
+  when: export_artifacts_tfvars_enabled
+
+- name: "export-artifacts | healthchecks | parse tfvars body"
+  ansible.builtin.slurp:
+    src: >-
+      {{ export_artifacts_root }}/{{
+        _export_artifacts_required_tfvars_filename
+      }}
+  register: _export_artifacts_tfvars_slurp
+  delegate_to: localhost
+  become: false
+  run_once: true
+  changed_when: false
+  when: export_artifacts_tfvars_enabled
+
+- name: "export-artifacts | healthchecks | tfvars body is valid JSON with expected keys"
+  ansible.builtin.assert:
+    that:
+      - _tfvars_parsed is mapping
+      - "'k8s_lab_project_name' in _tfvars_parsed"
+      - "'k8s_lab_infrastructure_secret_name' in _tfvars_parsed"
+      - "'k8s_lab_capn_provider_version' in _tfvars_parsed"
+      - "'k8s_lab_bootstrap_kubeconfig_path' in _tfvars_parsed"
+      - "'k8s_lab_bootstrap_api_server_url' in _tfvars_parsed"
+      - _tfvars_parsed.k8s_lab_bootstrap_api_server_url is match('^https://')
+      - "'127.0.0.1' not in _tfvars_parsed.k8s_lab_bootstrap_api_server_url"
+    fail_msg: >-
+      export_artifacts healthcheck failed: tfvars JSON malformed or
+      missing baseline keys.
+  vars:
+    _tfvars_parsed: "{{ _export_artifacts_tfvars_slurp.content | b64decode | from_json }}"
+  when: export_artifacts_tfvars_enabled

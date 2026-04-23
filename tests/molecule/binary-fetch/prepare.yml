@@ -8,8 +8,6 @@
   become: true
   vars:
     _molecule_project_dir: "{{ lookup('ansible.builtin.env', 'MOLECULE_PROJECT_DIRECTORY') }}"
-  vars_files:
-    - "../shared/vars/common.yml"
   tasks:
     - name: "Prepare | binary_fetch | shared base"
       ansible.builtin.include_tasks:

@@ -1,0 +1,12 @@
+---
+# Scenario-local host_vars. Shared substrate defaults live in
+# `tests/molecule/shared/inventory/group_vars/k8slab_host.yml`.
+
+# LXD owns the pool disk in this scenario (either lxd_storage_pools
+# creates the LXD pool here, or a downstream meta-dep inherits the
+# claimed block device). `prepare-clean-disk.yml` hands LXD a
+# signature-free device, leaving nothing at the btrfs mount path the
+# shared default asserts. Override disables base_system's btrfs-mount
+# contract for this scenario; base-system scenario still tests the
+# contract end-to-end with `required: true`.
+base_system_btrfs_pool_required: false

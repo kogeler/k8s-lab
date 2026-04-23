@@ -1,0 +1,114 @@
+---
+# Input validation + substrate assertions (plan §2.6.2). Cheap,
+# idempotent and side-effect free; safe to gate downstream tasks
+# behind. Substrate-required identifiers (artefact filenames, file
+# modes) live in `vars/main.yml` and are NOT re-validated here — they
+# cannot drift via consumer override.
+
+- name: "export-artifacts | preflight | gather facts"
+  ansible.builtin.setup:
+    gather_subset:
+      - "!all"
+      - "!any"
+      - min
+  when: ansible_facts['os_family'] is not defined
+
+- name: "export-artifacts | preflight | target OS is Debian 13+"
+  ansible.builtin.assert:
+    that:
+      - ansible_facts['os_family'] == 'Debian'
+      - ansible_facts['distribution'] == 'Debian'
+      - (ansible_facts['distribution_major_version'] | int) >= 13
+    fail_msg: >-
+      export_artifacts targets Debian 13 Trixie or newer on the LXD
+      host (the artefacts themselves are OS-independent but the
+      meta-dep chain pins host requirements).
+
+- name: "export-artifacts | preflight | validate artefact root"
+  # export_artifacts_root is consumer-policy (plan §11.1) so it has no
+  # role-level default — fail loudly rather than guess the wrong path.
+  # Reject `..` segments too: the path ends up verbatim inside
+  # bootstrap.auto.tfvars.json as `k8s_lab_bootstrap_kubeconfig_path`
+  # and is consumed by Phase 5 Terraform; non-canonical paths are
+  # fragile (symlinks, relocations) and hard to read in ops logs.
+  ansible.builtin.assert:
+    that:
+      - export_artifacts_root is string
+      - export_artifacts_root | length > 0
+      - export_artifacts_root is match('^/')
+      - "'/..' not in export_artifacts_root"
+      - not (export_artifacts_root is search('/\\./'))
+    fail_msg: >-
+      export_artifacts: `export_artifacts_root` must be a canonical
+      absolute runner-side path (plan §11.1) — no `..` or `.` segments.
+      Got: "{{ export_artifacts_root }}". Resolve `..` at the caller
+      (e.g. `| dirname | dirname` chain) before passing it in.
+
+- name: "export-artifacts | preflight | validate source path"
+  ansible.builtin.assert:
+    that:
+      - export_artifacts_bootstrap_kubeconfig_source is string
+      - export_artifacts_bootstrap_kubeconfig_source is match('^/')
+    fail_msg: >-
+      export_artifacts: bootstrap kubeconfig source must be an
+      absolute path on the LXD host.
+
+- name: "export-artifacts | preflight | validate toggles + extras"
+  ansible.builtin.assert:
+    that:
+      - export_artifacts_enabled in [true, false]
+      - export_artifacts_bootstrap_kubeconfig_enabled in [true, false]
+      - export_artifacts_tfvars_enabled in [true, false]
+      - export_artifacts_tfvars_extra is mapping
+    fail_msg: >-
+      export_artifacts: toggles must be booleans,
+      `export_artifacts_tfvars_extra` must be a dict.
+
+- name: "export-artifacts | preflight | validate optional API URL override"
+  # Empty = no rewrite. Non-empty = must be https://... because
+  # kube-apiserver never serves plaintext, and an http:// URL would
+  # hang or 400.
+  ansible.builtin.assert:
+    that:
+      - export_artifacts_bootstrap_api_server_url is string
+      - (export_artifacts_bootstrap_api_server_url | length == 0)
+        or (export_artifacts_bootstrap_api_server_url is match('^https://'))
+    fail_msg: >-
+      export_artifacts: `export_artifacts_bootstrap_api_server_url`
+      must be empty (keep source URL) or start with `https://`. Got
+      "{{ export_artifacts_bootstrap_api_server_url }}".
+
+- name: "export-artifacts | preflight | stat host kubeconfig source"
+  ansible.builtin.stat:
+    path: "{{ export_artifacts_bootstrap_kubeconfig_source }}"
+  register: _export_artifacts_source_stat
+  changed_when: false
+  when: export_artifacts_bootstrap_kubeconfig_enabled
+
+- name: "export-artifacts | preflight | assert source kubeconfig present + non-empty"
+  ansible.builtin.assert:
+    that:
+      - _export_artifacts_source_stat.stat.exists
+      - _export_artifacts_source_stat.stat.size > 100
+    fail_msg: >-
+      export_artifacts: source kubeconfig at
+      {{ export_artifacts_bootstrap_kubeconfig_source }} is missing or
+      empty. The bootstrap_clusterctl meta-dep chain should have
+      produced it.
+  when: export_artifacts_bootstrap_kubeconfig_enabled
+
+- name: "export-artifacts | preflight | ensure runner artefact root exists"
+  # The artefact dir lives on the runner; we create it (and the
+  # per-cluster subdir reserved for Phase 5.05) with 0700 so nothing
+  # we write below can race a loose default. delegate_to + become:
+  # false pins ownership to the runner user per plan §11.1.
+  ansible.builtin.file:
+    path:  "{{ item }}"
+    state: directory
+    mode:  "{{ _export_artifacts_required_dir_mode }}"
+  loop:
+    - "{{ export_artifacts_root }}"
+    - "{{ export_artifacts_root }}/{{ _export_artifacts_required_clusters_subdir }}"
+  delegate_to: localhost
+  become: false
+  run_once: true

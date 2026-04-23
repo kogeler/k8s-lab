@@ -15,8 +15,6 @@
   vars:
     # Molecule 26 exposes the project dir via env, not as a fact.
     _molecule_project_dir: "{{ lookup('ansible.builtin.env', 'MOLECULE_PROJECT_DIRECTORY') }}"
-  vars_files:
-    - "../shared/vars/common.yml"
   tasks:
     - name: "Prepare | base_system | shared base"
       ansible.builtin.include_tasks:

@@ -6,8 +6,6 @@
   hosts: all
   gather_facts: true
   become: true
-  vars_files:
-    - "../shared/vars/common.yml"
   vars:
     # Pull the expected values from the same inventory host_vars the role
     # consumed; avoids drift between what the role configured and what

@@ -1,0 +1,67 @@
+---
+# Molecule scenario for the export_artifacts role (plan §9.4 role-level).
+#
+# Driver: delegated — shared Vagrant/libvirt VM (plan §9.1). The full
+# meta-dep chain is pulled in via the target role's meta/main.yml.
+#
+# Shared substrate host_vars live in
+# `tests/molecule/shared/inventory/group_vars/k8slab_host.yml` and are
+# symlinked into the Molecule ephemeral inventory via
+# `inventory.links.group_vars`. Scenario-local host_vars (if any) live
+# in `host_vars/k8slab-host.yml` next to this file, symlinked via
+# `inventory.links.host_vars` — see shared/converge.yml docstring for
+# why per-molecule.yml `inventory.host_vars` does NOT work here
+# (molecule all-or-nothing between `links` and `host_vars`).
+#
+# Target role identity: derived in shared/converge.yml from
+# MOLECULE_SCENARIO_NAME env var. Contract:
+# `scenario.name == role dir name under ansible/roles/`.
+
+dependency:
+  name: galaxy
+  options:
+    requirements-file: ../../../ansible/requirements.yml
+
+driver:
+  name: default
+  options:
+    managed: false
+
+platforms:
+  - name: k8slab-host
+    groups:
+      - k8slab_host
+
+provisioner:
+  name: ansible
+  config_options:
+    defaults:
+      interpreter_python: auto_silent
+      stdout_callback: ansible.builtin.default
+      result_format: yaml
+      forks: 5
+      callbacks_enabled: ansible.posix.profile_tasks
+    ssh_connection:
+      pipelining: true
+  inventory:
+    links:
+      group_vars: ../shared/inventory/group_vars
+      host_vars:  host_vars
+  playbooks:
+    prepare:  prepare.yml
+    converge: ${MOLECULE_PROJECT_DIRECTORY}/shared/converge.yml
+    verify:   verify.yml
+
+scenario:
+  name: export_artifacts
+  test_sequence:
+    - dependency
+    - create
+    - prepare
+    - converge
+    - idempotence
+    - verify
+    - destroy
+
+verifier:
+  name: ansible

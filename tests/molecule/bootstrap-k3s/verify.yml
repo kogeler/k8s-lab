@@ -9,8 +9,6 @@
   hosts: all
   gather_facts: true
   become: true
-  vars_files:
-    - "../shared/vars/common.yml"
   vars:
     _project:  "capi-lab"
     _instance: "capi-bootstrap-0"

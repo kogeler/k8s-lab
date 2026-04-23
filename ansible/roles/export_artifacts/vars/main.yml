@@ -1,0 +1,42 @@
+---
+# ==========================================================================
+# export_artifacts — substrate-required baseline
+# ==========================================================================
+#
+# Role-internal. Holds values the lab contract REQUIRES on every
+# Phase 4 handoff. Rationale (memory `feedback_required_values_hardcoded.md`):
+# if a value missing here would silently produce a broken handoff
+# (Terraform auto-load does not find the file, Phase 5 consumes the
+# wrong artefact, runner permissions leak an admin kubeconfig to the
+# group), it does not belong in `defaults/main.yml`.
+#
+# Public extras for tunable surface live in `defaults/main.yml` under
+# `export_artifacts_*`.
+
+# ---- Artefact filename conventions ------------------------------------
+
+# Phase 5 Terraform fixtures reference `bootstrap.kubeconfig` by that
+# exact name (plan §17.7 uses the `.artifacts/` subtree as an opaque
+# data handoff). Changing this filename would orphan every fixture that
+# hardcodes it.
+_export_artifacts_required_bootstrap_kubeconfig_filename: "bootstrap.kubeconfig"
+
+# Terraform auto-loads any `*.auto.tfvars.json` in the root module
+# directory at plan/apply time. The `bootstrap.` prefix disambiguates
+# this Phase 4 handoff from Phase 5.05's `target.auto.tfvars.json`
+# (management/workload kubeconfig handoff, not yet implemented).
+_export_artifacts_required_tfvars_filename: "bootstrap.auto.tfvars.json"
+
+# Subdirectory for per-cluster kubeconfigs (plan §11.1, populated by
+# Phase 5.05 `export_target_kubeconfig` — still a stub). We create it
+# here so downstream phases can write into it without having to
+# bootstrap the dir structure themselves.
+_export_artifacts_required_clusters_subdir: "clusters"
+
+# ---- Filesystem mode contract (plan §11.1) ---------------------------
+
+# Admin kubeconfig + tfvars handoff carry secrets (admin token, CAPN
+# identity-secret name used in Cluster CR identityRef). Plan §11.1
+# mandates 0600 files; 0700 on directories tightens the default.
+_export_artifacts_required_file_mode: "0600"
+_export_artifacts_required_dir_mode:  "0700"

@@ -7,8 +7,6 @@
   hosts: all
   gather_facts: true
   become: true
-  vars_files:
-    - "../shared/vars/common.yml"
   vars:
     _socket_path: "/var/snap/lxd/common/lxd/unix.socket"
     # Declared live-state expectation — independent of how the role

@@ -1,0 +1,21 @@
+---
+# export_artifacts scenario prepare.
+#
+# Same shared base + clean-disk prep as every other Phase 4 scenario.
+# The role's meta-dep chain runs the full LXD substrate + bootstrap
+# cluster during converge.
+
+- name: "Prepare | export_artifacts"
+  hosts: all
+  gather_facts: true
+  become: true
+  vars:
+    _molecule_project_dir: "{{ lookup('ansible.builtin.env', 'MOLECULE_PROJECT_DIRECTORY') }}"
+  tasks:
+    - name: "Prepare | export_artifacts | shared base"
+      ansible.builtin.include_tasks:
+        file: "{{ _molecule_project_dir }}/shared/tasks/prepare.yml"
+
+    - name: "Prepare | export_artifacts | clean pool disk"
+      ansible.builtin.include_tasks:
+        file: "{{ _molecule_project_dir }}/shared/tasks/prepare-clean-disk.yml"

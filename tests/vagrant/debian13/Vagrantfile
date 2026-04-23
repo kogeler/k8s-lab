@@ -20,13 +20,76 @@ Vagrant.configure("2") do |config|
   config.vm.box_check_update = false
   config.ssh.forward_agent = true
 
-  # Shared sync folders: keep the repo mounted so Ansible from inside the VM
-  # (or a delegated Molecule scenario from outside) sees the same tree.
-  config.vm.synced_folder "../../../", "/vagrant",
-                          type: "rsync",
-                          rsync__exclude: [".git/", ".artifacts/",
-                                           ".vagrant/", ".terraform/",
-                                           ".molecule/", "**/.molecule/"]
+  # --- Auto-ensure libvirt networks ---------------------------------------
+  #
+  # The VM NICs attach to custom libvirt networks (`k8slab-mgmt-nat`,
+  # `k8slab-ext6-mock`) whose XML definitions live in `libvirt-networks/`.
+  # vagrant-libvirt's built-in auto-create code path is IPv4-centric and
+  # crashes on our IPv6-only ext6-mock segment with
+  # `undefined method 'to_range' for nil` (create_networks.rb:337) — so we
+  # manage the networks imperatively via `virsh net-define`.
+  #
+  # Historically this responsibility lived in the Makefile's `networks`
+  # target, which meant bare `vagrant up` failed cryptically when the
+  # networks were absent. The trigger below makes `vagrant up` self-
+  # sufficient: it defines + starts any missing network before any
+  # machine comes up, without touching already-running ones. Makefile
+  # `networks` target remains a valid standalone entry point — the
+  # trigger is idempotent.
+  #
+  # Cleanup is explicitly NOT wired to `:before :destroy`: `destroy`
+  # leaves networks in place (so next `up` is fast); `make wipe` in the
+  # Makefile is the destructive counterpart.
+  network_xmls = {
+    "k8slab-mgmt-nat"  => File.expand_path("libvirt-networks/mgmt-nat.xml",  __dir__),
+    "k8slab-ext6-mock" => File.expand_path("libvirt-networks/ext6-mock.xml", __dir__),
+  }
+  if ENV["K8SLAB_PROBE"] == "1"
+    network_xmls["k8slab-probe-ext6"] =
+      File.expand_path("libvirt-networks/probe-ext6.xml", __dir__)
+  end
+
+  config.trigger.before :up do |trigger|
+    trigger.name = "ensure k8s-lab libvirt networks defined + active"
+    trigger.ruby do |_env, _machine|
+      virsh = "virsh -c qemu:///system"
+      network_xmls.each do |net_name, xml_path|
+        unless File.exist?(xml_path)
+          raise "libvirt network XML missing: #{xml_path}"
+        end
+        # Defined?
+        unless system("#{virsh} net-info #{net_name} >/dev/null 2>&1")
+          unless system("#{virsh} net-define #{xml_path} >/dev/null")
+            raise "virsh net-define #{xml_path} failed — is the runner a " \
+                  "member of the `libvirt` group?"
+          end
+        end
+        # Active?
+        active = `#{virsh} net-info #{net_name} 2>/dev/null`.include?("Active:         yes")
+        unless active
+          unless system("#{virsh} net-start #{net_name} >/dev/null")
+            raise "virsh net-start #{net_name} failed"
+          end
+        end
+        # Autostart — best-effort, don't fail the trigger over it.
+        system("#{virsh} net-autostart #{net_name} >/dev/null 2>&1")
+      end
+    end
+  end
+
+  # No synced folder. Molecule uses the `delegated` driver
+  # (managed: false): ansible-playbook runs on the controller and
+  # streams modules to the guest over SSH into the default tmp dir
+  # (`/root/.ansible/tmp/`). Neither ansible roles nor Molecule
+  # scenarios reference `/vagrant` inside the guest (verified via
+  # `grep -r /vagrant ansible/ tests/molecule/` → zero hits).
+  #
+  # Historically Vagrant defaulted to rsyncing the whole repo to
+  # `/vagrant` on every `up`. For this repo (~5000 files, ~37 MB of
+  # which was `ansible/collections/` galaxy content) that cost 2-3
+  # minutes on first boot plus an `apt install rsync` step in the
+  # guest. Disabling saves both.
+  config.vm.synced_folder ".", "/vagrant", disabled: true
 
   # vCPU count — reused for libvirt.cpus and per-NIC virtio multiqueue.
   vcpus = Integer(ENV.fetch("K8SLAB_VCPUS", "8"))

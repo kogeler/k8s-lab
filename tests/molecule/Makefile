@@ -59,6 +59,7 @@ SCENARIOS := \
 	bootstrap-k3s \
 	bootstrap-clusterctl \
 	bootstrap-capn-secret \
+	export-artifacts \
 	gate-ext-l2 \
 	gate-cni \
 	bootstrap-cluster \

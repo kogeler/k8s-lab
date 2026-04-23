@@ -1,10 +1,21 @@
 ---
-# Molecule scenario for bootstrap_k3s.
+# Molecule scenario for the bootstrap_k3s role (plan §9.4 role-level).
 #
-# Driver: delegated — shared Vagrant/libvirt VM (plan §9.1). VM lifecycle
-# is owned by scripts/molecule_run.py. The role pulls binary_fetch and
-# lxd_bootstrap_instance transitively via meta-deps; no explicit role
-# wiring lives in prepare.yml.
+# Driver: delegated — shared Vagrant/libvirt VM (plan §9.1). The full
+# meta-dep chain is pulled in via the target role's meta/main.yml.
+#
+# Shared substrate host_vars live in
+# `tests/molecule/shared/inventory/group_vars/k8slab_host.yml` and are
+# symlinked into the Molecule ephemeral inventory via
+# `inventory.links.group_vars`. Scenario-local host_vars (if any) live
+# in `host_vars/k8slab-host.yml` next to this file, symlinked via
+# `inventory.links.host_vars` — see shared/converge.yml docstring for
+# why per-molecule.yml `inventory.host_vars` does NOT work here
+# (molecule all-or-nothing between `links` and `host_vars`).
+#
+# Target role identity: derived in shared/converge.yml from
+# MOLECULE_SCENARIO_NAME env var. Contract:
+# `scenario.name == role dir name under ansible/roles/`.
 
 dependency:
   name: galaxy
@@ -33,41 +44,9 @@ provisioner:
     ssh_connection:
       pipelining: true
   inventory:
-    host_vars:
-      k8slab-host:
-        _shared_target_role: bootstrap_k3s
-        # Required lxd_host override (meta-dep chain reaches down to it).
-        lxd_host_ext_bridge_uplink: "eth2"
-        # lxd_storage_pools needs the Vagrant-attached dedicated disk.
-        # Required btrfs.mount_options is baked into the role.
-        lxd_storage_pools_pools:
-          - name:        "capi-fast"
-            driver:      "btrfs"
-            description: "k8s-lab primary pool (btrfs on dedicated disk)"
-            config:
-              source: "/dev/disk/by-id/virtio-k8slab-lxdpool"
-        # First-run image pull is slow over a cold mirror.
-        lxd_bootstrap_instance_wait_timeout: 300
-        # k3s first-boot pulls the bundled images; bump the poll budget.
-        bootstrap_k3s_wait_retries: 90
-        bootstrap_k3s_wait_delay:   4
-        # Publish the bootstrap k3s API on the host via an LXD proxy
-        # device (plan §16.5). Tests end-to-end reach from the VM's
-        # loopback through the userspace LXD proxy to the container's
-        # 127.0.0.1:6443, mirroring how an operator exposes the API to
-        # an off-host Terraform runner. `bind: host` keeps the LXD
-        # daemon as the listener owner — no nftables touched.
-        lxd_bootstrap_instance_devices:
-          k3s-api:
-            type:    "proxy"
-            listen:  "tcp:0.0.0.0:16443"
-            connect: "tcp:127.0.0.1:6443"
-            bind:    "host"
-        ansible_host:                 "{{ lookup('env', 'K8SLAB_HOST_ADDR') }}"
-        ansible_user:                 "{{ lookup('env', 'K8SLAB_HOST_USER') }}"
-        ansible_port:                 "{{ lookup('env', 'K8SLAB_HOST_PORT') | int }}"
-        ansible_ssh_private_key_file: "{{ lookup('env', 'K8SLAB_HOST_KEY') }}"
-        ansible_ssh_common_args:      "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
+    links:
+      group_vars: ../shared/inventory/group_vars
+      host_vars:  host_vars
   playbooks:
     prepare:  prepare.yml
     converge: ${MOLECULE_PROJECT_DIRECTORY}/shared/converge.yml

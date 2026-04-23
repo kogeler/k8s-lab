@@ -1,0 +1,13 @@
+---
+# Scenario-local host_vars for the binary-fetch Molecule scenario.
+#
+# Shared substrate defaults live in
+# `tests/molecule/shared/inventory/group_vars/k8slab_host.yml`. This
+# file overrides the subset that is genuinely scenario-specific.
+
+# binary_fetch role does NOT touch the btrfs pool contract; override
+# the shared default (which asserts the pool is mounted, needed by
+# base_system's preflight) so this scenario doesn't require the disk
+# to be formatted. Keeps binary-fetch independent of storage-pool
+# setup.
+base_system_btrfs_pool_required: false

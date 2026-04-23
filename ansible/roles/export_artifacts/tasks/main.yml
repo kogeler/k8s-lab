@@ -1,0 +1,39 @@
+---
+# Dispatcher-only (plan §2.6.2). Each include file covers one concern.
+
+- name: "export-artifacts | preflight"
+  ansible.builtin.include_tasks:
+    file: preflight.yml
+    apply:
+      tags: [export_artifacts, export-artifacts, export_artifacts_preflight]
+  tags: [export_artifacts, export-artifacts, export_artifacts_preflight]
+
+- name: "export-artifacts | bootstrap_kubeconfig"
+  ansible.builtin.include_tasks:
+    file: bootstrap_kubeconfig.yml
+    apply:
+      tags: [export_artifacts, export-artifacts, export_artifacts_bootstrap_kubeconfig]
+  when:
+    - export_artifacts_enabled
+    - export_artifacts_flow_control_bootstrap_kubeconfig
+    - export_artifacts_bootstrap_kubeconfig_enabled
+  tags: [export_artifacts, export-artifacts, export_artifacts_bootstrap_kubeconfig]
+
+- name: "export-artifacts | tfvars"
+  ansible.builtin.include_tasks:
+    file: tfvars.yml
+    apply:
+      tags: [export_artifacts, export-artifacts, export_artifacts_tfvars]
+  when:
+    - export_artifacts_enabled
+    - export_artifacts_flow_control_tfvars
+    - export_artifacts_tfvars_enabled
+  tags: [export_artifacts, export-artifacts, export_artifacts_tfvars]
+
+- name: "export-artifacts | healthchecks"
+  ansible.builtin.include_tasks:
+    file: healthchecks.yml
+    apply:
+      tags: [export_artifacts, export-artifacts, export_artifacts_healthchecks]
+  when: export_artifacts_enabled
+  tags: [export_artifacts, export-artifacts, export_artifacts_healthchecks]

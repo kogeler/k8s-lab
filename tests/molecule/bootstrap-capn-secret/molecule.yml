@@ -1,10 +1,21 @@
 ---
-# Molecule scenario for bootstrap_capn_secret.
+# Molecule scenario for the bootstrap_capn_secret role (plan §9.4 role-level).
 #
-# Driver: delegated — shared Vagrant/libvirt VM (plan §9.1). The role
-# pulls bootstrap_clusterctl (and transitively bootstrap_k3s,
-# binary_fetch, lxd_bootstrap_instance + the LXD substrate chain) via
-# meta-deps; no explicit role wiring lives in prepare.yml.
+# Driver: delegated — shared Vagrant/libvirt VM (plan §9.1). The full
+# meta-dep chain is pulled in via the target role's meta/main.yml.
+#
+# Shared substrate host_vars live in
+# `tests/molecule/shared/inventory/group_vars/k8slab_host.yml` and are
+# symlinked into the Molecule ephemeral inventory via
+# `inventory.links.group_vars`. Scenario-local host_vars (if any) live
+# in `host_vars/k8slab-host.yml` next to this file, symlinked via
+# `inventory.links.host_vars` — see shared/converge.yml docstring for
+# why per-molecule.yml `inventory.host_vars` does NOT work here
+# (molecule all-or-nothing between `links` and `host_vars`).
+#
+# Target role identity: derived in shared/converge.yml from
+# MOLECULE_SCENARIO_NAME env var. Contract:
+# `scenario.name == role dir name under ansible/roles/`.
 
 dependency:
   name: galaxy
@@ -33,33 +44,9 @@ provisioner:
     ssh_connection:
       pipelining: true
   inventory:
-    host_vars:
-      k8slab-host:
-        _shared_target_role: bootstrap_capn_secret
-        # lxd_host needs the external bridge uplink override for the
-        # Vagrant VM's secondary NIC.
-        lxd_host_ext_bridge_uplink: "eth2"
-        # lxd_storage_pools needs the Vagrant-attached dedicated disk.
-        lxd_storage_pools_pools:
-          - name:        "capi-fast"
-            driver:      "btrfs"
-            description: "k8s-lab primary pool (btrfs on dedicated disk)"
-            config:
-              source: "/dev/disk/by-id/virtio-k8slab-lxdpool"
-        # Cold-mirror image pull on first run.
-        lxd_bootstrap_instance_wait_timeout: 300
-        # k3s first-boot pulls the bundled images.
-        bootstrap_k3s_wait_retries: 90
-        bootstrap_k3s_wait_delay:   4
-        # clusterctl init pulls cert-manager + 4 provider images.
-        bootstrap_clusterctl_init_timeout: 600
-        bootstrap_clusterctl_wait_retries: 90
-        bootstrap_clusterctl_wait_delay:   5
-        ansible_host:                 "{{ lookup('env', 'K8SLAB_HOST_ADDR') }}"
-        ansible_user:                 "{{ lookup('env', 'K8SLAB_HOST_USER') }}"
-        ansible_port:                 "{{ lookup('env', 'K8SLAB_HOST_PORT') | int }}"
-        ansible_ssh_private_key_file: "{{ lookup('env', 'K8SLAB_HOST_KEY') }}"
-        ansible_ssh_common_args:      "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
+    links:
+      group_vars: ../shared/inventory/group_vars
+      host_vars:  host_vars
   playbooks:
     prepare:  prepare.yml
     converge: ${MOLECULE_PROJECT_DIRECTORY}/shared/converge.yml

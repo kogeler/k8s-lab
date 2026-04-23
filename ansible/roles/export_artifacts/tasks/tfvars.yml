@@ -1,0 +1,98 @@
+---
+# Render the Phase 5 Terraform auto-tfvars handoff.
+#
+# Keys mirror the plan §8 global contract verbatim (same `k8s_lab_*`
+# prefix) so Phase 5 fixture root modules can declare matching
+# `variable "..."` blocks and auto-load this file without translation.
+# Consumers extend the payload through `export_artifacts_tfvars_extra`
+# (merged under the baseline — baseline wins on collision).
+#
+# The bootstrap API endpoint is derived from the kubeconfig we just
+# shipped (kubeconfig already carries the rewritten container IPv4 —
+# no extra LXD REST probe needed).
+#
+# Idempotence: `to_nice_json` is deterministic for a sorted mapping;
+# `ansible.builtin.copy` short-circuits when the rendered bytes match
+# the destination.
+
+- name: "export-artifacts | tfvars | read shipped kubeconfig"
+  # Re-read the runner-side file we just wrote so server URL extraction
+  # does not depend on whether `bootstrap_kubeconfig` ran this pass
+  # (idempotent converge case). delegate_to: localhost because the
+  # file lives there.
+  ansible.builtin.slurp:
+    src: >-
+      {{ export_artifacts_root }}/{{
+        _export_artifacts_required_bootstrap_kubeconfig_filename
+      }}
+  register: _export_artifacts_kubeconfig_register
+  delegate_to: localhost
+  become: false
+  run_once: true
+
+- name: "export-artifacts | tfvars | parse kubeconfig + extract server URL"
+  ansible.builtin.set_fact:
+    _export_artifacts_api_server_url: >-
+      {{
+        ((_export_artifacts_kubeconfig_register.content | b64decode | from_yaml).clusters
+         | first).cluster.server
+      }}
+
+- name: "export-artifacts | tfvars | assemble baseline payload"
+  # Source every value from §8 globals with the same `default()`
+  # fallbacks the rest of the repo uses for standalone runs (so a
+  # consumer who forgot to set a global gets a working harness, not a
+  # cryptic `undefined variable` error). The `.auto.tfvars.json`
+  # schema matches the Phase 5 fixture-variable contract 1:1.
+  ansible.builtin.set_fact:
+    _export_artifacts_tfvars_baseline:
+      # --- Project identity (plan §8) ---
+      k8s_lab_project_name:             "{{ k8s_lab_project_name | default('capi-lab') }}"
+      k8s_lab_infrastructure_secret_name: "{{ k8s_lab_infrastructure_secret_name | default('incus-identity') }}"
+      k8s_lab_cluster_topology_enabled: "{{ k8s_lab_cluster_topology_enabled | default(true) }}"
+      k8s_lab_pivot_enabled:            "{{ k8s_lab_pivot_enabled | default(false) }}"
+      k8s_lab_unprivileged_nodes:       "{{ k8s_lab_unprivileged_nodes | default(true) }}"
+      # --- Cluster identity ---
+      k8s_lab_management_cluster_name:  "{{ k8s_lab_management_cluster_name | default('mgmt-1') }}"
+      k8s_lab_workload_cluster_name:    "{{ k8s_lab_workload_cluster_name | default('lab-default') }}"
+      k8s_lab_kubernetes_version:       "{{ k8s_lab_kubernetes_version | default('v1.35.3') }}"
+      # --- Topology counts (plan §8) ---
+      k8s_lab_management_controlplane_count: "{{ k8s_lab_management_controlplane_count | default(1) | int }}"
+      k8s_lab_management_worker_count:       "{{ k8s_lab_management_worker_count | default(1) | int }}"
+      k8s_lab_workload_controlplane_count:   "{{ k8s_lab_workload_controlplane_count | default(2) | int }}"
+      k8s_lab_workload_worker_count:         "{{ k8s_lab_workload_worker_count | default(2) | int }}"
+      # --- CAPN pinning ---
+      k8s_lab_capn_provider_version:   "{{ k8s_lab_capn_provider_version | default('v0.8.5') }}"
+      # --- Bootstrap endpoint handoff (derived, not a §8 global) ---
+      # The kubeconfig file itself is the provider input for the
+      # Phase 5 `kubernetes` / `helm` providers; the URL is included
+      # so fixtures can also wire the raw endpoint if they need it.
+      k8s_lab_bootstrap_kubeconfig_path: >-
+        {{ export_artifacts_root }}/{{
+          _export_artifacts_required_bootstrap_kubeconfig_filename
+        }}
+      k8s_lab_bootstrap_api_server_url: "{{ _export_artifacts_api_server_url }}"
+
+- name: "export-artifacts | tfvars | merge consumer extras under baseline"
+  # Dict-merge order: extras first, baseline on top. Baseline wins
+  # any collision — consumers who want to shadow a baseline value
+  # should flip the corresponding §8 global.
+  ansible.builtin.set_fact:
+    _export_artifacts_tfvars_payload: >-
+      {{
+        export_artifacts_tfvars_extra | combine(_export_artifacts_tfvars_baseline, recursive=True)
+      }}
+
+- name: "export-artifacts | tfvars | write auto.tfvars.json"
+  # to_nice_json is deterministic with sort_keys=True, so copy's content
+  # compare short-circuits the write on idempotent converge.
+  ansible.builtin.copy:
+    content: "{{ _export_artifacts_tfvars_payload | to_nice_json(indent=2, sort_keys=True) }}"
+    dest: >-
+      {{ export_artifacts_root }}/{{
+        _export_artifacts_required_tfvars_filename
+      }}
+    mode: "{{ _export_artifacts_required_file_mode }}"
+  delegate_to: localhost
+  become: false
+  run_once: true

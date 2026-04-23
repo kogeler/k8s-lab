@@ -1,0 +1,103 @@
+---
+# ==========================================================================
+# export_artifacts — role defaults
+# ==========================================================================
+#
+# Purpose (plan §16.6): close Phase 4 by shipping the handoff bundle to
+# the runner's `.artifacts/` dir — specifically:
+#
+#   1) bootstrap.kubeconfig — the admin kubeconfig the bootstrap
+#      clusterctl chain materialised on the LXD host (rewritten to
+#      reach the container's eth0 IPv4 instead of 127.0.0.1);
+#   2) bootstrap.auto.tfvars.json — the fact bundle Phase 5 Terraform
+#      fixtures auto-load (cluster identity, CAPN version, topology
+#      toggles, bootstrap API endpoint derived from the kubeconfig).
+#
+# Execution model:
+#   Role runs on the LXD host via the `bootstrap_capn_secret` meta-dep
+#   chain. Artefact-write tasks flip to `delegate_to: localhost,
+#   become: false, run_once: true` so the files land on the runner with
+#   runner-user ownership and 0600 permissions (plan §11.1). No
+#   controller-side root is required.
+#
+# Public contract (plan §2.6.2): every variable exposed to callers is
+# prefixed `export_artifacts_*`. Internal / derived facts use the
+# `_export_artifacts_*` prefix.
+#
+# Substrate-required values (memory `feedback_required_values_hardcoded.md`):
+# artefact filenames, tfvars naming convention, file modes live in
+# `vars/main.yml` under the `_export_artifacts_required_*` prefix and
+# are NOT exposed below.
+
+# -- General ---------------------------------------------------------------
+
+# Whole-role toggle. When false, preflight still runs to catch
+# inconsistent inputs but no artefact is materialised.
+export_artifacts_enabled: true
+
+# Controller-side directory that will hold the handoff bundle. MUST be
+# an absolute path on the runner — there is no auto-guessing because
+# the repo's `.artifacts/` location is a consumer policy decision
+# (plan §11.1 only fixes the contract, not the path). The Molecule
+# scenario passes
+# `{{ lookup('env', 'MOLECULE_PROJECT_DIRECTORY') }}/../../.artifacts`
+# so the file lands under the repo root; production consumers point
+# it at wherever they keep runner state.
+export_artifacts_root: ""
+
+# -- Per-artefact toggles -------------------------------------------------
+
+# bootstrap.kubeconfig — always produced on the standard Phase 4 path;
+# disable only for diagnostic reruns where the consumer has another
+# source.
+export_artifacts_bootstrap_kubeconfig_enabled: true
+
+# bootstrap.auto.tfvars.json — Phase 5 Terraform fixtures depend on it;
+# disable only if the consumer wires Phase 5 vars through some other
+# handoff mechanism.
+export_artifacts_tfvars_enabled: true
+
+# -- Source paths on the LXD host -----------------------------------------
+
+# Host-side kubeconfig produced by bootstrap_clusterctl. Default
+# matches the path the upstream meta-dep materialises. If a consumer
+# layers a custom `bootstrap_clusterctl_kubeconfig_path`, they can
+# point us at it explicitly.
+export_artifacts_bootstrap_kubeconfig_source: "{{ k8s_lab_opt_root | default('/opt/capi-lab') }}/etc/bootstrap_clusterctl/bootstrap.kubeconfig"
+
+# -- Optional server URL rewrite for the shipped kubeconfig --------------
+#
+# When empty, the shipped kubeconfig keeps the host-side server URL
+# (typically `https://<container-ipv4>:6443` — reachable only from the
+# LXD host). When non-empty, the role rewrites every
+# `clusters[].cluster.server` to this value before writing the file to
+# the runner's `.artifacts/`.
+#
+# The URL MUST be what the RUNNER can actually reach — usually an LXD
+# proxy device listener on the LXD host (plan §16.5), e.g.
+# `https://<lxd_host_ip>:16443`. TLS identity is decoupled from the URL
+# via `tls-server-name` (pinned by bootstrap_clusterctl to a stable
+# SAN baked into the k3s cert), so any URL that TCP-reaches the API
+# works — no `--tls-san` override needed.
+#
+# Empty default is deliberate: consumers running Terraform on the LXD
+# host itself (host-local runner) want the host-side URL as-is;
+# consumers whose runner ≠ host must set this to their published
+# endpoint.
+export_artifacts_bootstrap_api_server_url: ""
+
+# -- Tunable extras ---------------------------------------------------
+
+# Consumer-supplied dict merged on top of the baseline tfvars payload.
+# Useful for propagating environment-specific values (e.g. an airgap
+# mirror URL, a custom image fingerprint) without patching the role.
+# The baseline keys win on collision (substrate guarantee) — if a
+# consumer needs to shadow a baseline key, they should change the
+# corresponding §8 global instead.
+export_artifacts_tfvars_extra: {}
+
+# -- Flow control (plan §2.6.3) -------------------------------------------
+
+# Coarse-grained only — no per-task switches.
+export_artifacts_flow_control_bootstrap_kubeconfig: true
+export_artifacts_flow_control_tfvars:               true

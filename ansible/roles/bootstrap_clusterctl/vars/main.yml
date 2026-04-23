@@ -35,6 +35,23 @@ _bootstrap_clusterctl_lxc_cli: "/snap/bin/lxc"
 # substrate-locked.
 _bootstrap_clusterctl_container_kubeconfig_path: "/etc/rancher/k3s/k3s.yaml"
 
+# ---- TLS identity for shipped kubeconfig ----------------------------
+#
+# `tls-server-name` pinned in `clusters[].cluster` decouples TLS cert
+# verification from the connection URL — clients match the cert's SAN
+# against this string, not against the host portion of `server:`. This
+# lets the same kubeconfig work from any vantage point (in-container,
+# LXD host, runner via LXD proxy device) without baking IPs into the
+# k3s server cert.
+#
+# `kubernetes.default.svc` is the canonical Kubernetes internal service
+# DNS name, and k3s (like every conformant distribution) always
+# embeds it as a DNS SAN in the server cert by default — no
+# `--tls-san` override needed. Substrate-locked: changing it to a
+# non-SAN string would silently break every consumer that talks to the
+# API via the rewritten kubeconfig.
+_bootstrap_clusterctl_required_tls_server_name: "kubernetes.default.svc"
+
 # ---- CAPN provider name registered in clusterctl --------------------
 
 # `clusterctl init --infrastructure <name>:<ver>` resolves <name>

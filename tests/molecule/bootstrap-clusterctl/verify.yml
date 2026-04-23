@@ -8,8 +8,6 @@
   hosts: all
   gather_facts: true
   become: true
-  vars_files:
-    - "../shared/vars/common.yml"
   vars:
     _kubeconfig: "/opt/capi-lab/etc/bootstrap_clusterctl/bootstrap.kubeconfig"
   tasks:

@@ -73,6 +73,9 @@ PLAN-stage1-8.md ................. §21..§23 (Stage 1 meta: out-of-scope, self-
   - §13.7. `lxd_bootstrap_instance` (Step 3)
   - §13.8. `binary_fetch` (Step 4)
   - §13.9. `bootstrap_k3s` (Step 4)
+  - §13.10. `bootstrap_clusterctl` (Step 6)
+  - §13.11. `bootstrap_capn_secret` (Step 6)
+  - §13.12. `export_artifacts` (Step 8 — Molecule pending)
 - §14. Выполненные phases
   - §14.1. Phase 0 — repo skeleton и local harness
   - §14.2. Phase 1 — host bootstrap
@@ -1410,6 +1413,15 @@ Libvirt network XML officially supports:
   project=capi-lab, корректные PEM bodies), `server-crt` byte-equal
   с live `/var/snap/lxd/common/lxd/server.crt`, отсутствие pivot
   label при `k8s_lab_pivot_enabled=false` (default).
+* `export_artifacts` — Step 8 §13.12 (Molecule-цикл ещё не прогон).
+  Прогон поднимает всю Phase 4 цепочку через meta-deps (включая
+  bootstrap_capn_secret), затем применяет роль и verify-ит
+  runner-side: `.artifacts/bootstrap.kubeconfig` + `.auto.tfvars.json`
+  present с mode 0600, kubeconfig server не 127.0.0.1,
+  tfvars содержит baseline `k8s_lab_*` ключи, API server URL в
+  tfvars совпадает с cluster[].server в shipped kubeconfig,
+  `kubernetes.core.k8s_info kind=Node` через shipped kubeconfig
+  видит Ready ноду (Phase 5 smoke-тест).
 
 ### Integration-level
 
@@ -1440,7 +1452,26 @@ Libvirt network XML officially supports:
 Для этого repo Molecule/Vagrant/libvirt harness должен следовать практическому стилю `naive_proxy`, адаптированному к multi-role repo:
 
 * общий wrapper `Makefile` в `tests/molecule/` обязан предоставлять targets по схеме `<scenario>-<driver>-<action>`;
-* общие `prepare.yml`, `converge.yml`, `verify.yml`, shared vars и helper tasks выносятся в `tests/molecule/shared/`, чтобы role-level и integration-level scenarios не дублировали boilerplate;
+* harness **никогда не вызывается напрямую** (`vagrant`, `virsh`,
+  `molecule`, `ansible-playbook`) — только через Makefile entry
+  points (§10). Исключение — read-only диагностика (`vagrant status`,
+  `virsh net-list`). Обоснование в памяти
+  `feedback_makefile_only.md`.
+* общие `converge.yml`, `verify.yml` helper и tasks выносятся в
+  `tests/molecule/shared/`, чтобы role-level и integration-level
+  scenarios не дублировали boilerplate;
+* **substrate host_vars живут в едином shared group_vars файле**
+  (`tests/molecule/shared/inventory/group_vars/k8slab_host.yml`) и
+  распространяются через `inventory.links.group_vars` в каждом
+  `molecule.yml` — полная архитектура и rationale в §9.5;
+* scenario-local overrides живут в real inventory файле
+  `<scenario>/host_vars/k8slab-host.yml` + `inventory.links.host_vars:
+  host_vars` в `molecule.yml` (см. §9.5.2 — `inventory.host_vars` в
+  `molecule.yml` молча теряется при наличии `links`);
+* **target role для shared converge** определяется из
+  `MOLECULE_SCENARIO_NAME` env var, **не** через host_vars
+  `_shared_target_role` (follows from above molecule limitation);
+  контракт: `scenario.name == role directory name`;
 * для `vagrant-libvirt` нужно явно прокидывать `ANSIBLE_LIBRARY` из `molecule_plugins.vagrant` или эквивалентный plugin modules path, если версия Molecule не делает это сама;
 * допускается `GIT_DIR=/dev/null` или эквивалентный shim, если он нужен, чтобы Molecule не ошибался режимом role/collection из-за layout этого repo;
 * workarounds для driver-specific caveats должны быть зафиксированы в коде harness, а не оставлены в голове разработчика: пример — безопасное редактирование `/etc/hosts` на non-podman targets через `lineinfile`, когда atomic rename может конфликтовать с bind-mount semantics;
@@ -1464,6 +1495,105 @@ Libvirt network XML officially supports:
 11. optional pivot / post-pivot workload create + kubeconfig export + add-ons apply
 12. verify
 13. destroy
+
+## 9.5. Shared inventory architecture
+
+**Статус: выполнено в Step 8 (2026-04-23).** До Step 8 каждый
+`tests/molecule/<scenario>/molecule.yml` дублировал substrate
+host_vars (uplink, storage pool spec, wait budgets, LXD proxy device,
+ansible-connection env-lookup'ы, etc.), и scenario мог молча
+отклониться от остальных. Step 8 инцидент (`export-artifacts`
+забыл `lxd_bootstrap_instance_devices`, роль reconciliate'ила proxy
+device к `{}` на converge) обнажил рой этой проблемы. Production
+плейбуки так не работают — там один host_vars файл, все роли читают
+одни и те же значения; harness обязан это имитировать.
+
+### §9.5.1. Layout
+
+```
+tests/molecule/shared/inventory/
+└── group_vars/
+    └── k8slab_host.yml    ← весь prod-like substrate (один файл)
+
+tests/molecule/<scenario>/
+├── molecule.yml           ← только inventory.links + scenario meta
+└── host_vars/             ← опционально, только если нужен
+    └── k8slab-host.yml      scenario-local override
+```
+
+`shared/inventory/group_vars/k8slab_host.yml` держит:
+
+* ansible-connection env-lookup'ы (`ansible_host/user/port/key/common_args`);
+* `k8s_lab_*` globals (бывший `shared/vars/common.yml` — устранён);
+* `lxd_host_ext_bridge_uplink: "eth2"`;
+* `lxd_storage_pools_pools` (capi-fast btrfs на Vagrant-диске);
+* `lxd_bootstrap_instance_wait_timeout`;
+* `lxd_bootstrap_instance_devices.k3s-api` (LXD proxy
+  `bind: host, listen: tcp:0.0.0.0:16443, connect: tcp:127.0.0.1:6443`) —
+  **единственное место, где proxy device живёт**; runner-side reach
+  работает для всех scenario'ев, что доходят до `capi-bootstrap-0`;
+* `bootstrap_k3s_wait_retries` / `wait_delay`;
+* `bootstrap_clusterctl_init_timeout` / `wait_retries` / `wait_delay`;
+* `base_system_btrfs_pool_required: true` (prod-like default —
+  installer provisions btrfs mount);
+* `export_artifacts_root` + `export_artifacts_bootstrap_api_server_url`
+  (runner-path + publish URL — derivatives of scenario env vars).
+
+### §9.5.2. Scenario wiring
+
+`<scenario>/molecule.yml` несёт канонически только:
+
+```yaml
+provisioner:
+  inventory:
+    links:
+      group_vars: ../shared/inventory/group_vars
+      host_vars:  host_vars         # only if scenario-local file exists
+```
+
+Target role определяется в `shared/converge.yml` через
+`MOLECULE_SCENARIO_NAME` env var (молекула выставляет его перед
+`ansible-playbook`). Контракт: `scenario.name` в molecule.yml
+совпадает с именем директории роли под `ansible/roles/`. Всё, что
+scenario добавляет — истинно scenario-local overrides, живущие в
+real файле `<scenario>/host_vars/k8slab-host.yml`.
+
+**Почему не `provisioner.inventory.host_vars` в molecule.yml.**
+Molecule's `provisioner/ansible.py:442` решает all-or-nothing: если
+`inventory.links` не пустой, `_add_or_update_vars` (которая
+материализует `inventory.host_vars`) скипается, и содержимое молча
+теряется. Поэтому scenario-local overrides нужны через real inventory
+file + отдельный `links.host_vars`.
+
+### §9.5.3. Scenario-local overrides в репе
+
+По состоянию на Step 8 (2026-04-23) реально используются:
+
+| Scenario | Override | Rationale |
+|---|---|---|
+| `binary-fetch` | `base_system_btrfs_pool_required: false` | Target role не тестирует btrfs contract; prepare не форматирует pool disk |
+| `lxd-storage-pools` | `base_system_btrfs_pool_required: false` | prepare-clean-disk.yml wipe'ает pool → LXD owns disk; base_system btrfs check не применим |
+| `lxd-network-int-managed` | то же | LXD уже владеет диском от предыдущих прогонов |
+| `lxd-profiles` | то же | |
+| `lxd-bootstrap-instance` | то же | |
+| `bootstrap-k3s` | то же | |
+| `bootstrap-clusterctl` | то же | |
+| `bootstrap-capn-secret` | то же | |
+| `export-artifacts` | то же | |
+
+`base-system` scenario единственный тестирует контракт end-to-end с
+`required: true` (наследует от shared default без override'а).
+
+### §9.5.4. Acceptance
+
+* shared group_vars файл — **один**; изменение substrate-ключа =
+  правка ровно одного места;
+* `molecule.yml` каждого scenario не превышает ~65 строк
+  (scenario-local config только — driver, platforms, provisioner
+  links, scenario name);
+* end-to-end регрессия Step 8 (2026-04-23, pristine VM):
+  все 12 готовых scenario'ев прошли full-cycle последовательно
+  (create → prepare → converge → idempotence → verify → destroy).
 
 ---
 

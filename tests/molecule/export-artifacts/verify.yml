@@ -1,0 +1,213 @@
+---
+# export_artifacts verify — plan §9.4 real-runtime assertions.
+# All artefact checks are runner-side (plan §11.1 says `.artifacts/`
+# lives on the runner); we delegate_to: localhost so the assertions
+# never touch the LXD host, independent of the role's own
+# healthchecks.
+
+- name: "Verify | export_artifacts"
+  hosts: all
+  gather_facts: false
+  become: false
+  vars:
+    _artifacts_root: >-
+      {{ lookup('env', 'MOLECULE_PROJECT_DIRECTORY') | dirname | dirname }}/.artifacts
+    _kubeconfig: "{{ _artifacts_root }}/bootstrap.kubeconfig"
+    _tfvars:     "{{ _artifacts_root }}/bootstrap.auto.tfvars.json"
+    _clusters_dir: "{{ _artifacts_root }}/clusters"
+  tasks:
+    # ---- runner artefacts exist + permissions sane ------------------
+    - name: "Verify | export_artifacts | stat kubeconfig"
+      ansible.builtin.stat:
+        path: "{{ _kubeconfig }}"
+      register: _verify_kubeconfig_stat
+      delegate_to: localhost
+      run_once: true
+
+    - name: "Verify | export_artifacts | assert kubeconfig present + 0600"
+      ansible.builtin.assert:
+        that:
+          - _verify_kubeconfig_stat.stat.exists
+          - _verify_kubeconfig_stat.stat.size > 100
+          - (_verify_kubeconfig_stat.stat.mode | string) in ['0600', '600']
+        fail_msg: >-
+          runner-side bootstrap.kubeconfig missing or wrong mode at
+          {{ _kubeconfig }}.
+      run_once: true
+
+    - name: "Verify | export_artifacts | stat tfvars"
+      ansible.builtin.stat:
+        path: "{{ _tfvars }}"
+      register: _verify_tfvars_stat
+      delegate_to: localhost
+      run_once: true
+
+    - name: "Verify | export_artifacts | assert tfvars present + 0600"
+      ansible.builtin.assert:
+        that:
+          - _verify_tfvars_stat.stat.exists
+          - _verify_tfvars_stat.stat.size > 10
+          - (_verify_tfvars_stat.stat.mode | string) in ['0600', '600']
+        fail_msg: >-
+          runner-side bootstrap.auto.tfvars.json missing or wrong mode
+          at {{ _tfvars }}.
+      run_once: true
+
+    - name: "Verify | export_artifacts | stat clusters subdir"
+      ansible.builtin.stat:
+        path: "{{ _clusters_dir }}"
+      register: _verify_clusters_stat
+      delegate_to: localhost
+      run_once: true
+
+    - name: "Verify | export_artifacts | clusters/ reserved for Phase 5.05 exists"
+      ansible.builtin.assert:
+        that:
+          - _verify_clusters_stat.stat.exists
+          - _verify_clusters_stat.stat.isdir
+        fail_msg: >-
+          clusters/ subdir missing at {{ _clusters_dir }} — Phase 5.05
+          handoff would have nowhere to write.
+      run_once: true
+
+    # ---- kubeconfig body: server URL already rewritten away from 127.0.0.1
+    - name: "Verify | export_artifacts | read kubeconfig body"
+      ansible.builtin.slurp:
+        src: "{{ _kubeconfig }}"
+      register: _verify_kubeconfig_body
+      delegate_to: localhost
+      run_once: true
+
+    - name: "Verify | export_artifacts | parse kubeconfig"
+      ansible.builtin.set_fact:
+        _verify_kubeconfig_yaml: >-
+          {{ _verify_kubeconfig_body.content | b64decode | from_yaml }}
+      run_once: true
+
+    - name: "Verify | export_artifacts | assert server URL is runner-reachable"
+      ansible.builtin.assert:
+        that:
+          - (_verify_kubeconfig_yaml.clusters | length) > 0
+          # Scenario override rewrites server to `<vagrant_vm_ip>:16443`
+          # (K8SLAB_HOST_ADDR). bootstrap_clusterctl defaults to
+          # container-eth0:6443 — we override to the LXD proxy endpoint.
+          - _verify_kubeconfig_yaml.clusters[0].cluster.server ==
+            'https://' ~ lookup('env', 'K8SLAB_HOST_ADDR') ~ ':16443'
+        fail_msg: >-
+          shipped kubeconfig server URL not rewritten to the runner-
+          reachable proxy endpoint. server=
+          {{ _verify_kubeconfig_yaml.clusters[0].cluster.server | default('?') }}
+      run_once: true
+
+    - name: "Verify | export_artifacts | assert tls-server-name decouples cert from URL"
+      # bootstrap_clusterctl pins `tls-server-name: kubernetes.default.svc`
+      # in the rewritten kubeconfig so TLS verify works even though the
+      # server URL points at the proxy endpoint (whose IP is NOT in the
+      # k3s cert's SANs — `kubernetes.default.svc` is).
+      ansible.builtin.assert:
+        that:
+          - (_verify_kubeconfig_yaml.clusters[0].cluster['tls-server-name']
+             | default('')) == 'kubernetes.default.svc'
+        fail_msg: >-
+          shipped kubeconfig is missing `tls-server-name:
+          kubernetes.default.svc` — TLS verify would fail the moment a
+          consumer connects to any URL whose IP isn't baked into the
+          k3s cert SANs.
+      run_once: true
+
+    # ---- tfvars body: JSON with §8 baseline keys ---------------------
+    - name: "Verify | export_artifacts | read tfvars body"
+      ansible.builtin.slurp:
+        src: "{{ _tfvars }}"
+      register: _verify_tfvars_body
+      delegate_to: localhost
+      run_once: true
+
+    - name: "Verify | export_artifacts | parse tfvars as JSON"
+      ansible.builtin.set_fact:
+        _verify_tfvars_json: >-
+          {{ _verify_tfvars_body.content | b64decode | from_json }}
+      run_once: true
+
+    - name: "Verify | export_artifacts | assert baseline keys present"
+      ansible.builtin.assert:
+        that:
+          - _verify_tfvars_json is mapping
+          - "'k8s_lab_project_name' in _verify_tfvars_json"
+          - "'k8s_lab_infrastructure_secret_name' in _verify_tfvars_json"
+          - "'k8s_lab_cluster_topology_enabled' in _verify_tfvars_json"
+          - "'k8s_lab_pivot_enabled' in _verify_tfvars_json"
+          - "'k8s_lab_management_cluster_name' in _verify_tfvars_json"
+          - "'k8s_lab_workload_cluster_name' in _verify_tfvars_json"
+          - "'k8s_lab_kubernetes_version' in _verify_tfvars_json"
+          - "'k8s_lab_management_controlplane_count' in _verify_tfvars_json"
+          - "'k8s_lab_management_worker_count' in _verify_tfvars_json"
+          - "'k8s_lab_workload_controlplane_count' in _verify_tfvars_json"
+          - "'k8s_lab_workload_worker_count' in _verify_tfvars_json"
+          - "'k8s_lab_capn_provider_version' in _verify_tfvars_json"
+          - "'k8s_lab_bootstrap_kubeconfig_path' in _verify_tfvars_json"
+          - "'k8s_lab_bootstrap_api_server_url' in _verify_tfvars_json"
+        fail_msg: >-
+          tfvars JSON missing baseline keys. got =
+          {{ _verify_tfvars_json.keys() | list }}.
+      run_once: true
+
+    - name: "Verify | export_artifacts | assert tfvars values match cross-references"
+      ansible.builtin.assert:
+        that:
+          # §8 shared/common.yml fixes these verbatim — drift would
+          # mean role silently renamed/dropped something.
+          - _verify_tfvars_json.k8s_lab_project_name == k8s_lab_project_name
+          - _verify_tfvars_json.k8s_lab_management_cluster_name == k8s_lab_management_cluster_name
+          - _verify_tfvars_json.k8s_lab_workload_cluster_name == k8s_lab_workload_cluster_name
+          - _verify_tfvars_json.k8s_lab_kubernetes_version == k8s_lab_kubernetes_version
+          - _verify_tfvars_json.k8s_lab_capn_provider_version == k8s_lab_capn_provider_version
+          # bootstrap endpoint derived from the shipped kubeconfig.
+          - _verify_tfvars_json.k8s_lab_bootstrap_api_server_url ==
+            _verify_kubeconfig_yaml.clusters[0].cluster.server
+          # Path must equal the scenario's export_artifacts_root +
+          # canonical filename — no `..` segments (preflight rejects them).
+          - _verify_tfvars_json.k8s_lab_bootstrap_kubeconfig_path ==
+            _artifacts_root ~ '/bootstrap.kubeconfig'
+        fail_msg: >-
+          tfvars baseline values drift against §8 globals or shipped
+          kubeconfig.
+      run_once: true
+
+    # ---- End-to-end smoke: runner talks to the API via the proxy ---
+    # One real k8s_info call through the shipped handoff proves the
+    # full chain works: TCP reach (libvirt bridge → VM eth0 :16443 →
+    # LXD proxy → container :6443), TLS handshake (cert SAN matches
+    # `tls-server-name: kubernetes.default.svc`, not the URL's IP),
+    # mTLS auth (client cert from the admin kubeconfig), and API
+    # response parsing. If this passes, Phase 5 Terraform Kubernetes
+    # provider with the same kubeconfig will also work.
+    - name: "Verify | export_artifacts | list nodes through shipped kubeconfig"
+      kubernetes.core.k8s_info:
+        kubeconfig: "{{ _kubeconfig }}"
+        api_version: "v1"
+        kind: "Node"
+      register: _verify_nodes
+      delegate_to: localhost
+      # Pin the runner-side Python to the one ansible itself runs in,
+      # so k8s_info finds the `kubernetes` library installed for
+      # molecule/ansible rather than whatever system python happens to
+      # be first on PATH.
+      vars:
+        ansible_python_interpreter: "{{ ansible_playbook_python }}"
+      run_once: true
+
+    - name: "Verify | export_artifacts | at least one Ready node visible to runner"
+      ansible.builtin.assert:
+        that:
+          - (_verify_nodes.resources | length) > 0
+          - >-
+            _verify_nodes.resources[0].status.conditions
+            | selectattr('type', 'equalto', 'Ready')
+            | selectattr('status', 'equalto', 'True')
+            | list | length > 0
+        fail_msg: >-
+          shipped kubeconfig did not reach the bootstrap API from the
+          runner — LXD proxy device, TLS SAN match, or kubeconfig body
+          is broken.
+      run_once: true
