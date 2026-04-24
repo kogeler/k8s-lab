@@ -572,7 +572,7 @@ reconciliation.
 Следствие:
 
 * в этом repo agent должен строить код вокруг prebuilt kubeadm image path;
-* `k8s_lab_install_kubeadm` по умолчанию должен быть `false`;
+* install-kubeadm-at-runtime режим не является CR-полем в CAPN v1alpha2 API — он моделируется добавлением `preKubeadmCommands` в KCPT/KCT (chart §16.2 принимает их через `controlPlane.preKubeadmCommands` / `worker.preKubeadmCommands`, default пустой). MVP path использует prebuilt образы и пустой список;
 * риск использования evaluation-oriented CAPN images должен быть явно отмечен и не маскироваться под production-ready supply path;
 * **cloud-init-capability — substrate-required для любого образа**,
   идущего в `k8s_lab_images_controlplane` / `k8s_lab_images_worker`.
@@ -1285,7 +1285,7 @@ k8s_lab_project_name: {type: string, default: "capi-lab"}
 k8s_lab_pivot_enabled: {type: bool, default: false}
 
 # ---- capi ----
-k8s_lab_infrastructure_secret_name: {type: string, default: "capn-identity"}
+k8s_lab_infrastructure_secret_name: {type: string, default: "incus-identity"}  # matches CAPN upstream identity-secret default name
 k8s_lab_cluster_topology_enabled: {type: bool, default: true}
 k8s_lab_unprivileged_nodes: {type: bool, default: true}
 
@@ -1361,11 +1361,19 @@ k8s_lab_images_controlplane_fingerprint: {type: string, default: ""}
 k8s_lab_images_worker_fingerprint: {type: string, default: ""}
 
 # ---- templates ----
-k8s_lab_install_kubeadm: {type: bool, default: false}
-k8s_lab_controlplane_profiles: {type: list(string), default: ["capi-base", "capi-controlplane"]}
-k8s_lab_worker_profiles: {type: list(string), default: ["capi-base", "capi-worker"]}
-k8s_lab_controlplane_devices: {type: map(any), default: {}}
-k8s_lab_worker_devices: {type: map(any), default: {}}
+# LXCMachineTemplate public contract (см. §16.2). Substrate-required
+# baselines (`capi-base` + `capi-controlplane` / `capi-worker` из роли
+# `lxd_profiles` §13.6; `instanceType: container`;
+# `unprivileged: true`; `skipDefaultKubeadmProfile: true`) зашиты
+# в самом чарте по memory-правилу "Chart-required values are
+# hardcoded". Переменные ниже — только consumer-extras поверх baseline.
+k8s_lab_controlplane_profiles_extra: {type: list(string), default: []}
+k8s_lab_worker_profiles_extra: {type: list(string), default: []}
+# Devices accepted в CAPN v1alpha2 []string CSV формате, например
+# `"eth1,type=nic,network=br-ext6"` — это overrides поверх LXD
+# profile'ов, не замена им.
+k8s_lab_controlplane_devices_extra: {type: list(string), default: []}
+k8s_lab_worker_devices_extra: {type: list(string), default: []}
 k8s_lab_idmap_isolated: {type: bool, default: true}
 k8s_lab_network_files_strategy: {type: string, default: "cabpk-files"}
 k8s_lab_patch_delivery_strategy: {type: string, default: "cabpk-files-plus-patches"}
@@ -2111,7 +2119,7 @@ Mitigation:
 
 * local harness may use `capi:kubeadm/VERSION` images for reproducibility
 * consumer repos should support custom image override and pinning
-* `k8s_lab_install_kubeadm=true` does not become the implicit workaround path
+* install-kubeadm-at-runtime через `preKubeadmCommands` не становится неявным workaround path — он допустим только как осознанный выбор consumer'а, а не MVP default
 
 ## 12.10. CAPI CR immutability блокирует `helm upgrade` in place
 
@@ -2123,10 +2131,11 @@ webhook запрещает edit большинства их полей. Тихи
 Mitigation:
 
 * name-versioning pattern в обоих chart'ах §16.2 / §16.3:
-  `metadata.name: {{ include "...fullname" . }}-{{ .Chart.Version }}`;
+  `metadata.name = "{prefix}-{slug(Chart.Version)}"`, где
+  `slug = Chart.Version | replace "." "-"` для DNS-1123-safe имён;
 * Cluster CR собирает rendered ClusterClass name из той же формулы
-  (`spec.topology.class: "{prefix}-{class_chart_version}"`), обе
-  версии приходят из Terraform module'а одним знаком;
+  (`spec.topology.classRef.name: "{prefix}-{class_chart_version_slug}"`),
+  обе версии приходят из Terraform module'а одним знаком;
 * bump chart version = новая пара объектов с новыми именами; старые
   живут до осознанного cleanup'а; zero in-place edit.
 

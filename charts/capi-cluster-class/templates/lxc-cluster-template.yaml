@@ -1,0 +1,34 @@
+{{- include "capi-cluster-class.requireCAPN" . -}}
+---
+apiVersion: infrastructure.cluster.x-k8s.io/v1alpha2
+kind: LXCClusterTemplate
+metadata:
+  name: {{ include "capi-cluster-class.lxcClusterTemplateName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "capi-cluster-class.labels" . | nindent 4 }}
+spec:
+  template:
+    spec:
+      # CAPN v1alpha2 LXCClusterSpec. Project scoping is owned by the
+      # identity Secret referenced here — there is no separate project
+      # field on LXCCluster (verified against CAPN v0.8.5 CRD).
+      secretRef:
+        name: {{ .Values.capn.infrastructureSecretName | quote }}
+      # Substrate-required: unprivileged LXC containers are the only
+      # supported MVP path (PLAN §2.8 / §3.1). Not exposed as a value.
+      unprivileged: true
+      # Substrate-required: role lxd_profiles already ships kubeadm
+      # prerequisites under capi-base / capi-controlplane / capi-worker
+      # (PLAN §13.6). Letting CAPN auto-create its own kubeadm profile
+      # would conflict on unprivileged containers.
+      skipDefaultKubeadmProfile: true
+      # Substrate-required for MVP: no external cloud-controller-manager
+      # — CAPN's cloud-init provider-id kubelet-arg substitution is
+      # sufficient. Stage 2 CCM wiring is a separate plan §.
+      cloudProviderNodePatch: false
+      # loadBalancer is a REQUIRED field on CAPN v1alpha2
+      # LXCClusterTemplate — pass through whatever mode the consumer
+      # selected in values.yaml (MVP default = {lxc: {}}).
+      loadBalancer:
+        {{- toYaml .Values.loadBalancer | nindent 8 }}

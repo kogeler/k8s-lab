@@ -1,0 +1,63 @@
+{{- include "capi-cluster-class.requireKubeadm" . -}}
+{{- $cp := .Values.controlPlane -}}
+{{- $hasClusterCfg := or (not (empty $cp.featureGates)) (not (empty $cp.apiServerExtraArgs)) (not (empty $cp.controllerManagerExtraArgs)) (not (empty $cp.schedulerExtraArgs)) -}}
+---
+apiVersion: controlplane.cluster.x-k8s.io/v1beta2
+kind: KubeadmControlPlaneTemplate
+metadata:
+  name: {{ include "capi-cluster-class.kubeadmControlPlaneTemplateName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "capi-cluster-class.labels" . | nindent 4 }}
+spec:
+  template:
+    spec:
+      kubeadmConfigSpec:
+        # Substrate-required: CAPN consumes cloud-init user-data on
+        # every LXC node to bootstrap kubeadm. `ignition` format is
+        # for Flatcar/CoreOS hosts which our substrate does not use.
+        # Not user-tunable (memory rule "Chart-required values are
+        # hardcoded"). Also satisfies CAPI v1beta2 CRD constraint
+        # `kubeadmConfigSpec.minProperties >= 1` even when every
+        # tunable below is empty.
+        format: cloud-config
+        {{- if $hasClusterCfg }}
+        clusterConfiguration:
+          {{- with $cp.featureGates }}
+          featureGates:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with $cp.apiServerExtraArgs }}
+          apiServer:
+            extraArgs:
+              {{- toYaml . | nindent 14 }}
+          {{- end }}
+          {{- with $cp.controllerManagerExtraArgs }}
+          controllerManager:
+            extraArgs:
+              {{- toYaml . | nindent 14 }}
+          {{- end }}
+          {{- with $cp.schedulerExtraArgs }}
+          scheduler:
+            extraArgs:
+              {{- toYaml . | nindent 14 }}
+          {{- end }}
+        {{- end }}
+        {{- with $cp.kubeletExtraArgs }}
+        initConfiguration:
+          nodeRegistration:
+            kubeletExtraArgs:
+              {{- toYaml . | nindent 14 }}
+        joinConfiguration:
+          nodeRegistration:
+            kubeletExtraArgs:
+              {{- toYaml . | nindent 14 }}
+        {{- end }}
+        {{- with $cp.preKubeadmCommands }}
+        preKubeadmCommands:
+          {{- toYaml . | nindent 10 }}
+        {{- end }}
+        {{- with $cp.postKubeadmCommands }}
+        postKubeadmCommands:
+          {{- toYaml . | nindent 10 }}
+        {{- end }}

@@ -1,0 +1,33 @@
+{{- include "capi-cluster-class.requireCAPN" . -}}
+---
+apiVersion: infrastructure.cluster.x-k8s.io/v1alpha2
+kind: LXCMachineTemplate
+metadata:
+  name: {{ include "capi-cluster-class.lxcMachineTemplateCPName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "capi-cluster-class.labels" . | nindent 4 }}
+    cluster.x-k8s.io/role: control-plane
+spec:
+  template:
+    spec:
+      # Substrate-required: unprivileged LXC path supports only
+      # container instance type (PLAN §2.8). Not exposed as a value.
+      instanceType: container
+      image:
+        # CAPN substitutes the literal "VERSION" in the name with the
+        # machine's Kubernetes version at provisioning time, so a
+        # single template covers every kubernetes.version value.
+        name: {{ .Values.images.controlplane.ref | quote }}
+        {{- with .Values.images.controlplane.fingerprint }}
+        fingerprint: {{ . | quote }}
+        {{- end }}
+      # Substrate-required baseline profiles + consumer extras.
+      profiles:
+        {{- include "capi-cluster-class.controlPlaneProfiles" . | nindent 8 }}
+      {{- with .Values.devicesExtra.controlplane }}
+      devices:
+        {{- range . }}
+        - {{ . | quote }}
+        {{- end }}
+      {{- end }}

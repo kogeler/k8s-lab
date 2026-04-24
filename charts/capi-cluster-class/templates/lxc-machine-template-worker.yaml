@@ -1,0 +1,27 @@
+{{- include "capi-cluster-class.requireCAPN" . -}}
+---
+apiVersion: infrastructure.cluster.x-k8s.io/v1alpha2
+kind: LXCMachineTemplate
+metadata:
+  name: {{ include "capi-cluster-class.lxcMachineTemplateWorkerName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "capi-cluster-class.labels" . | nindent 4 }}
+    cluster.x-k8s.io/role: worker
+spec:
+  template:
+    spec:
+      instanceType: container
+      image:
+        name: {{ .Values.images.worker.ref | quote }}
+        {{- with .Values.images.worker.fingerprint }}
+        fingerprint: {{ . | quote }}
+        {{- end }}
+      profiles:
+        {{- include "capi-cluster-class.workerProfiles" . | nindent 8 }}
+      {{- with .Values.devicesExtra.worker }}
+      devices:
+        {{- range . }}
+        - {{ . | quote }}
+        {{- end }}
+      {{- end }}

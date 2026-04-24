@@ -1,0 +1,50 @@
+{{- include "capi-cluster-class.requireCAPI" . -}}
+{{- include "capi-cluster-class.requireCAPN" . -}}
+{{- include "capi-cluster-class.requireKubeadm" . -}}
+---
+apiVersion: cluster.x-k8s.io/v1beta2
+kind: ClusterClass
+metadata:
+  name: {{ include "capi-cluster-class.classFullName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "capi-cluster-class.labels" . | nindent 4 }}
+spec:
+  # Topology-level infrastructure template applies once per Cluster.
+  infrastructure:
+    templateRef:
+      apiVersion: infrastructure.cluster.x-k8s.io/v1alpha2
+      kind: LXCClusterTemplate
+      name: {{ include "capi-cluster-class.lxcClusterTemplateName" . }}
+  # Control-plane bootstrap template + per-CP-machine infrastructure
+  # template. machineInfrastructure is required for kubeadm-based
+  # control-plane providers (they need to know how to create CP
+  # machines beyond the first one).
+  controlPlane:
+    templateRef:
+      apiVersion: controlplane.cluster.x-k8s.io/v1beta2
+      kind: KubeadmControlPlaneTemplate
+      name: {{ include "capi-cluster-class.kubeadmControlPlaneTemplateName" . }}
+    machineInfrastructure:
+      templateRef:
+        apiVersion: infrastructure.cluster.x-k8s.io/v1alpha2
+        kind: LXCMachineTemplate
+        name: {{ include "capi-cluster-class.lxcMachineTemplateCPName" . }}
+  # Single MVP worker deployment class — Cluster CR topology
+  # references it by `class: md-0`. Additional deployments classes
+  # (e.g. GPU workers, storage workers) can be added later via new
+  # entries here; bumping Chart.version remains the only path to
+  # mutate an existing one.
+  workers:
+    machineDeployments:
+      - class: md-0
+        infrastructure:
+          templateRef:
+            apiVersion: infrastructure.cluster.x-k8s.io/v1alpha2
+            kind: LXCMachineTemplate
+            name: {{ include "capi-cluster-class.lxcMachineTemplateWorkerName" . }}
+        bootstrap:
+          templateRef:
+            apiVersion: bootstrap.cluster.x-k8s.io/v1beta2
+            kind: KubeadmConfigTemplate
+            name: {{ include "capi-cluster-class.kubeadmConfigTemplateWorkerName" . }}

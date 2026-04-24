@@ -1,0 +1,159 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "capi-cluster-class values",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "clusterClass",
+    "kubernetes",
+    "capn",
+    "images",
+    "loadBalancer"
+  ],
+  "properties": {
+    "clusterClass": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 40,
+          "pattern": "^[a-z]([-a-z0-9]*[a-z0-9])?$"
+        }
+      }
+    },
+    "kubernetes": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version"],
+      "properties": {
+        "version": {
+          "type": "string",
+          "pattern": "^v[0-9]+\\.[0-9]+\\.[0-9]+(\\+[A-Za-z0-9.-]+)?$"
+        }
+      }
+    },
+    "capn": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["infrastructureSecretName"],
+      "properties": {
+        "infrastructureSecretName": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "images": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["controlplane", "worker"],
+      "properties": {
+        "controlplane": { "$ref": "#/$defs/imageRef" },
+        "worker":       { "$ref": "#/$defs/imageRef" }
+      }
+    },
+    "loadBalancer": {
+      "type": "object",
+      "additionalProperties": true,
+      "minProperties": 1,
+      "maxProperties": 1,
+      "properties": {
+        "lxc":      { "type": "object" },
+        "oci":      { "type": "object" },
+        "ovn":      { "type": "object" },
+        "kubeVIP":  { "type": "object" },
+        "external": { "type": "object" }
+      }
+    },
+    "profilesExtra": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "controlplane": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "worker": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "devicesExtra": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "controlplane": { "$ref": "#/$defs/deviceList" },
+        "worker":       { "$ref": "#/$defs/deviceList" }
+      }
+    },
+    "controlPlane": { "$ref": "#/$defs/kubeadmTuning" },
+    "worker":       { "$ref": "#/$defs/kubeadmTuning" },
+    "kubeProxy": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "nodePortAddresses": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "imageRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ref"],
+      "properties": {
+        "ref":         { "type": "string", "minLength": 1 },
+        "fingerprint": { "type": "string" }
+      }
+    },
+    "deviceList": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "pattern": "^[^,]+,[^,]+=[^,]+(,[^,]+=[^,]+)*$"
+      }
+    },
+    "argList": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "value"],
+        "properties": {
+          "name":  { "type": "string", "minLength": 1, "maxLength": 256 },
+          "value": { "type": "string", "maxLength": 1024 }
+        }
+      }
+    },
+    "kubeadmTuning": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "featureGates": {
+          "type": "object",
+          "additionalProperties": { "type": "boolean" }
+        },
+        "apiServerExtraArgs":         { "$ref": "#/$defs/argList" },
+        "controllerManagerExtraArgs": { "$ref": "#/$defs/argList" },
+        "schedulerExtraArgs":         { "$ref": "#/$defs/argList" },
+        "kubeletExtraArgs":           { "$ref": "#/$defs/argList" },
+        "preKubeadmCommands": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "postKubeadmCommands": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
+    }
+  }
+}

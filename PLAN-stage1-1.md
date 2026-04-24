@@ -1246,6 +1246,48 @@ overrides, без `insecure-skip-tls-verify`. Fix в одну строку:
   локальный scope в `bootstrap_capn_secret` минимально-инвазивен и
   не пересекается с lxd_host's snap/socket-ownership.
 
+### Step 10 расширения — §8 global binding для project/network (2026-04-24)
+
+Step 10 на §16.2 (chart `capi-cluster-class`) verified, что CAPN
+v1alpha2 `LXCClusterSpec` **не имеет** поля `project` — scope лежит
+внутри identity Secret payload'а (ключ `project`). Значит Secret,
+который materialize'ит эта роль, есть единственный source of truth
+для CAPN project-scoping — и он ОБЯЗАН трекать §8 `k8s_lab_project_name`
+атомарно, иначе workload CR'ы начнут создаваться в другом project'е,
+чем тот, на который LXD client cert ограничен.
+
+Defaults правятся: `bootstrap_capn_secret_lxd_project` и
+`bootstrap_capn_secret_internal_network_name` теперь биндятся к
+`{{ k8s_lab_project_name | default('capi-lab') }}` и
+`{{ k8s_lab_internal_network_name | default('capi-int') }}`. Fallback
+в `'capi-lab'` / `'capi-int'` сохраняется для standalone молекул-
+запусков и ad-hoc reruns, где globals не заданы.
+
+Бинды распространяются сразу на три стороны (без silent-disconnect):
+
+* `secret.yaml.j2` → `stringData.project: "{{ bootstrap_capn_secret_lxd_project }}"`
+  — CAPN читает этот ключ на каждом CR reconcile;
+* `lxd_trust.yml` → POST `/1.0/certificates` с `restricted: true,
+  projects: ["{{ bootstrap_capn_secret_lxd_project }}"]`, + assert
+  на drift restriction;
+* `lxd_https.yml` — auto-resolve `core.https_address` по имени
+  LXD-managed network `{{ bootstrap_capn_secret_internal_network_name }}`.
+
+Test evidence: molecule `bootstrap-capn-secret` полный цикл зелёный
+против shared group_vars (`k8s_lab_project_name: "capi-lab"`,
+`k8s_lab_internal_network_name: "capi-int"`):
+`converge ok=283 changed=45 failed=0`,
+`idempotence ok=271 changed=0 failed=0`,
+`verify ok=14 changed=0 failed=0`. Все 14 assertions в `verify.yml`
+прошли, включая `project == "capi-lab"` в Secret data и exactly-one
+`capi-lab`-restricted trust entry.
+
+Side-fix: `k8s_lab_infrastructure_secret_name` в §8 default выровнен
+на CAPN upstream `"incus-identity"` (раньше числился `"capn-identity"`
+— расходилось с Ansible role default'ом и tfvars payload'ом; теперь
+всё три пути `export_artifacts`/`bootstrap_capn_secret`/§8 держат
+одно имя).
+
 ## 13.12. `export_artifacts`
 
 **Статус: выполнено в Step 8 (2026-04-23) — Phase 4 закрытие, §15.6.

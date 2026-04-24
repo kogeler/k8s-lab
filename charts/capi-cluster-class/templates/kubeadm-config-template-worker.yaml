@@ -1,0 +1,33 @@
+{{- include "capi-cluster-class.requireKubeadm" . -}}
+{{- $w := .Values.worker -}}
+---
+apiVersion: bootstrap.cluster.x-k8s.io/v1beta2
+kind: KubeadmConfigTemplate
+metadata:
+  name: {{ include "capi-cluster-class.kubeadmConfigTemplateWorkerName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "capi-cluster-class.labels" . | nindent 4 }}
+    cluster.x-k8s.io/role: worker
+spec:
+  template:
+    spec:
+      # Substrate-required baseline (see kubeadm-control-plane-template
+      # for rationale). Also satisfies CAPI v1beta2 CRD constraint
+      # `spec.template.spec.minProperties >= 1` when no tuning knob is
+      # overridden.
+      format: cloud-config
+      {{- with $w.kubeletExtraArgs }}
+      joinConfiguration:
+        nodeRegistration:
+          kubeletExtraArgs:
+            {{- toYaml . | nindent 12 }}
+      {{- end }}
+      {{- with $w.preKubeadmCommands }}
+      preKubeadmCommands:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $w.postKubeadmCommands }}
+      postKubeadmCommands:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

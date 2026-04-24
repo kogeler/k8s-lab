@@ -1,0 +1,133 @@
+# capi-cluster-class — public values interface (PLAN §16.2).
+#
+# Only legitimate optional-extension / tunable knobs are exposed here.
+# Substrate-required CR fields (unprivileged LXC path, skipping CAPN's
+# default kubeadm profile, container instanceType, CAPN v1alpha2 API
+# selection, the `capi-base` / `capi-controlplane` / `capi-worker`
+# profile baseline that ships with role `lxd_profiles`) are baked
+# directly into templates/*.yaml — a consumer MUST NOT be able to
+# silently break the chart by overriding them. See the memory rule
+# "Chart-required values are hardcoded, not variables".
+#
+# Every key here is part of the chart's contract with the Terraform
+# wrapper module (PLAN §16.4) and with the workload-cluster chart
+# (PLAN §16.3). Bumping Chart.version is required whenever the
+# rendered CR shape changes in a way that breaks CAPI webhook
+# immutability — see templates/_helpers.tpl.
+
+# ---- ClusterClass identity ---------------------------------------------------
+clusterClass:
+  # Logical prefix for every rendered object. Final names =
+  # "{name}-{chart-version-slug}" (dots in chart version replaced by
+  # "-"). The workload-cluster chart MUST use the same transform to
+  # reproduce spec.topology.classRef.name.
+  name: capn-default
+
+# ---- Kubernetes version ------------------------------------------------------
+# Bound from PLAN §8 k8s_lab_kubernetes_version. CAPN substrings the
+# literal "VERSION" inside image refs (see .images.*.ref below) with
+# this value when resolving the image for each machine, so a single
+# LXCMachineTemplate covers many K8s versions.
+kubernetes:
+  version: ""
+
+# ---- CAPN substrate credentials ---------------------------------------------
+# The CAPN identity Secret (shipped by the Ansible role
+# bootstrap_capn_secret, PLAN §13.11) contains the LXD endpoint +
+# client credentials already scoped to an LXD project. There is no
+# separate "project" field on LXCCluster in v1alpha2 — project scoping
+# lives inside the Secret payload, not on the CR.
+capn:
+  infrastructureSecretName: ""
+
+# ---- Image refs (bound from PLAN §8 k8s_lab_images_* ) -----------------------
+# The literal string "VERSION" inside ref is templated by CAPN at
+# machine-provision time. Fingerprints are optional — when empty, CAPN
+# resolves the image by name against its default simplestreams server.
+images:
+  controlplane:
+    ref: "capi:kubeadm/VERSION"
+    fingerprint: ""
+  worker:
+    ref: "capi:kubeadm/VERSION"
+    fingerprint: ""
+
+# ---- Control-plane load balancer --------------------------------------------
+# LXCClusterTemplateSpec.loadBalancer is a REQUIRED field on the
+# CAPN v1alpha2 CRD (exactly one mode must be chosen). The MVP default
+# "lxc" spins up a plain Ubuntu + haproxy LXC instance inside the same
+# LXD project and auto-tracks control-plane backends — suitable for a
+# 2-CP workload cluster on a single-node substrate.
+#
+# To switch modes, consumer values files MUST first null out the
+# default before setting their mode — Helm deep-merges maps, so
+# `loadBalancer: {kubeVIP: {...}}` alone ends up with both `lxc` and
+# `kubeVIP` keys and fails the values.schema.json maxProperties=1
+# constraint. Correct pattern:
+#
+#   loadBalancer:
+#     lxc: null
+#     kubeVIP:
+#       image: ghcr.io/kube-vip/kube-vip:v0.7.0
+#       interface: eth1
+loadBalancer:
+  lxc: {}
+
+# ---- Machine profile extras --------------------------------------------------
+# Required-baseline LXD profiles (`capi-base` + role-specific) are
+# ALWAYS rendered by the template regardless of this value. The lists
+# below are consumer-supplied ADDITIONAL profiles that append after
+# the baseline — typical use case is attaching a consumer-owned
+# `gpu-node` / `storage-worker` profile without forking the chart.
+profilesExtra:
+  controlplane: []
+  worker: []
+
+# ---- Per-machine device overrides (optional) --------------------------------
+# CAPN v1alpha2 LXCMachineTemplate.spec.template.spec.devices is a
+# []string of CSV overrides on top of the instance's profiles, one
+# entry per device. Leave empty to inherit everything from profiles
+# (MVP default — eth0 on capi-int and eth1 on br-ext6 ship via role
+# lxd_profiles). Example override: "eth1,type=nic,network=other-ext".
+devicesExtra:
+  controlplane: []
+  worker: []
+
+# ---- kubeadm control plane bootstrap contract --------------------------------
+# Empty sub-sections render as omitted blocks (MVP default). Populate
+# from §8 globals in consumer overlays / Terraform vars when needed.
+controlPlane:
+  featureGates: {}
+  # kubeletExtraArgs / apiServerExtraArgs / controllerManagerExtraArgs /
+  # schedulerExtraArgs accept [{name,value}] pairs in v1beta2. The
+  # chart only renders these blocks when the list is non-empty (CAPI
+  # v1beta2 CRD validates minItems: 1).
+  apiServerExtraArgs: []
+  controllerManagerExtraArgs: []
+  schedulerExtraArgs: []
+  kubeletExtraArgs: []
+  preKubeadmCommands: []
+  postKubeadmCommands: []
+
+worker:
+  featureGates: {}
+  kubeletExtraArgs: []
+  preKubeadmCommands: []
+  postKubeadmCommands: []
+
+# ---- kube-proxy NodePort address policy (PLAN §5.4) --------------------------
+# When non-empty, emits a kubeProxyConfiguration patch via
+# preKubeadmCommands + files that binds NodePort listeners to the
+# given CIDR list. Empty preserves kubeadm default (bind to all).
+# The patch wiring into kubeadm is out of MVP scope for this chart —
+# consumers who need NodePort binding policy must currently supply
+# their own KubeadmControlPlaneTemplate patch via `patches:` section
+# of a ClusterClass variable (not implemented in the 0.1.0 baseline).
+kubeProxy:
+  nodePortAddresses: []
+
+# ClusterClass does NOT own clusterNetwork — the cidrBlocks for pods
+# and services live on the Cluster CR (`spec.clusterNetwork`, rendered
+# by charts/capi-workload-cluster — PLAN §16.3). This chart therefore
+# exposes NO clusterNetwork values; per-cluster CIDR policy is set
+# per-instance at Cluster creation time.

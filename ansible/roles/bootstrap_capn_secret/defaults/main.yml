@@ -39,9 +39,17 @@
 bootstrap_capn_secret_enabled: true
 
 # Cross-role couplings — by value (plan §2.6.5 bans reading another
-# role's `<other>_*` directly).
-bootstrap_capn_secret_lxd_project: "capi-lab"
-bootstrap_capn_secret_internal_network_name: "capi-int"
+# role's `<other>_*` directly). Both pull from the project-wide §8
+# globals so a single global change propagates into:
+#   * the client cert's trust-store project restriction (lxd_trust.yml),
+#   * the Secret's `project` stringData key (secret.yaml.j2) — CAPN
+#     reads this at every CR reconcile to scope every LXCMachine call,
+#   * `core.https_address` auto-resolution (it walks the LXD-managed
+#     network named here to find the gateway IPv4 to bind to).
+# Fall back to `capi-lab` / `capi-int` for standalone role runs
+# (molecule, ad-hoc reruns) where the globals are unset.
+bootstrap_capn_secret_lxd_project: "{{ k8s_lab_project_name | default('capi-lab') }}"
+bootstrap_capn_secret_internal_network_name: "{{ k8s_lab_internal_network_name | default('capi-int') }}"
 
 # Host-side kubeconfig produced by the bootstrap_clusterctl chain.
 bootstrap_capn_secret_kubeconfig_path: "{{ k8s_lab_opt_root | default('/opt/capi-lab') }}/etc/bootstrap_clusterctl/bootstrap.kubeconfig"
