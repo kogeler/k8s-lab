@@ -13,7 +13,7 @@ lineup. Атомарный scope этого шарда — framing, которо
 PLAN-stage1-common.md ............ §1..§12  (project contract, architecture, test harness, risk catalog)
 PLAN-stage1-1.md ................. §13..§14 (completed roles + phases)
 PLAN-stage1-2.md ................. §15      (Phases 3.5 + 4 bootstrap management cluster)
-PLAN-stage1-3.md ................. §16      (Phases 5 + 5.05 Terraform CAPI + kubeconfig)
+PLAN-stage1-3.md ................. §16      (Phases 5 + 5.05 CAPI topology via Helm)
 PLAN-stage1-4.md ................. §17      (Phases 5.1 + 5.2 + 5.3 Helm add-ons + in-cluster tests)
 PLAN-stage1-5.md ................. §18      (Phases 6 + 7 pivot + workload clusters)
 PLAN-stage1-6.md ................. §19      (Phase 8 destroy)
@@ -85,7 +85,7 @@ PLAN-stage1-7.md ................. §20..§22 (Stage 1 meta: out-of-scope, self-
 * local libvirt mock external IPv6 /64 network;
 * mocked DHCPv6/RA delivery on second NIC in local VM;
 * probe endpoint on same mocked external network for NodePort/MetalLB tests.
-* shared repo contains only roles/modules/manifests/scripts/test harness;
+* shared repo contains only roles/modules/charts/scripts/test harness;
 * real environment composition moved to separate private repos;
 * Terraform root modules in this repo exist only as test fixtures under `tests/fixtures`.
 * validation gates (CNI, external L2) встроены в Helm test hooks на соответствующих chart release'ах и выполняются на реальном data plane, а не через research spikes.

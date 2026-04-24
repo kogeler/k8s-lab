@@ -10,7 +10,7 @@ workload cluster flow, который становится актуален то
 PLAN-stage1-common.md ............ §1..§12  (project contract, architecture, test harness, risk catalog)
 PLAN-stage1-1.md ................. §13..§14 (completed roles + phases)
 PLAN-stage1-2.md ................. §15      (Phases 3.5 + 4 bootstrap management cluster)
-PLAN-stage1-3.md ................. §16      (Phases 5 + 5.05 Terraform CAPI + kubeconfig)
+PLAN-stage1-3.md ................. §16      (Phases 5 + 5.05 CAPI topology via Helm)
 PLAN-stage1-4.md ................. §17      (Phases 5.1 + 5.2 + 5.3 Helm add-ons + in-cluster tests)
 PLAN-stage1-5.md ................. §18      (Phases 6 + 7 pivot + workload clusters)      <-- этот файл
 PLAN-stage1-6.md ................. §19      (Phase 8 destroy)
