@@ -1,0 +1,30 @@
+---
+galaxy_info:
+  role_name: cleanup_bootstrap
+  namespace: k8slab
+  author: k8s-lab contributors
+  description: >-
+    Delete the k8s-lab bootstrap LXC container (capi-bootstrap-0 by
+    default) inside the capi-lab LXD project (plan §19.1). The
+    instance-level proxy device publishing the bootstrap k3s API is
+    removed with the container, so API publication is covered too.
+    Broader Phase 8 destroy (workload clusters, Helm add-ons, LXD
+    substrate, host bridge) lives in the orchestrator (plan §19.2),
+    NOT in this role.
+  license: MIT
+  min_ansible_version: "2.16"
+  platforms:
+    - name: Debian
+      versions:
+        - trixie
+  galaxy_tags:
+    - kubernetes
+    - lxd
+    - cleanup
+
+# No meta-dependencies by design. Cleanup is reverse-motion — it should
+# not re-install LXD / project / pool / profiles just to delete one
+# instance. If the substrate is already gone, the role is a no-op
+# (probe-then-delete makes it fully idempotent across every combination
+# of daemon / project / instance presence).
+dependencies: []

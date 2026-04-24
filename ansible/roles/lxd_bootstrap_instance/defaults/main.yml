@@ -60,14 +60,19 @@ lxd_bootstrap_instance_extra_profiles: []
 # Default uses Canonical's LXD-curated simplestreams remote — that is
 # the `images:` remote on a stock LXD snap (URL changed from
 # `linuxcontainers.org` to `images.lxd.canonical.com` in LXD 5.x+
-# after the Canonical/Incus split). The `debian/13` alias matches the
-# host OS (plan §2.1 Debian 13 Trixie) so k3s bootstrap inherits
-# predictable kernel semantics. Consumers can pin to a specific
-# fingerprint or switch to the UBC remote
-# (https://cloud-images.ubuntu.com/releases/ + `24.04` / etc).
+# after the Canonical/Incus split). The `debian/13/cloud` variant
+# matches the host OS (plan §2.1 Debian 13 Trixie) AND ships
+# cloud-init preinstalled — plan §2.10 substrate-requires cloud-init
+# capability on every node image because `capi-worker` / `capi-controlplane`
+# LXD profiles carry `cloud-init.vendor-data` (§13.6 Step 9). The
+# bootstrap instance itself is only layered with `capi-base` +
+# `capi-bootstrap` (no vendor-data), but we keep the same image so
+# the harness caches a single rootfs and behaviour stays consistent
+# across every container LXD spawns in capi-lab. Consumers can pin
+# to a specific fingerprint or switch remotes.
 lxd_bootstrap_instance_image_server:   "https://images.lxd.canonical.com"
 lxd_bootstrap_instance_image_protocol: "simplestreams"
-lxd_bootstrap_instance_image_alias:    "debian/13"
+lxd_bootstrap_instance_image_alias:    "debian/13/cloud"
 
 # -- Per-instance overlays -----------------------------------------------
 #

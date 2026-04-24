@@ -1,0 +1,79 @@
+---
+# Input validation for cleanup_bootstrap (plan §2.6.2).
+
+- name: "cleanup-bootstrap | preflight | gather facts"
+  ansible.builtin.setup:
+    gather_subset:
+      - "!all"
+      - "!any"
+      - min
+  when: ansible_facts['os_family'] is not defined
+
+- name: "cleanup-bootstrap | preflight | target OS is Debian 13+"
+  ansible.builtin.assert:
+    that:
+      - ansible_facts['os_family'] == 'Debian'
+      - ansible_facts['distribution'] == 'Debian'
+      - (ansible_facts['distribution_major_version'] | int) >= 13
+    fail_msg: >-
+      cleanup_bootstrap only targets Debian 13 Trixie or newer; detected
+      {{ ansible_facts['distribution'] | default('?') }}
+      {{ ansible_facts['distribution_version'] | default('?') }}.
+
+- name: "cleanup-bootstrap | preflight | validate socket URI + path"
+  ansible.builtin.assert:
+    that:
+      - cleanup_bootstrap_lxd_socket_uri is string
+      - cleanup_bootstrap_lxd_socket_uri is match('^unix:/')
+      - cleanup_bootstrap_lxd_socket_path is string
+      - cleanup_bootstrap_lxd_socket_path is match('^/')
+    fail_msg: >-
+      cleanup_bootstrap: `cleanup_bootstrap_lxd_socket_uri` must be a
+      `unix:<absolute path>` URI (community.general.lxd_container), and
+      `cleanup_bootstrap_lxd_socket_path` a bare absolute path
+      (ansible.builtin.uri). Got
+      uri="{{ cleanup_bootstrap_lxd_socket_uri | default('') }}",
+      path="{{ cleanup_bootstrap_lxd_socket_path | default('') }}".
+
+- name: "cleanup-bootstrap | preflight | validate project + instance name"
+  ansible.builtin.assert:
+    that:
+      - cleanup_bootstrap_project is string
+      - cleanup_bootstrap_project | length > 0
+      - cleanup_bootstrap_project is match('^[a-z][a-z0-9_-]{0,62}$')
+      - cleanup_bootstrap_instance_name is string
+      - cleanup_bootstrap_instance_name | length > 0
+      # LXD instance names: lowercase alnum / hyphen, ≤63 chars.
+      - cleanup_bootstrap_instance_name is match('^[a-z][a-z0-9-]{0,62}$')
+    fail_msg: >-
+      cleanup_bootstrap: project / instance name malformed. Project
+      must be lowercase alnum (plus `-`/`_`), start with a letter,
+      ≤63 chars; instance name same constraints without `_`.
+
+- name: "cleanup-bootstrap | preflight | validate delete semantics"
+  ansible.builtin.assert:
+    that:
+      - cleanup_bootstrap_force_stop is boolean
+      - cleanup_bootstrap_delete_timeout | int >= 4
+    fail_msg: >-
+      cleanup_bootstrap: `cleanup_bootstrap_force_stop` must be a
+      boolean and `cleanup_bootstrap_delete_timeout` an integer >= 4.
+
+- name: "cleanup-bootstrap | preflight | validate artifacts contract"
+  # Safety guard: the artifacts step will `file state=absent` the given
+  # path on the runner. Empty (= skip) is fine; anything non-empty must
+  # be an absolute path of length > 1 so we can never delete the
+  # runner's filesystem root by accident.
+  ansible.builtin.assert:
+    that:
+      - cleanup_bootstrap_remove_artifacts is boolean
+      - cleanup_bootstrap_artifacts_root is string
+      - (cleanup_bootstrap_artifacts_root | length == 0) or
+        (cleanup_bootstrap_artifacts_root is match('^/.+'))
+      - cleanup_bootstrap_artifacts_root not in ["/", "//"]
+    fail_msg: >-
+      cleanup_bootstrap: `cleanup_bootstrap_artifacts_root` must be
+      either empty (skip) or an absolute path with more than one
+      character; `cleanup_bootstrap_remove_artifacts` must be boolean.
+      Got remove={{ cleanup_bootstrap_remove_artifacts | default('?') }},
+      root="{{ cleanup_bootstrap_artifacts_root | default('') }}".

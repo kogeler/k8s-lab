@@ -22,7 +22,7 @@ VAGRANT       ?= vagrant
 # fails with permission errors, add the user to that group and re-login.
 VIRSH         ?= virsh -c qemu:///system
 
-NETS := k8slab-mgmt-nat k8slab-ext6-mock
+NETS := k8slab-mgmt-nat
 ifeq ($(K8SLAB_PROBE),1)
 NETS += k8slab-probe-ext6
 endif

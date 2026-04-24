@@ -35,3 +35,13 @@
     owner: root
     group: root
     mode: "0755"
+
+- name: "Prepare | shared | in-VM external IPv6 RA source (veth + radvd)"
+  # Substrate-required for the whole harness: shared host_vars set
+  # `lxd_host_ext_bridge_uplink: ext6-ra`, which the `lxd_host` role
+  # expects to be an actual bridge member at healthcheck time. This
+  # task creates the veth pair (ext6-ra / ext6-ra-peer) and runs radvd
+  # so containers attached to br-ext6 autoconfigure a global IPv6 via
+  # SLAAC. Rationale lives in that file's header.
+  ansible.builtin.include_tasks:
+    file: "{{ lookup('ansible.builtin.env', 'MOLECULE_PROJECT_DIRECTORY') }}/shared/tasks/ext6-ra-source.yml"

@@ -8,7 +8,7 @@ default) inside the `capi-lab` project (plan §13.7).
 Owns the bootstrap container lifecycle:
 
 * **create** the instance from a canonical base image
-  (`images:debian/13` by default) in the `capi-lab` project;
+  (`images:debian/13/cloud` by default) in the `capi-lab` project;
 * **apply profiles** — `capi-base` (root disk on capi-fast + internal
   nic on capi-int) and `capi-bootstrap` (nesting, unprivileged, idmap
   isolated);
@@ -75,7 +75,7 @@ as a public default is a footgun.
 | --- | --- | --- |
 | `lxd_bootstrap_instance_image_server` | `https://images.linuxcontainers.org` | Simplestreams / LXD remote URL. |
 | `lxd_bootstrap_instance_image_protocol` | `simplestreams` | Remote protocol (`simplestreams` or `lxd`). |
-| `lxd_bootstrap_instance_image_alias` | `debian/13` | Image alias or fingerprint. |
+| `lxd_bootstrap_instance_image_alias` | `debian/13/cloud` | Image alias or fingerprint. |
 
 ### Per-instance overlays
 
@@ -119,7 +119,7 @@ Both `_` and `-` spellings accepted (plan §2.6.3):
     - role: lxd_bootstrap_instance
       vars:
         lxd_bootstrap_instance_name: "capi-bootstrap-0"
-        lxd_bootstrap_instance_image_alias: "debian/13"
+        lxd_bootstrap_instance_image_alias: "debian/13/cloud"
         # Required profiles are applied automatically; this layers a
         # site profile on top (e.g. host diagnostics or a custom nic).
         lxd_bootstrap_instance_extra_profiles:

@@ -1,0 +1,43 @@
+---
+# Dispatcher-only (plan §2.6.2).
+
+- name: "cleanup-bootstrap | preflight"
+  ansible.builtin.include_tasks:
+    file: preflight.yml
+    apply:
+      tags: [cleanup_bootstrap, cleanup-bootstrap, cleanup_bootstrap_preflight]
+  tags: [cleanup_bootstrap, cleanup-bootstrap, cleanup_bootstrap_preflight]
+
+- name: "cleanup-bootstrap | instance"
+  ansible.builtin.include_tasks:
+    file: instance.yml
+    apply:
+      tags: [cleanup_bootstrap, cleanup-bootstrap, cleanup_bootstrap_instance]
+  when:
+    - cleanup_bootstrap_enabled
+    - cleanup_bootstrap_flow_control_instance
+  tags: [cleanup_bootstrap, cleanup-bootstrap, cleanup_bootstrap_instance]
+
+- name: "cleanup-bootstrap | artifacts"
+  # Runner-side `.artifacts/` scrub. Empty path is the safe default —
+  # the include body skips itself via the length guard below, but we
+  # also gate at the dispatcher so the include itself doesn't fire
+  # when there's nothing to do.
+  ansible.builtin.include_tasks:
+    file: artifacts.yml
+    apply:
+      tags: [cleanup_bootstrap, cleanup-bootstrap, cleanup_bootstrap_artifacts]
+  when:
+    - cleanup_bootstrap_enabled
+    - cleanup_bootstrap_remove_artifacts
+    - cleanup_bootstrap_flow_control_artifacts
+    - (cleanup_bootstrap_artifacts_root | length) > 0
+  tags: [cleanup_bootstrap, cleanup-bootstrap, cleanup_bootstrap_artifacts]
+
+- name: "cleanup-bootstrap | healthchecks"
+  ansible.builtin.include_tasks:
+    file: healthchecks.yml
+    apply:
+      tags: [cleanup_bootstrap, cleanup-bootstrap, cleanup_bootstrap_healthchecks]
+  when: cleanup_bootstrap_enabled
+  tags: [cleanup_bootstrap, cleanup-bootstrap, cleanup_bootstrap_healthchecks]

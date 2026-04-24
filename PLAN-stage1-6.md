@@ -26,11 +26,68 @@ PLAN-stage1-7.md ................. §20..§22 (Stage 1 meta: out-of-scope, self-
 
 ## 19.1. Role: `cleanup_bootstrap`
 
+**Статус: выполнено в Step 9 (2026-04-24).**
+
 Удаляет:
 
-* bootstrap LXC
-* bootstrap API publication
-* временные artifacts where appropriate
+* bootstrap LXC — `capi-bootstrap-0` в проекте `capi-lab` через
+  `community.general.lxd_container state=absent` с
+  `force_stop: true`. Instance-level proxy-device `k3s-api`,
+  которым `lxd_bootstrap_instance_devices` публикует bootstrap API на
+  `<vagrant>:16443`, уходит вместе с инстансом — отдельного шага
+  для publication нет.
+* runner-side artifacts root — опционально, путь берётся из
+  `cleanup_bootstrap_artifacts_root` (default empty = skip). Удаление
+  через `ansible.builtin.file state=absent` с `delegate_to: localhost`
+  и `become: false`, потому что `export_artifacts` писал в тот же
+  путь на раннере, не в VM. Preflight блокирует `/` и `//` чтобы
+  конфиг-ошибка не снесла runner FS.
+
+### Implementation notes (Step 9)
+
+* **Нет meta-deps по дизайну** (`meta/main.yml dependencies: []`).
+  Cleanup — reverse-motion: если substrate уже частично снесён, роль
+  должна оставаться no-op, а не re-install'ить LXD/project/pool
+  только чтобы удалить один инстанс. Phase 8 orchestrator (§19.2)
+  сам секвенсит cleanup-роли в нужном порядке.
+* **Probe-then-delete для полной идемпотентности.**
+  Первый шаг — `ansible.builtin.uri GET /1.0/instances/<name>?project=<project>`
+  с `status_code: [200, 404]` + `failed_when: false` + `changed_when: false`.
+  Guard покрывает все три состояния substrate'а (daemon absent /
+  project absent / instance absent) одной проверкой; второй запуск
+  подряд даёт `changed=0` (plan §2.6.1 требование).
+* **Healthcheck guard `when: status in [200, 404]`** — если substrate
+  полностью снесён, даже healthcheck assert skipped (нечего
+  валидировать). Если substrate reachable, ассерт 404 после delete.
+* **Scenario-local artifacts path** в Molecule
+  (`tests/molecule/cleanup-bootstrap/host_vars/k8slab-host.yml`):
+  `{{ repo }}/.artifacts-cleanup-bootstrap-test` — чтобы
+  cleanup-тест не затирал реальный `.artifacts/` от
+  `export_artifacts` сценария/full e2e path.
+* **Prepare стратегия.** Поскольку meta-deps нет, pre-converge
+  инстанс создаётся в `prepare.yml` через
+  `ansible.builtin.include_role name: lxd_bootstrap_instance` — он
+  тянет весь substrate chain транзитивно. В prepare runner-side
+  секция `delegate_to: localhost` создаёт sentinel-файл в
+  scenario-local artifacts root, чтобы verify мог доказать
+  реальное удаление (exists=false после cleanup), а не ситуацию
+  "пути никогда не было".
+
+### Verify
+
+Molecule сценарий `tests/molecule/cleanup-bootstrap/` прогон
+end-to-end (`make -C tests/molecule cleanup-bootstrap-delegated-test`,
+2026-04-24):
+
+* converge: `ok=17 changed=2 failed=0` (instance delete + artifacts
+  delete);
+* **idempotence: `ok=16 changed=0 failed=0`** — probe возвращает
+  404 → delete skipped, artifacts уже absent, healthcheck 404 →
+  assert pass;
+* verify (6 asserts): `ok=6 changed=0 failed=0` — instance 404,
+  instance отсутствует в project-level `/1.0/instances?project=...`
+  list (belt-and-braces защита от ложного 404 при отсутствующем
+  проекте), scenario-local artifacts root `exists=false` на раннере.
 
 ## 19.2. Phase 8 — Destroy
 

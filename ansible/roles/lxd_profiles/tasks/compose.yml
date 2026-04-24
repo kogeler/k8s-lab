@@ -2,13 +2,26 @@
 # Compose `_lxd_profiles_effective` — the list of profile dicts the
 # apply + healthcheck steps iterate over. Each entry is the
 # role-internal substrate baseline (vars/main.yml) with the
-# user-supplied extras for that profile merged on top.
+# substrate-required `cloud-init.vendor-data` injected for flagged
+# profiles, then user-supplied extras merged on top.
 #
 # Keeping the merge here (not inline at every call site) means:
 #   * tasks/profiles.yml and tasks/healthchecks.yml share the same
 #     "effective" view — drift between them is impossible;
-#   * user-extra handling lives in one place, so new extension fields
-#     only require touching this file + defaults.
+#   * vendor-data rendering and user-extra handling live in one place,
+#     so new extension fields only require touching this file.
+
+# Render the external-nic cloud-init vendor-data once. Templated with
+# a single variable `_ifname` that resolves to
+# `lxd_profiles_external_ifname` (default `eth1`). The rendered string
+# lands verbatim in `cloud-init.vendor-data` on every catalog entry
+# that sets `_external_vendor_data: true` (currently capi-controlplane
+# and capi-worker — capi-base / capi-bootstrap have no external nic).
+- name: "lxd-profiles | compose | render external-nic vendor-data"
+  ansible.builtin.set_fact:
+    _lxd_profiles_external_vendor_data: "{{ lookup('ansible.builtin.template', 'capi-external-vendor-data.yaml.j2') }}"
+  vars:
+    _ifname: "{{ lxd_profiles_external_ifname }}"
 
 - name: "lxd-profiles | compose | accumulate effective profiles"
   ansible.builtin.set_fact:
@@ -19,6 +32,11 @@
             'name':        item.name,
             'description': item.description,
             'config':      (item.config | default({}))
+                             | combine(
+                                 {'cloud-init.vendor-data': _lxd_profiles_external_vendor_data}
+                                 if (item['_external_vendor_data'] | default(false))
+                                 else {}
+                               )
                              | combine(
                                  lookup('vars',
                                         'lxd_profiles_' ~ (item.name | replace('-', '_')) ~ '_extra_config',

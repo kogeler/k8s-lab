@@ -1,0 +1,68 @@
+---
+# cleanup_bootstrap scenario prepare.
+#
+# Cleanup is reverse-motion — the role has no meta-deps and its
+# converge would be a no-op against an empty host. Prepare therefore
+# does two things that forward-path scenarios get for free from their
+# target role's meta-chain:
+#
+#   1. Include `lxd_bootstrap_instance` explicitly so the full
+#      substrate chain (base_system → lxd_host → lxd_project →
+#      lxd_storage_pools → lxd_network_int_managed → lxd_profiles →
+#      lxd_bootstrap_instance) runs end-to-end. Result: a real
+#      `capi-bootstrap-0` container running in the `capi-lab` project,
+#      identical to what a forward deploy would produce.
+#
+#   2. Drop a sentinel file inside the scenario-local artifacts root on
+#      the runner, so the converge verify can tell whether the
+#      artifacts-root step actually removed something (vs. the path
+#      never having existed in the first place).
+
+- name: "Prepare | cleanup_bootstrap | VM side"
+  hosts: all
+  gather_facts: true
+  become: true
+  vars:
+    _molecule_project_dir: "{{ lookup('ansible.builtin.env', 'MOLECULE_PROJECT_DIRECTORY') }}"
+  tasks:
+    - name: "Prepare | cleanup_bootstrap | shared base"
+      ansible.builtin.include_tasks:
+        file: "{{ _molecule_project_dir }}/shared/tasks/prepare.yml"
+
+    - name: "Prepare | cleanup_bootstrap | clean pool disk"
+      ansible.builtin.include_tasks:
+        file: "{{ _molecule_project_dir }}/shared/tasks/prepare-clean-disk.yml"
+
+    - name: "Prepare | cleanup_bootstrap | pre-create bootstrap container via lxd_bootstrap_instance"
+      # include_role applies the role AND pulls its meta-chain, so the
+      # full substrate comes up. We rely on the role's own idempotence —
+      # re-running this play (shouldn't happen in molecule's sequence,
+      # but cheap insurance) is a no-op against an already-converged host.
+      ansible.builtin.include_role:
+        name: lxd_bootstrap_instance
+
+- name: "Prepare | cleanup_bootstrap | runner side"
+  hosts: all
+  gather_facts: false
+  become: false
+  # run_once because the sentinel lives on the runner; multi-host
+  # scenarios (there are none here, but defensive) would otherwise
+  # stamp the same path repeatedly.
+  tasks:
+    - name: "Prepare | cleanup_bootstrap | ensure artifacts root exists on runner"
+      ansible.builtin.file:
+        path:  "{{ cleanup_bootstrap_artifacts_root }}"
+        state: directory
+        mode:  "0755"
+      delegate_to: localhost
+      run_once: true
+
+    - name: "Prepare | cleanup_bootstrap | drop sentinel inside artifacts root"
+      # Content is anything non-empty; verify only cares that the path
+      # is GONE after cleanup, not what it contained.
+      ansible.builtin.copy:
+        dest:    "{{ cleanup_bootstrap_artifacts_root }}/sentinel-pre-cleanup.txt"
+        content: "cleanup-bootstrap scenario sentinel — created in prepare, should be wiped by cleanup_bootstrap role\n"
+        mode:    "0644"
+      delegate_to: localhost
+      run_once: true

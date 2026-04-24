@@ -1,0 +1,87 @@
+---
+# cleanup_bootstrap verify — real runtime checks (plan §9.4).
+#
+# What we assert:
+#   1. The `capi-bootstrap-0` instance is GONE from LXD (REST returns
+#      404 against the project-scoped instance URL).
+#   2. The scenario-local artifacts root on the runner is GONE
+#      (stat: exists=false), covering the delegate_to:localhost
+#      path of the role.
+
+- name: "Verify | cleanup_bootstrap"
+  hosts: all
+  gather_facts: false
+  become: true
+  vars:
+    _socket_path: "/var/snap/lxd/common/lxd/unix.socket"
+    _project:     "capi-lab"
+    _instance:    "capi-bootstrap-0"
+  tasks:
+    # ---- LXD side --------------------------------------------------
+
+    - name: "Verify | cleanup_bootstrap | probe instance via LXD REST"
+      ansible.builtin.uri:
+        url: >-
+          http://localhost/1.0/instances/{{ _instance }}?project={{ _project }}
+        unix_socket: "{{ _socket_path }}"
+        method:      GET
+        status_code:
+          - 200
+          - 404
+        return_content: false
+      register: _verify_probe
+      changed_when: false
+
+    - name: "Verify | cleanup_bootstrap | assert instance is absent"
+      ansible.builtin.assert:
+        that:
+          - _verify_probe.status == 404
+        fail_msg: >-
+          expected instance "{{ _instance }}" in project "{{ _project }}"
+          to be absent after cleanup_bootstrap ran; LXD returned
+          status {{ _verify_probe.status }}.
+
+    - name: "Verify | cleanup_bootstrap | also assert project-level instance list does not include it"
+      # Belt-and-braces: the instance URL can return 404 when the
+      # project itself is missing, which would be a false-pass. Asking
+      # for the full instance list in the project exercises a
+      # different code path inside LXD and confirms the project is
+      # intact (the role must NOT destroy the project).
+      ansible.builtin.uri:
+        url: >-
+          http://localhost/1.0/instances?project={{ _project }}
+        unix_socket: "{{ _socket_path }}"
+        method:      GET
+        status_code: 200
+        return_content: true
+      register: _verify_list
+      changed_when: false
+
+    - name: "Verify | cleanup_bootstrap | derive instance names and assert target not in list"
+      ansible.builtin.assert:
+        that:
+          - _instance not in
+            ((_verify_list.json.metadata | default([]))
+              | map('urlsplit', 'path') | map('basename') | list)
+        fail_msg: >-
+          expected "{{ _instance }}" missing from project
+          "{{ _project }}" instance list, but it is still listed.
+
+    # ---- Runner side -----------------------------------------------
+
+    - name: "Verify | cleanup_bootstrap | stat scenario-local artifacts root on runner"
+      ansible.builtin.stat:
+        path: "{{ cleanup_bootstrap_artifacts_root }}"
+      delegate_to: localhost
+      become: false
+      register: _verify_artifacts_stat
+      changed_when: false
+
+    - name: "Verify | cleanup_bootstrap | assert artifacts root is absent on runner"
+      ansible.builtin.assert:
+        that:
+          - not _verify_artifacts_stat.stat.exists
+        fail_msg: >-
+          expected "{{ cleanup_bootstrap_artifacts_root }}" to be absent
+          on the runner after cleanup_bootstrap ran; stat reports
+          exists=true.

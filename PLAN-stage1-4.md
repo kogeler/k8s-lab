@@ -376,8 +376,10 @@ Install MetalLB + prove:
 Acceptance:
 
 * LoadBalancer service gets IPv6 VIP;
-* VIP reachable на `ext6-mock` / equivalent external segment model
-  (доказывается ping'ом от external probe endpoint'а);
+* VIP reachable на external segment model (в local harness — bridge
+  `br-ext6` внутри Vagrant VM после Step 9 pivot, см. §9.2;
+  equivalent в prod — provider external L2 segment); доказывается
+  ping'ом от external probe endpoint'а;
 * Gate A четырёхкритериевая acceptance (§6) зелёная;
 * HA pair контракт §2.12 для MetalLB выполнен.
 

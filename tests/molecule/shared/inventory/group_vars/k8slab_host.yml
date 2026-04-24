@@ -87,9 +87,12 @@ base_system_btrfs_pool_required: true
 
 # --- lxd_host (plan §13.2) ----------------------------------------
 #
-# External bridge uplink NIC on the Vagrant VM — eth2 is the third
-# NIC attached to the ext6-mock libvirt network.
-lxd_host_ext_bridge_uplink: "eth2"
+# External bridge uplink on the Vagrant VM. `ext6-ra` is the bridge-
+# side end of a veth pair provisioned by
+# tests/molecule/shared/tasks/ext6-ra-source.yml (the other end,
+# `ext6-ra-peer`, carries a global IPv6 + radvd). That task file is
+# included from shared/tasks/prepare.yml so every scenario gets it.
+lxd_host_ext_bridge_uplink: "ext6-ra"
 
 # --- lxd_storage_pools (plan §13.4) -------------------------------
 #

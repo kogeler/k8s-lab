@@ -1,0 +1,44 @@
+---
+# Delete the bootstrap LXC container if present.
+#
+# Idempotence contract: the role must be a no-op across every
+# combination of (daemon present?, project present?, instance present?).
+# The cheapest way to cover all three is one probe against the exact
+# instance URL — if LXD responds 200, the container exists and we
+# delete it; any other outcome (404 instance, 404 project, connection
+# error because daemon is gone) means there is nothing to do.
+
+- name: "cleanup-bootstrap | instance | probe instance presence via REST"
+  # `failed_when: false` swallows:
+  #   * ENOENT / ECONNREFUSED on the unix socket — daemon is gone;
+  #   * 404 when the project or instance is missing;
+  #   * 500 from LXD when the project does not exist (older versions).
+  # We treat every non-200 as "nothing to delete".
+  ansible.builtin.uri:
+    url: >-
+      http://localhost/1.0/instances/{{ cleanup_bootstrap_instance_name }}?project={{ cleanup_bootstrap_project }}
+    unix_socket: "{{ cleanup_bootstrap_lxd_socket_path }}"
+    method:      GET
+    return_content: false
+    status_code:
+      - 200
+      - 404
+  register: _cleanup_bootstrap_probe_register
+  changed_when: false
+  failed_when: false
+
+- name: "cleanup-bootstrap | instance | ensure bootstrap container absent"
+  # Native community.general path — supports project scoping, state
+  # transitions and force_stop in one declarative call (plan §2.6.1).
+  # Only fires when the probe confirmed the instance exists, so
+  # re-runs / missing-substrate runs stay idempotent.
+  community.general.lxd_container:
+    url:        "{{ cleanup_bootstrap_lxd_socket_uri }}"
+    snap_url:   "{{ cleanup_bootstrap_lxd_socket_uri }}"
+    project:    "{{ cleanup_bootstrap_project }}"
+    name:       "{{ cleanup_bootstrap_instance_name }}"
+    state:      absent
+    force_stop: "{{ cleanup_bootstrap_force_stop }}"
+    timeout:    "{{ cleanup_bootstrap_delete_timeout }}"
+  when: (_cleanup_bootstrap_probe_register.status | default(0)) == 200
+  register: _cleanup_bootstrap_delete_register

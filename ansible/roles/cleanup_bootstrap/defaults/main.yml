@@ -1,0 +1,84 @@
+---
+# ==========================================================================
+# cleanup_bootstrap — role defaults
+# ==========================================================================
+#
+# Purpose (plan §19.1): ensure the bootstrap LXC container
+# (`capi-bootstrap-0` by default) inside the `capi-lab` project is
+# absent. The instance-level proxy device that publishes the bootstrap
+# k3s API (`k3s-api`, from `lxd_bootstrap_instance_devices`) is deleted
+# with the container, so "bootstrap API publication" in §19.1 is
+# covered by the same step.
+#
+# Out of scope: workload / management cluster teardown, Helm add-on
+# removal, LXD project / pool / profile destruction, host-side bridge
+# removal, runner-side `.artifacts/` cleanup. Those belong to the
+# Phase 8 orchestrator (plan §19.2), not this role.
+#
+# Public contract (plan §2.6.2): callers touch only `cleanup_bootstrap_*`
+# variables. Internal / derived facts use `_cleanup_bootstrap_*` and
+# must stay inside the role.
+
+# -- General ---------------------------------------------------------------
+
+# Whole-role toggle. When false, preflight still runs (so misconfigured
+# inputs get caught early) but no mutating task is applied.
+cleanup_bootstrap_enabled: true
+
+# LXD daemon socket URI consumed by community.general.lxd_container.
+# Same `unix:<path>` form every other LXD-facing role in this repo uses.
+cleanup_bootstrap_lxd_socket_uri: "unix:/var/snap/lxd/common/lxd/unix.socket"
+
+# Raw filesystem socket path consumed by ansible.builtin.uri for the
+# idempotent "does this instance actually exist" probe. uri expects a
+# bare path (no `unix:` prefix) — keep it decoupled from the module
+# URI so one can be overridden without changing the other.
+cleanup_bootstrap_lxd_socket_path: "/var/snap/lxd/common/lxd/unix.socket"
+
+# -- Target --------------------------------------------------------------
+
+# LXD project hosting the bootstrap instance. Must match the project
+# `lxd_project` created on the host — coupling is by value, not by
+# reading the other role's prefixed var (plan §2.6.5).
+cleanup_bootstrap_project: "capi-lab"
+
+# Bootstrap container name. Mirrors `lxd_bootstrap_instance_name`
+# default so the create/cleanup pair stays symmetric out of the box.
+cleanup_bootstrap_instance_name: "capi-bootstrap-0"
+
+# -- Delete semantics -----------------------------------------------------
+
+# `community.general.lxd_container` refuses `state=absent` on a running
+# instance unless `force_stop=true`. Cleanup intentionally wants the
+# aggressive path — leftover state is worse than a hard stop.
+cleanup_bootstrap_force_stop: true
+
+# Upper bound (seconds) the module waits on the combined stop+delete
+# operation. LXD's instance deletion is usually sub-second; a generous
+# default covers slow disks + storage driver quirks without forcing the
+# caller to think about it.
+cleanup_bootstrap_delete_timeout: 60
+
+# -- Runner-side artifacts ------------------------------------------------
+#
+# `.artifacts/` on the runner (typically <repo>/.artifacts) is populated
+# by `export_artifacts` with the bootstrap cluster's kubeconfig, CAPN
+# secret and trust material. Once the bootstrap container is gone those
+# files point at a dead endpoint and must not bleed into the next
+# redeploy — so the role deletes the entire root by default when a
+# path is provided.
+#
+# Path defaults to empty: scenarios that actually export artifacts pin
+# `cleanup_bootstrap_artifacts_root` to the same value they passed to
+# `export_artifacts_root`. An empty path leaves this step a no-op, so
+# callers that did not export anything (unit-scope Molecule runs) stay
+# unaffected. The removal task runs `delegate_to: localhost` because
+# the artifacts live on the runner, not the Ansible target VM.
+cleanup_bootstrap_remove_artifacts:  true
+cleanup_bootstrap_artifacts_root:    ""
+
+# -- Flow control (plan §2.6.3) -------------------------------------------
+#
+# Coarse-grained only.
+cleanup_bootstrap_flow_control_instance:  true
+cleanup_bootstrap_flow_control_artifacts: true

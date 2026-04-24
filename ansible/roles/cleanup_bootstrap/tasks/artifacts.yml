@@ -1,0 +1,19 @@
+---
+# Delete the runner-side artifacts root (.artifacts/ by default) so
+# kubeconfig / CAPN secret / trust material produced by the now-dead
+# bootstrap cluster don't linger. Native `file state=absent` is
+# idempotent (changed=false on already-absent) and handles the
+# directory-recursive case without a shell fallback (plan §2.6.1).
+#
+# `delegate_to: localhost` because export_artifacts wrote these files
+# on the runner, not on the Ansible target VM. `become: false` because
+# the artifacts are owned by the runner user — no sudo needed and
+# escalating would actively break on developer workstations with no
+# passwordless local sudo.
+
+- name: "cleanup-bootstrap | artifacts | remove runner-side artifacts root"
+  ansible.builtin.file:
+    path:  "{{ cleanup_bootstrap_artifacts_root }}"
+    state: absent
+  delegate_to: localhost
+  become: false

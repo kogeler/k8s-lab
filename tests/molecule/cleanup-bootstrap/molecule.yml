@@ -1,0 +1,69 @@
+---
+# Molecule scenario for the cleanup_bootstrap role (plan §19.1).
+#
+# Driver: delegated — shared Vagrant/libvirt VM (plan §9.1). Unlike
+# forward-path scenarios, cleanup_bootstrap has NO meta-deps by design
+# (reverse-motion role does not re-install substrate), so the bootstrap
+# container it deletes is pre-created in prepare.yml via an explicit
+# `include_role: lxd_bootstrap_instance` which pulls the full substrate
+# meta-chain transitively.
+#
+# Shared substrate host_vars live in
+# `tests/molecule/shared/inventory/group_vars/k8slab_host.yml` and are
+# symlinked into the Molecule ephemeral inventory via
+# `inventory.links.group_vars`. Scenario-local host_vars (the artifacts
+# root path + disabling the btrfs-mount contract) live in
+# `host_vars/k8slab-host.yml` next to this file.
+#
+# Target role identity: derived in shared/converge.yml from
+# MOLECULE_SCENARIO_NAME env var. Contract:
+# `scenario.name == role dir name under ansible/roles/`.
+
+dependency:
+  name: galaxy
+  options:
+    requirements-file: ../../../ansible/requirements.yml
+
+driver:
+  name: default
+  options:
+    managed: false
+
+platforms:
+  - name: k8slab-host
+    groups:
+      - k8slab_host
+
+provisioner:
+  name: ansible
+  config_options:
+    defaults:
+      interpreter_python: auto_silent
+      stdout_callback: ansible.builtin.default
+      result_format: yaml
+      forks: 5
+      callbacks_enabled: ansible.posix.profile_tasks
+    ssh_connection:
+      pipelining: true
+  inventory:
+    links:
+      group_vars: ../shared/inventory/group_vars
+      host_vars:  host_vars
+  playbooks:
+    prepare:  prepare.yml
+    converge: ${MOLECULE_PROJECT_DIRECTORY}/shared/converge.yml
+    verify:   verify.yml
+
+scenario:
+  name: cleanup_bootstrap
+  test_sequence:
+    - dependency
+    - create
+    - prepare
+    - converge
+    - idempotence
+    - verify
+    - destroy
+
+verifier:
+  name: ansible

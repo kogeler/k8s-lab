@@ -63,6 +63,7 @@ SCENARIOS := \
 	bootstrap-cluster \
 	cluster-addons-helm \
 	pivot \
+	cleanup-bootstrap \
 	e2e-local
 
 # Drivers currently wired in this repo. `delegated` uses the Vagrant VM

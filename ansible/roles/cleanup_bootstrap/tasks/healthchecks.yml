@@ -1,0 +1,34 @@
+---
+# Role-internal healthchecks — confirm the bootstrap instance is
+# actually gone post-apply. If the earlier probe never saw the daemon
+# / project, there is nothing to healthcheck.
+
+- name: "cleanup-bootstrap | healthchecks | re-probe instance after delete"
+  ansible.builtin.uri:
+    url: >-
+      http://localhost/1.0/instances/{{ cleanup_bootstrap_instance_name }}?project={{ cleanup_bootstrap_project }}
+    unix_socket: "{{ cleanup_bootstrap_lxd_socket_path }}"
+    method:      GET
+    return_content: false
+    status_code:
+      - 200
+      - 404
+  register: _cleanup_bootstrap_health_register
+  changed_when: false
+  failed_when: false
+
+- name: "cleanup-bootstrap | healthchecks | assert instance is absent when substrate reachable"
+  # Only assert when the daemon actually responded. If the probe failed
+  # to talk to LXD at all (daemon gone, socket missing), there is no
+  # contract to enforce — the whole point of Phase 8 cleanup is to be
+  # tolerant of partial prior teardown.
+  ansible.builtin.assert:
+    that:
+      - (_cleanup_bootstrap_health_register.status | default(0)) == 404
+    fail_msg: >-
+      cleanup_bootstrap: expected instance
+      "{{ cleanup_bootstrap_instance_name }}" in project
+      "{{ cleanup_bootstrap_project }}" to be gone after delete, but
+      LXD still reports status
+      {{ _cleanup_bootstrap_health_register.status | default('?') }}.
+  when: (_cleanup_bootstrap_health_register.status | default(0)) in [200, 404]
