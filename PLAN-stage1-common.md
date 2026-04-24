@@ -33,7 +33,7 @@ PLAN-stage1-7.md ................. §20..§22 (Stage 1 meta: out-of-scope, self-
   - §2.4. Политика по bootstrap management cluster
   - §2.5. Политика по границе репозитория
   - §2.6. Политика разработки Ansible roles
-    - §2.6.1. Native-first policy
+    - §2.6.1. Native-first policy и идемпотентность fallback-шагов
     - §2.6.2. Variables contract и layout
     - §2.6.3. Naming, tags, registers и flow control
     - §2.6.4. Handlers contract
@@ -258,27 +258,34 @@ Reference links, на которые агенту разрешено и поле
 * `naive_proxy` Molecule harness: [32]
 * `naive_proxy` README: [33]
 
-### 2.6.1. Native-first policy
+### 2.6.1. Native-first policy и идемпотентность fallback-шагов
 
-Для разработки ролей Ansible вводится жёсткое правило:
+Для разработки ролей Ansible следуем Ansible best practices. Под любую задачу в первую очередь ищется native-модуль; императивные вызовы (shell и HTTP-mutation через `uri`) допустимы только как последнее средство и обязаны иметь отдельную обёртку на идемпотентность.
 
-* **строго запрещено** использовать shell-скрипты, `shell`, `command`, `script` или `raw` там, где задача решается:
+**Порядок выбора implementation path (жёсткий):**
 
-  * native Ansible module из `ansible.builtin`,
-  * модулем из внешней Ansible collection.
+1. сначала native module из `ansible.builtin.*`;
+2. затем подходящий module из внешней Ansible collection (`community.general`, `ansible.posix`, `kubernetes.core`, `community.crypto` и т.д.);
+3. только если подходящего модуля нет или он объективно не покрывает нужное поведение — допускается fallback на `shell` / `command` / `script` / `raw`, либо `ansible.builtin.uri` с mutating method (`POST` / `PUT` / `PATCH` / `DELETE`).
 
-Порядок выбора implementation path:
+**Запрещено** использовать shell-скрипты, `shell`, `command`, `script` или `raw` там, где задача решается существующим native- или collection-модулем. `ansible.builtin.uri` для HTTP API формально относится к native-модулям (см. §13.4/§13.5 — LXD REST через unix_socket), но с mutating method имеет ту же императивную семантику, что и shell fallback, и подчиняется одинаковым требованиям к идемпотентности.
 
-1. сначала native module;
-2. затем подходящий module из внешней collection;
-3. только если подходящего модуля нет или он объективно не покрывает нужное поведение, допускается fallback на shell/command/script.
+**Любой fallback-шаг обязан:**
 
-Любой fallback на shell-based execution должен:
-
-* быть явно обоснован в коде роли;
-* сохранять idempotency;
-* иметь корректные `changed_when`/`creates`/`removes`/`failed_when`, где это применимо;
+* быть явно обоснован коротким комментарием в коде роли (почему native-модуль не подходит);
+* быть реально идемпотентным: второй запуск подряд — no-op;
+* честно репортить `changed` — `true` ⇔ state мутирован, `false` ⇔ ничего не сделано;
+* добиваться идемпотентности и честного `changed` через **дополнительную обёртку в самой таске** — одним из механизмов:
+  * pre-check (GET / `stat` / `getent` / query API) → `set_fact` с diff → `when:` guard на мутирующем шаге, чтобы в steady state он просто не запускался;
+  * `creates:` / `removes:` для `shell`/`command` (Ansible сам скипает step и корректно работает с `--check`);
+  * парсинг stdout/rc через `failed_when:` и `changed_when:` на основе содержимого вывода, а не на константе;
+  * PUT с полным desired body вместо POST, если API поддерживает idempotent upsert;
+  * register before/after и `changed_when:` по реальному diff;
 * не подменять собой уже существующие declarative modules.
+
+**Запрещённый паттерн:** маскировать always-changed мутирующий шаг через `changed_when: false` ради того, чтобы Molecule idempotence-гейт стал зелёным. Это не идемпотентность, а её симуляция: одновременно ломает Molecule idempotence-гейт, `ansible-playbook --check` (ложноотрицательный no-op при реальной мутации) и drift detection в steady-state кластере. `changed_when: false` легитимен **только** на read-only шагах (`GET` / `show` / `list` / `stat` / assertion).
+
+Canonical pattern fallback'а через `uri`: `ansible/roles/lxd_storage_pools/tasks/pools.yml` — GET → derive existing → POST с `when: item.name not in existing` и `changed_when: true`; PATCH только при обнаруженном diff. Canonical shell fallback: `ansible/roles/lxd_host/tasks/refresh.yml` — pre-read текущего значения через read-only `snap get`, затем `set` только при diff с честным `changed_when`.
 
 ### 2.6.2. Variables contract и layout
 

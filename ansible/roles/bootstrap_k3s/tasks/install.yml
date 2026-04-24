@@ -131,6 +131,11 @@
       }}
 
 # ---- Ensure destination directories exist inside container -------------
+# Gated on the same drift flags as the push steps below: if nothing needs
+# to be pushed, nothing needs `mkdir`. When it fires, it fires because a
+# push is imminent — `changed` then honestly tracks the push chain
+# (plan §2.6.1: fallback-шаг обязан быть идемпотентен через `when:`
+# guard, а не через changed_when: false).
 
 - name: "bootstrap-k3s | install | ensure in-container dirs"
   ansible.builtin.command:
@@ -144,7 +149,8 @@
       - "-c"
       - >-
         mkdir -p {{ bootstrap_k3s_env_path | dirname }} {{ bootstrap_k3s_unit_path | dirname }}
-  changed_when: false
+  when: _bootstrap_k3s_env_drift or _bootstrap_k3s_unit_drift
+  changed_when: _bootstrap_k3s_env_drift or _bootstrap_k3s_unit_drift
 
 # ---- Push env + unit on drift ------------------------------------------
 
