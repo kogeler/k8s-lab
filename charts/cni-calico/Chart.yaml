@@ -1,0 +1,36 @@
+apiVersion: v2
+name: cni-calico
+description: |
+  k8s-lab CNI wrapper around projectcalico/tigera-operator with dual-stack
+  defaults baked in (PLAN §17.1) and a `helm.sh/hook: test` acceptance
+  hook covering Calico Pod readiness, workload Node Ready=True, dual-
+  stack podCIDR allocation, and live pod-to-pod ICMP across two worker
+  nodes.
+type: application
+
+# Local wrapper version. Bump on every values/template change so the
+# chart-level traceability stays meaningful — same policy as the
+# capi-cluster-class chart (PLAN §16.2 name-versioning contract).
+version: 0.2.0
+
+# appVersion tracks the upstream Calico release pinned via the
+# tigera-operator dependency below.
+# PLAN §8 k8s_lab_calico_chart_version (verified 2026-04-26).
+appVersion: v3.31.5
+
+dependencies:
+  - name: tigera-operator
+    # Pinned to the same version we ship — bump in lockstep.
+    # Upstream chart layout puts the operator Deployment + RBAC + CRDs
+    # under `templates/tigera-operator/`, the default Installation /
+    # APIServer CRs under `templates/calico/` (gated on
+    # `installation.enabled` / `apiServer.enabled`). We disable the
+    # default Installation and ship our own from this chart so
+    # substrate-required network fields stay hardcoded per memory
+    # rule "Chart-required values are hardcoded".
+    version: v3.31.5
+    repository: https://docs.tigera.io/calico/charts
+
+sources:
+  - https://github.com/projectcalico/calico
+  - https://docs.tigera.io/calico/latest/getting-started/kubernetes/helm

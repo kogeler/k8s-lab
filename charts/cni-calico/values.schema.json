@@ -1,0 +1,78 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://k8s-lab.io/schemas/cni-calico.values.schema.json",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["calico", "tigera-operator", "tests"],
+  "properties": {
+    "calico": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["pods"],
+      "properties": {
+        "pods": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["cidrBlocks"],
+          "properties": {
+            "cidrBlocks": {
+              "type": "array",
+              "minItems": 2,
+              "maxItems": 2,
+              "items": {
+                "type": "string",
+                "minLength": 1
+              },
+              "description": "Dual-stack pod CIDRs as [IPv4, IPv6]. Order is positional and consumed by templates/installation.yaml ipPool rendering."
+            }
+          }
+        }
+      }
+    },
+    "tigera-operator": {
+      "type": "object",
+      "description": "Subchart values for projectcalico/tigera-operator. We pass through the chart's full surface but pin the two toggles this wrapper depends on.",
+      "additionalProperties": true,
+      "properties": {
+        "installation": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "const": false,
+              "description": "MUST stay false. This wrapper ships its own Installation CR from templates/installation.yaml so substrate-required network fields stay hardcoded."
+            }
+          }
+        }
+      }
+    },
+    "tests": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["image", "kubectlVersion", "nodesReadyTimeoutSeconds", "podToPodTimeoutSeconds"],
+      "properties": {
+        "image": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Base image for the helm test Pod and the two ephemeral probe Pods. Memory rule bans bitnami; alpine + busybox is the project default."
+        },
+        "kubectlVersion": {
+          "type": "string",
+          "pattern": "^v\\d+\\.\\d+\\.\\d+(\\+.+)?$",
+          "description": "kubectl version fetched from dl.k8s.io inside the test Pod."
+        },
+        "nodesReadyTimeoutSeconds": {
+          "type": "integer",
+          "minimum": 60,
+          "maximum": 3600
+        },
+        "podToPodTimeoutSeconds": {
+          "type": "integer",
+          "minimum": 30,
+          "maximum": 900
+        }
+      }
+    }
+  }
+}

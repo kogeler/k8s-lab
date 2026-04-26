@@ -82,6 +82,32 @@ guards отбивают consumer-override на substrate-managed args
 (`bind-address`, `service-cluster-ip-range`, `allocate-node-cidrs`,
 `cluster-cidr`, `feature-gates`, `node-ip`, `provider-id`). Полная
 acceptance evidence — §16.7 Step 12 Acceptance status.**
+**Step 13 (2026-04-26) — bumped to 0.5.0** под native-nftables
+migration пары с charts/cni-calico (§17.1 Calico
+`linuxDataplane: Nftables`): `KubeadmControlPlaneTemplate.
+preKubeadmCommands` appendит KubeProxyConfiguration документ к
+`/run/kubeadm/kubeadm.yaml` до `kubeadm init`. Substrate-required
+hardcoded:
+* `kind: KubeProxyConfiguration`, `apiVersion:
+  kubeproxy.config.k8s.io/v1alpha1`, `mode: nftables` — Calico
+  nftables data-plane требует kube-proxy в nftables mode
+  (Calico docs формулируют это как контракт).
+* `conntrack.maxPerCore: 0`, `conntrack.min: 0` — отключают
+  kube-proxy'ный conntrack tuning. Default
+  (`maxPerCore: 32768, min: 131072`) приводит к попытке записать
+  `/sys/module/nf_conntrack/parameters/hashsize`, которая в
+  unprivileged-LXC user-namespace отбивается permission denied.
+  Без отключения kube-proxy crashlooping'ит.
+* Init-only gating: блок выполняется только когда
+  `kubeadm.yaml` есть и `kubeadm-join-config.yaml` нет.
+  KubeProxyConfiguration honoured только `kubeadm init`'ом; CP
+  joins и worker joins читают populated kube-system/kube-proxy
+  ConfigMap.
+
+Это даёт single-source-of-truth для kube-proxy mode на свежем
+cluster bring-up'е через kubeadm init. Live patch ConfigMap'а на
+running кластере (ad-hoc) ломает conntrack state на лету — proper
+declarative path только через kubeadm init.**
 
 Содержит реусабельный CAPI topology-контракт для CAPN unprivileged
 kubeadm path. Целевой API-surface зафиксирован на:
@@ -396,7 +422,17 @@ chart версию (rotation pin). End-to-end acceptance: `helm install`
 `controlPlane.replicas` CP + `workers.replicas` worker нод, dual-
 stack `InternalIP`/`podCIDR`'ы у каждой, `providerID =
 lxc:///<node>`, и `RequireDualStack` ClusterIP allocator выдаёт
-оба `clusterIPs` (v4 + v6).**
+оба `clusterIPs` (v4 + v6).
+**Step 13 (2026-04-26) — bumped to 0.5.0** в паре с
+charts/capi-cluster-class 0.5.0 (rotation contract). Никаких
+template-changes в этом чарте — bump чисто под coupling rotation
+(chart annotation `k8s-lab.io/capi-cluster-class-chart-version` →
+`"0.5.0"`). Causal: charts/capi-cluster-class 0.5.0 добавил
+KubeProxyConfiguration в KCPT (§16.2 Step 13), что в name-versioning
+формуле ротирует ClusterClass / *Template имена на `capn-default-0-5-0`
+— любой workload Cluster CR, ссылающийся на ClusterClass через
+classRef.name, должен резолвить новое имя. Annotation pin держит
+этот invariant.**
 
 Содержит один Cluster CR (`cluster.x-k8s.io/v1beta2`), который
 ссылается на ClusterClass из §16.2 через `spec.topology.classRef`,

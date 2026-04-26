@@ -1,0 +1,65 @@
+# Local CNI wrapper for k8s-lab workload clusters (PLAN §17.1).
+#
+# Substrate-required CR fields — `cni.type: Calico`, IPAM type,
+# `bgp: Disabled`, `linuxDataplane: Iptables`, ipPool encapsulation
+# `VXLAN`, `controlPlaneReplicas: 2` — live in `templates/installation.yaml`
+# and are NOT exposed here. Per memory rule "Chart-required values are
+# hardcoded" / PLAN §17.1 substrate contract: BGP infra is absent on the
+# CAPN/LXD lab substrate, IPIP encapsulation does not support IPv6, and
+# unprivileged-LXC Calico needs Iptables dataplane (eBPF requires kernel
+# privileges that user-namespaces don't grant).
+#
+# The HA pair §2.12 contract for Calico is satisfied via
+# `controlPlaneReplicas: 2` on the Installation CR — that drives both
+# `calico-kube-controllers` and `calico-apiserver` to two replicas with
+# the operator's built-in podAntiAffinity. Typha is intentionally
+# disabled (lab cluster sizes are well under upstream's auto-enable
+# threshold of ~50 nodes).
+
+calico:
+  # Dual-stack pod CIDRs. Indices are positional: [0] = IPv4, [1] = IPv6.
+  # Defaults track §8 k8s_lab_workload_pod_cidr_v4 / _v6 — same values
+  # the workload Cluster CR consumes via charts/capi-workload-cluster.
+  # IPv4 uses NAT-outgoing (private RFC1918 → external); IPv6 routes
+  # natively via the LXD bridge — natOutgoing stays disabled there.
+  pods:
+    cidrBlocks:
+      - "10.244.0.0/16"
+      - "fd42:77:2::/56"
+
+# Subchart values for projectcalico/tigera-operator. The wrapper is
+# minimal by design:
+#
+#   * `installation.enabled: false` — we render our own Installation
+#     CR from templates/installation.yaml so substrate-required
+#     network fields (BGP, encapsulation, dataplane) stay hardcoded
+#     per memory rule "Chart-required values are hardcoded".
+#   * `apiServer.enabled: true` — required for the projectcalico.org
+#     aggregated APIs (calicoctl, NetworkPolicy v3, etc.).
+#   * `goldmane.enabled: false` / `whisker.enabled: false` — Calico's
+#     flow-log aggregator and observability UI. Optional, off by
+#     default in this lab footprint. A consumer that wants them sets
+#     these toggles back to `true` via Helm values override.
+tigera-operator:
+  installation:
+    enabled: false
+  apiServer:
+    enabled: true
+  goldmane:
+    enabled: false
+  whisker:
+    enabled: false
+
+tests:
+  # alpine + busybox `ping`/`ping -6` + upstream kubectl via `wget`.
+  # Memory rule "Never use bitnami images" + "Always use latest stable".
+  image: "alpine:3.21"
+  # `helm test` Pod fetches kubectl from dl.k8s.io at runtime; pinned
+  # to the same kubernetes minor as the workload cluster.
+  kubectlVersion: "v1.35.0"
+  # 10 min — covers calico-node DaemonSet rollout (image pull on cold
+  # cache) + per-Node CNI plugin install + kubelet picking it up +
+  # Node Ready=True propagation.
+  nodesReadyTimeoutSeconds: 600
+  # Probe pod creation + kubectl exec ICMP roundtrip — small budget.
+  podToPodTimeoutSeconds: 120

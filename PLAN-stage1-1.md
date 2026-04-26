@@ -25,7 +25,7 @@ PLAN-stage1-7.md ................. §20..§22 (Stage 1 meta: out-of-scope, self-
 
 Этот раздел охватывает Ansible-роли Stage 1, которые уже реализованы и
 прогнаны end-to-end в локальном Vagrant/libvirt-контуре по состоянию на
-Step 12 (2026-04-26):
+Step 13 (2026-04-26):
 
 * §13.1 `base_system` (Step 1 + Step 5 required-values refactor);
 * §13.2 `lxd_host` (Step 2);
@@ -42,7 +42,13 @@ Step 12 (2026-04-26):
   SystemVerification на unprivileged-LXC nodes) + Step 12 тот же
   `host-boot` device на capi-worker — `kubeadm join` preflight на
   worker'е читает `/boot/config-<uname-r>` той же кодовой ветки, что
-  и `kubeadm init` на CP**);
+  и `kubeadm init` на CP + Step 13 расширение
+  `linux.kernel_modules` на capi-controlplane/capi-worker:
+  добавлены `nf_tables` (kube-proxy `mode: nftables` + Calico
+  `linuxDataplane: Nftables` пишут rules через nf_tables kernel API) и
+  `vxlan` (Calico Installation pinned VXLAN encapsulation на обоих
+  pod IPPools — IPIP IPv4-only, BGP infra нет на лаб-substrate'е,
+  VXLAN единственный dual-stack-capable mode)**);
 * §13.7 `lxd_bootstrap_instance` (Step 3 + Step 5 required-profiles
   refactor + **Step 9 image alias → `debian/13/cloud`**);
 * §13.8 `binary_fetch` (Step 4 — отложенная Phase 1.5 / §15.1);
@@ -354,6 +360,174 @@ Test evidence Step 12 (chart-level acceptance + Full E2E Molecule
   per-Node `providerID = lxc:///<node>`, dual-stack
   `InternalIP`/`podCIDR`'ы, и `RequireDualStack` ClusterIP
   Service получает оба адреса (v4 + v6).
+
+**Step 13 (2026-04-26) — CNI delivery + native nftables migration на
+workload-кластере.** Доставлен chart `charts/cni-calico/` (новый,
+§17.1) — local wrapper над upstream `projectcalico/tigera-operator`
+v3.31.5 с substrate-required hardcoded'ами в `Installation` CR
+(`cni.type: Calico`, `bgp: Disabled`, `linuxDataplane: Nftables`,
+dual-stack VXLAN ipPools, `controlPlaneReplicas: 2` как HA pair §2.12
+для calico-kube-controllers + calico-apiserver). Helm test hook
+chart-level acceptance драйвер (alpine + dl.k8s.io kubectl,
+6-фазная: tigera-operator Available → calico-system rollout +
+Pods Ready → workload Nodes Ready=True → dual-stack `podCIDRs` per-Node →
+2 ephemeral probe Pod'а на разных worker'ах через podAntiAffinity
++ nodeAffinity NotIn control-plane → ICMP4/ICMP6 через `kubectl exec`).
+
+Парный chart-side change в `charts/capi-cluster-class/` (bumped
+0.4.2 → 0.5.0): `KubeadmControlPlaneTemplate.preKubeadmCommands`
+appendит KubeProxyConfiguration документ к `/run/kubeadm/kubeadm.yaml`
+до `kubeadm init`. Calico nftables data-plane требует, чтобы
+kube-proxy тоже был в `mode: nftables` — Calico docs формулируют это
+как контракт. Дополнительные substrate-required hardcoded:
+* `KubeProxyConfiguration.conntrack.{maxPerCore: 0, min: 0}` —
+  отключает kube-proxy'ный conntrack tuning. Default
+  (`maxPerCore: 32768, min: 131072`) приводит к попытке записать
+  `/sys/module/nf_conntrack/parameters/hashsize`, которая в
+  unprivileged-LXC user-namespace отбивается permission denied
+  (path host-global, требует CAP_SYS_ADMIN на host'е). Без
+  отключения kube-proxy crashlooping'ит.
+* Вся блок init-only (gated на наличие `kubeadm.yaml` + отсутствие
+  `kubeadm-join-config.yaml`) — KubeProxyConfiguration honoured
+  только `kubeadm init`'ом; CP joins и worker joins читают
+  populated `kube-system/kube-proxy` ConfigMap.
+
+`charts/capi-workload-cluster/` чарт bumped в паре: 0.4.2 → 0.5.0 +
+annotation pin `k8s-lab.io/capi-cluster-class-chart-version: "0.5.0"`.
+Никаких template-changes в нём — bump чисто under coupling rotation
+contract (§16.3).
+
+`ansible/roles/lxd_profiles/vars/main.yml` — расширен
+`linux.kernel_modules` для capi-controlplane / capi-worker:
+добавлены `nf_tables` (kube-proxy nftables mode + Calico Nftables
+mode пишут rules через nf_tables kernel API) и `vxlan` (Calico
+Installation pinned VXLAN encapsulation на обоих pod IPPools — IPIP
+IPv4-only, BGP infra нет на substrate'е, VXLAN единственный
+dual-stack-capable mode). LXD pre-loadит модули перед instance
+start'ом, фолбэк на kernel auto-load остался.
+`tests/molecule/lxd-profiles/verify.yml` ассертит новый список.
+
+**Архитектурное решение vs `Iptables` mode**:
+* На Debian 13 system iptables = `iptables-nft` shim → пишет в
+  nf_tables. Calico в `Iptables` mode auto-detects host backend и на
+  нашем substrate использует iptables-nft binding — то есть
+  кernel-level эффект тот же, что у Nftables mode, через iptables
+  compat layer.
+* `Iptables` mode зрелый default; `Nftables` GA в Calico v3.30+ для
+  single-stack, в v3.31 — для dual-stack. Меньше production-mileage,
+  но cleaner rule set, нет iptables compat layer.
+* Operator API enum `LinuxDataplane = {Iptables, BPF, VPP, Nftables}`
+  — один из четырёх, переключение полное (нет mixed mode).
+* Выбран `Nftables` для consistency: единый kernel API path
+  (kube-proxy + Calico оба пишут через nf_tables), легче observe
+  через `nft list ruleset`, future-proof (iptables-legacy
+  deprecating).
+
+Memory rules применённые в Step 13 (без новых):
+* `feedback_chart_required_values_hardcoded.md` — Installation CR
+  substrate-required fields в шаблонах, не values.yaml;
+* `feedback_no_bitnami_images.md` — alpine + busybox + dl.k8s.io
+  kubectl wget;
+* `feedback_test_artifact_naming.md` — `k8s-lab-*` prefix для probe
+  Pod names;
+* `feedback_pause_before_role_test.md` — chart code сделан, тестирование
+  на live кластере выявило substrate-fragility (см. ниже).
+
+**Step 13 follow-up — e2e-local интеграция CNI + lab-VM resource
+bump.** После того как chart-level changes были собраны, выяснилось,
+что Vagrant lab-VM (6 GB RAM из Vagrantfile) на постоянной нагрузке
+(bootstrap k3s + 5 workload LXC instance + LB + Calico add-ons)
+уходит в OOM-thrash (`free=114Mi swap=0 load=142`), что роняло LXD
+daemon transactions ("transaction has already been committed or
+rolled back" / "Only running operations can be connected") и вело
+к интермиттентному отказу bootstrap + workload API. RAM bump
+6144 MB → 12288 MB в `tests/vagrant/debian13/Vagrantfile` (env-
+override `K8SLAB_MEM_MB`) убрал OOM-pressure (`free=11Gi load<5`),
+после `make clean-local` + `make up` все subsequent operations
+работают штатно.
+
+`tests/molecule/e2e-local/` расширен до полной CNI-цепочки —
+converge ставит ClusterClass + workload-cluster + Calico, verify
+гоняет оба helm test'а:
+* converge.yml — 7 новых задач после workload-cluster install:
+  * `ansible.builtin.unarchive` — install helm CLI v3.20.0 в
+    `/opt/capi-lab/bin/helm` (idempotent через `creates:`);
+  * `ansible.builtin.slurp` + `set_fact` — derive cni-calico chart
+    version из Chart.yaml (single-source-of-truth для следующих
+    задач);
+  * `helm dependency update` + `helm package` на runner'е
+    (`delegate_to: localhost`) — packaged .tgz эмиттится в
+    `.artifacts/cni-calico-<version>.tgz`;
+  * `ansible.builtin.copy` — переносит .tgz в
+    `/opt/capi-lab/etc/cni-calico-<version>.tgz` на VM;
+  * `kubernetes.core.k8s_info` polling (`delegate_to: localhost`,
+    bootstrap kubeconfig) — ждёт `<cluster>-kubeconfig` Secret;
+  * `ansible.builtin.copy` (на VM) — материализует workload
+    kubeconfig в `/opt/capi-lab/etc/<cluster>.kubeconfig` mode 0600;
+  * `kubernetes.core.helm` (на VM, без `delegate_to: localhost`) —
+    install Calico на workload cluster через VM-side helm.
+    Workload API endpoint runner-нереachable (capi-int IPv6
+    bridge), поэтому helm обязан запускаться на VM.
+* verify.yml — добавлена task `run cni-calico helm test` после
+  существующего workload-chart helm test'а (ansible.builtin.command
+  на VM, `become: true` для чтения root-owned kubeconfig);
+* shared `inventory/group_vars/k8slab_host.yml` — добавлены
+  substrate globals по §8 контракту: `k8s_lab_workload_pod_cidr_v4`
+  (default `10.244.0.0/16`), `_v6` (`fd42:77:2::/56`),
+  `k8s_lab_workload_service_cidr_v4/_v6`. Раньше эти ключи жили
+  только как defaults в chart values; converge теперь читает их
+  из inventory и пробрасывает в Calico Installation CR
+  (`calicoNetwork.ipPools.cidr`) — гарантия совпадения с
+  workload Cluster CR's `spec.clusterNetwork`.
+
+`charts/cni-calico/` доработан — поднят 0.1.0 → 0.2.0 (см. §17.1
+Step 13 status block; bump необходим для `kubernetes.core.helm`
+upgrade-detection: модуль молча skip'ает upgrade при идентичных
+chart name+version+digest, manual `helm upgrade` всегда работает
+но автоматизация требует version bump на каждое templates/values
+изменение). Substrate-required доработки RBAC/hook policy:
+* `templates/tests/rbac.yaml` — SA + ClusterRole + ClusterRoleBinding
+  больше НЕ несут `helm.sh/hook: test` annotation; они regular
+  release resources, installed at `helm install` time, реапятся
+  только на `helm uninstall`. Причина: `helm test --logs` пытается
+  fetch pod logs у каждого resource'а с этим annotation'ом, и
+  failит non-zero на не-Pod kinds (cosmetic helm bug которое
+  ломает CI gating). ClusterRole также расширен: добавлен read на
+  `core/namespaces` (gating на calico-system existence) и
+  `apps/{deployments,daemonsets}` (kubectl rollout status / wait
+  на tigera-operator + calico-system workloads);
+* `templates/tests/cni-ready.yaml` — hook delete policy
+  `before-hook-creation,hook-succeeded` → `before-hook-creation`
+  only. Причина: race-condition между `Phase: Succeeded` и
+  `helm test --logs` log-fetch step — при коротком тесте (~15s)
+  hook-succeeded удаляет Pod до того как helm дойдёт до log
+  pull, exit 1 c "pods not found". Test Pod теперь живёт после
+  Succeeded, реапается на следующем `helm test` через
+  before-hook-creation или на `helm uninstall`.
+
+End-to-end результат:
+`make clean-local` → `make up` (12 GB VM) →
+`make -C tests/molecule e2e-local-vagrant-converge` → `failed=0
+ok=307 changed=4` →
+`make -C tests/molecule e2e-local-vagrant-verify` → `failed=0
+ok=14 changed=4`. Compact-state debug:
+* workload chart `helm test` (10-фазный): `cluster=lab-default
+classRef=capn-default-0-5-0 AVAILABLE=True cp=3/3 worker=2/2
+ALL TOPOLOGY CHECKS PASSED`;
+* cni-calico `helm test` (6-фазный): `Phase: Succeeded` —
+  tigera-operator Available, calico-node DaemonSet + calico-kube-
+  controllers Deployment rolled out, calico-system Pods Ready,
+  все 5 workload Nodes Ready=True, dual-stack `podCIDRs`
+  per-Node, dual-stack ICMP4/ICMP6 между двумя ephemeral probe
+  Pod'ами на разных worker-нодах.
+
+Live-проверка на свежем кластере подтвердила архитектурный
+declarative path: kube-proxy ConfigMap rendering на workload
+показал `mode: nftables` + `conntrack.{maxPerCore: 0, min: 0}`,
+все 5 kube-proxy pods Running 0 restarts (без crashloop'ов
+которые были при попытке live patch'а на degraded Step-12 кластере
+— см. PLAN-1 Test evidence Step 13 follow-up resource bump
+паунgrаф выше).
 
 ## 13.1. `base_system`
 
@@ -749,7 +923,17 @@ unprivileged-LXC; **Step 12 (2026-04-26) расширил тот же
 выполняет ту же `SystemVerification` ветку, что и `kubeadm init`,
 и без `/boot` mount-in валится на отсутствии файла kernel
 build-config (Debian 13 kernel build без `CONFIG_IKCONFIG`,
-`/proc/config.gz` физически не существует). Cloud-init
+`/proc/config.gz` физически не существует). **Step 13 (2026-04-26)
+расширил `linux.kernel_modules` на capi-controlplane / capi-worker:
+добавлены `nf_tables` (kube-proxy `mode: nftables` через
+KubeProxyConfiguration в KubeadmControlPlaneTemplate + Calico
+`linuxDataplane: Nftables` в charts/cni-calico Installation CR — оба
+пишут rules через nf_tables kernel API напрямую) и `vxlan` (Calico
+Installation pinned VXLAN encapsulation на обоих pod IPPools — IPIP
+IPv4-only, BGP infra нет на substrate'е, VXLAN единственный
+dual-stack-capable mode; calico-node создаёт vxlan device в LXC
+host-netns на старте). LXD pre-loadит модули перед instance start,
+fallback на kernel auto-load остался как safety belt.** Cloud-init
 vendor-data baseline для eth1 bring-up на `capi-controlplane` /
 `capi-worker` выполнен в Step 9 (2026-04-24) — см. «Step 9
 расширения» ниже.**

@@ -92,7 +92,22 @@ _lxd_profiles_catalog:
       security.idmap.isolated:              "true"
       security.syscalls.intercept.mknod:    "true"
       security.syscalls.intercept.setxattr: "true"
-      linux.kernel_modules:                 "br_netfilter,ip_vs,nf_conntrack,overlay"
+      # `nf_tables` + `vxlan` added on top of the kube-proxy / containerd
+      # / overlayfs baseline:
+      #   * nf_tables — kube-proxy is pinned to nftables mode at kubeadm
+      #     init (KubeProxyConfiguration in charts/capi-cluster-class
+      #     KubeadmControlPlaneTemplate) and Calico's data plane runs in
+      #     `linuxDataplane: Nftables` mode (charts/cni-calico Installation
+      #     CR). Both write rules through the kernel's nf_tables API
+      #     directly; the module auto-loads on first nft syscall, but
+      #     LXD-level pre-loading guarantees availability before
+      #     containerd starts kube-proxy.
+      #   * vxlan — Calico Installation pins both pod IPPools to VXLAN
+      #     encapsulation (IPIP is IPv4-only, BGP infra is absent on the
+      #     lab substrate, VXLAN is the only dual-stack-capable mode left).
+      #     calico-node creates a vxlan device inside the LXC's host
+      #     netns at startup.
+      linux.kernel_modules:                 "br_netfilter,ip_vs,nf_conntrack,nf_tables,overlay,vxlan"
       raw.lxc:                              "lxc.apparmor.profile=unconfined"
     devices:
       # See capi-bootstrap above for the /dev/kmsg rationale.
@@ -136,7 +151,10 @@ _lxd_profiles_catalog:
       security.idmap.isolated:              "true"
       security.syscalls.intercept.mknod:    "true"
       security.syscalls.intercept.setxattr: "true"
-      linux.kernel_modules:                 "br_netfilter,ip_vs,nf_conntrack,overlay"
+      # `nf_tables` + `vxlan` — same kube-proxy nftables / Calico VXLAN
+      # encapsulation requirement as the control-plane profile (see
+      # capi-controlplane note above).
+      linux.kernel_modules:                 "br_netfilter,ip_vs,nf_conntrack,nf_tables,overlay,vxlan"
       raw.lxc:                              "lxc.apparmor.profile=unconfined"
     devices:
       kmsg:

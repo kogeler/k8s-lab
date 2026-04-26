@@ -52,7 +52,7 @@
           security.idmap.isolated:              "true"
           security.syscalls.intercept.mknod:    "true"
           security.syscalls.intercept.setxattr: "true"
-          linux.kernel_modules:                 "br_netfilter,ip_vs,nf_conntrack,overlay"
+          linux.kernel_modules:                 "br_netfilter,ip_vs,nf_conntrack,nf_tables,overlay,vxlan"
           raw.lxc:                              "lxc.apparmor.profile=unconfined"
       - name: "capi-worker"
         description_must_contain: "worker"
@@ -66,7 +66,7 @@
           security.idmap.isolated:              "true"
           security.syscalls.intercept.mknod:    "true"
           security.syscalls.intercept.setxattr: "true"
-          linux.kernel_modules:                 "br_netfilter,ip_vs,nf_conntrack,overlay"
+          linux.kernel_modules:                 "br_netfilter,ip_vs,nf_conntrack,nf_tables,overlay,vxlan"
           raw.lxc:                              "lxc.apparmor.profile=unconfined"
   tasks:
     # ---- Profile existence ------------------------------------------

@@ -1,0 +1,278 @@
+{{/*
+Helm test hook (PLAN §17.3 / §17.5 chart-level acceptance, scope B).
+
+Run with `helm test <release>` after `helm install`. Targets only
+Helm 3 features (helm.sh/hook: test, hook-delete-policy
+before-hook-creation,hook-succeeded) so the chart stays compatible
+with the hashicorp/helm Terraform provider, which is pinned to the
+Helm 3 SDK.
+
+Single Pod, single PASS/FAIL, six step's:
+
+  [1/6] install kubectl from dl.k8s.io
+  [2/6] tigera-operator Deployment Available
+  [3/6] calico-system DaemonSets/Deployments rolled out, all Pods Ready
+  [4/6] every workload Node Ready=True
+  [5/6] every Node carries dual-stack `spec.podCIDRs` (v4 + v6)
+  [6/6] live pod-to-pod ICMP4 + ICMP6 across two workers — applies
+        two ephemeral probe Pods (`k8s-lab-cni-probe-a/-b`) with
+        podAntiAffinity on `kubernetes.io/hostname` and nodeAffinity
+        excluding control-plane, then `kubectl exec` ping/ping -6 from
+        one to the other's PodIPs.
+
+Image: alpine:<pinned> + busybox `wget` to fetch upstream kubectl
+(no apk, no bitnami — memory rules "Never use bitnami images" /
+"Always use latest stable"). The probe Pods use the same image and
+rely on busybox `ping` (-6 supported on alpine 3.21).
+
+The Pod runs in `.Release.Namespace` (typically `tigera-operator`),
+talks to the cluster apiserver via the in-cluster config (projected
+SA token + kubernetes.default.svc), so no kubeconfig wrangling.
+*/}}
+apiVersion: v1
+kind: Pod
+metadata:
+  name: {{ .Release.Name }}-test-cni-ready
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "cni-calico.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": test
+    # Only `before-hook-creation` — drop `hook-succeeded` so the test
+    # Pod survives after `Phase: Succeeded`. `helm test --logs` races
+    # with `hook-succeeded` deletion when the test runs faster than
+    # helm's log-stream startup (this hook is short — 15-30s typical
+    # — so the race is reliably hit). Persistent Pod is reaped on
+    # the next `helm test` invocation or on `helm uninstall`.
+    "helm.sh/hook-delete-policy": before-hook-creation
+spec:
+  serviceAccountName: {{ .Release.Name }}-test
+  restartPolicy: Never
+  # Test Pod itself can land on a control-plane Node (it only talks to
+  # the apiserver and shells to other Pods); only the *probe* Pods need
+  # to be on workers, which is enforced inside the script.
+  containers:
+    - name: probe
+      image: {{ .Values.tests.image | quote }}
+      imagePullPolicy: IfNotPresent
+      env:
+        - name: NAMESPACE
+          value: {{ .Release.Namespace | quote }}
+        - name: PROBE_IMAGE
+          value: {{ .Values.tests.image | quote }}
+        - name: KUBECTL_VERSION
+          value: {{ .Values.tests.kubectlVersion | quote }}
+        - name: NODES_READY_TIMEOUT_SECONDS
+          value: {{ .Values.tests.nodesReadyTimeoutSeconds | quote }}
+        - name: POD_TO_POD_TIMEOUT_SECONDS
+          value: {{ .Values.tests.podToPodTimeoutSeconds | quote }}
+      command: ["/bin/sh", "-c"]
+      args:
+        - |
+          set -eu
+
+          fail() {
+            echo "FAIL: $*" >&2
+            exit 1
+          }
+
+          has_v4() { grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+'; }
+          has_v6() { grep -Eq ':'; }
+
+          PROBE_A="k8s-lab-cni-probe-a"
+          PROBE_B="k8s-lab-cni-probe-b"
+
+          echo "==> [1/6] install kubectl ${KUBECTL_VERSION} from dl.k8s.io"
+          wget -qO /tmp/kubectl \
+            "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/amd64/kubectl"
+          chmod +x /tmp/kubectl
+          KCTL=/tmp/kubectl
+
+          NODES_DEADLINE=$(( $(date +%s) + NODES_READY_TIMEOUT_SECONDS ))
+
+          echo "==> [2/6] wait for tigera-operator Deployment Available"
+          # The chart ships the operator and `helm install --wait` covers
+          # this, but we re-poll for self-contained reliability when the
+          # caller did not pass --wait.
+          while [ "$(date +%s)" -lt "$NODES_DEADLINE" ]; do
+            if $KCTL -n tigera-operator wait deploy/tigera-operator \
+                 --for=condition=Available --timeout=10s >/dev/null 2>&1; then
+              break
+            fi
+            sleep 5
+          done
+          $KCTL -n tigera-operator wait deploy/tigera-operator \
+            --for=condition=Available --timeout=5s \
+            || fail "tigera-operator Deployment never went Available"
+
+          echo "==> [3/6] wait for calico-system rollouts + Pods Ready"
+          # The operator creates calico-system namespace + workloads
+          # asynchronously after it sees the Installation CR. Poll until
+          # the namespace exists, then wait on each rollout.
+          while [ "$(date +%s)" -lt "$NODES_DEADLINE" ]; do
+            if $KCTL get ns calico-system >/dev/null 2>&1; then
+              break
+            fi
+            sleep 5
+          done
+          $KCTL get ns calico-system >/dev/null \
+            || fail "calico-system namespace never appeared"
+
+          # Wait for the calico-node DaemonSet to exist + roll out fully.
+          while [ "$(date +%s)" -lt "$NODES_DEADLINE" ]; do
+            if $KCTL -n calico-system get ds/calico-node >/dev/null 2>&1; then
+              break
+            fi
+            sleep 5
+          done
+          $KCTL -n calico-system rollout status ds/calico-node \
+            --timeout="${NODES_READY_TIMEOUT_SECONDS}s" \
+            || fail "calico-node DaemonSet rollout did not complete"
+
+          # calico-kube-controllers Deployment (controlPlaneReplicas: 2 →
+          # operator gives it 2 replicas + podAntiAffinity automatically).
+          while [ "$(date +%s)" -lt "$NODES_DEADLINE" ]; do
+            if $KCTL -n calico-system get deploy/calico-kube-controllers >/dev/null 2>&1; then
+              break
+            fi
+            sleep 5
+          done
+          $KCTL -n calico-system rollout status deploy/calico-kube-controllers \
+            --timeout=120s \
+            || fail "calico-kube-controllers rollout did not complete"
+
+          # Final blanket assert: every Pod in calico-system is Ready.
+          $KCTL -n calico-system wait pods --all \
+            --for=condition=Ready --timeout=120s \
+            || fail "not every calico-system Pod went Ready"
+
+          echo "==> [4/6] wait for every workload Node Ready=True (deadline ${NODES_READY_TIMEOUT_SECONDS}s total)"
+          while [ "$(date +%s)" -lt "$NODES_DEADLINE" ]; do
+            not_ready="$($KCTL get nodes --no-headers 2>/dev/null \
+              | awk '$2 != "Ready" { print $1 }' | tr '\n' ' ')"
+            if [ -z "$not_ready" ] && [ "$($KCTL get nodes --no-headers 2>/dev/null | wc -l)" -gt 0 ]; then
+              break
+            fi
+            echo "    nodes not ready yet: ${not_ready:-<none-listed>}"
+            sleep 10
+          done
+          remaining="$($KCTL get nodes --no-headers 2>/dev/null \
+            | awk '$2 != "Ready" { print $1 }' | tr '\n' ' ')"
+          [ -z "$remaining" ] || fail "nodes not Ready after timeout: $remaining"
+
+          echo "==> [5/6] assert dual-stack podCIDRs on every Node"
+          for node in $($KCTL get nodes -o jsonpath='{.items[*].metadata.name}'); do
+            cidrs="$($KCTL get node "$node" -o jsonpath='{range .spec.podCIDRs[*]}{@}{"\n"}{end}')"
+            echo "    ${node}: $(echo "$cidrs" | tr '\n' ' ')"
+            echo "$cidrs" | has_v4 || fail "node ${node} missing IPv4 podCIDR"
+            echo "$cidrs" | has_v6 || fail "node ${node} missing IPv6 podCIDR"
+          done
+
+          echo "==> [6/6] live pod-to-pod ICMP4 + ICMP6 across workers"
+          # Tear down stale probe Pods from a previous failed run.
+          $KCTL -n "$NAMESPACE" delete pod "$PROBE_A" "$PROBE_B" \
+            --ignore-not-found --wait=true >/dev/null 2>&1 || true
+
+          # Apply both probes in one go. podAntiAffinity on the
+          # `cni-calico-test/role: probe` label forces them onto
+          # different workers; nodeAffinity excludes control-plane.
+          cat <<EOF | $KCTL apply -f -
+          apiVersion: v1
+          kind: Pod
+          metadata:
+            name: ${PROBE_A}
+            namespace: ${NAMESPACE}
+            labels:
+              cni-calico-test/role: probe
+          spec:
+            restartPolicy: Never
+            affinity:
+              nodeAffinity:
+                requiredDuringSchedulingIgnoredDuringExecution:
+                  nodeSelectorTerms:
+                    - matchExpressions:
+                        - {key: node-role.kubernetes.io/control-plane, operator: DoesNotExist}
+              podAntiAffinity:
+                requiredDuringSchedulingIgnoredDuringExecution:
+                  - labelSelector:
+                      matchExpressions:
+                        - {key: cni-calico-test/role, operator: In, values: [probe]}
+                    topologyKey: kubernetes.io/hostname
+            containers:
+              - name: probe
+                image: ${PROBE_IMAGE}
+                imagePullPolicy: IfNotPresent
+                command: ["sleep", "3600"]
+          ---
+          apiVersion: v1
+          kind: Pod
+          metadata:
+            name: ${PROBE_B}
+            namespace: ${NAMESPACE}
+            labels:
+              cni-calico-test/role: probe
+          spec:
+            restartPolicy: Never
+            affinity:
+              nodeAffinity:
+                requiredDuringSchedulingIgnoredDuringExecution:
+                  nodeSelectorTerms:
+                    - matchExpressions:
+                        - {key: node-role.kubernetes.io/control-plane, operator: DoesNotExist}
+              podAntiAffinity:
+                requiredDuringSchedulingIgnoredDuringExecution:
+                  - labelSelector:
+                      matchExpressions:
+                        - {key: cni-calico-test/role, operator: In, values: [probe]}
+                    topologyKey: kubernetes.io/hostname
+            containers:
+              - name: probe
+                image: ${PROBE_IMAGE}
+                imagePullPolicy: IfNotPresent
+                command: ["sleep", "3600"]
+          EOF
+
+          PROBE_DEADLINE=$(( $(date +%s) + POD_TO_POD_TIMEOUT_SECONDS ))
+          for p in "$PROBE_A" "$PROBE_B"; do
+            while [ "$(date +%s)" -lt "$PROBE_DEADLINE" ]; do
+              phase="$($KCTL -n "$NAMESPACE" get pod "$p" \
+                -o jsonpath='{.status.phase}' 2>/dev/null || true)"
+              if [ "$phase" = "Running" ]; then
+                break
+              fi
+              sleep 3
+            done
+            [ "$phase" = "Running" ] || fail "${p} did not reach Running (last phase=${phase:-<unknown>})"
+          done
+
+          # Sanity-check antiaffinity actually placed them on different nodes.
+          NODE_A="$($KCTL -n "$NAMESPACE" get pod "$PROBE_A" -o jsonpath='{.spec.nodeName}')"
+          NODE_B="$($KCTL -n "$NAMESPACE" get pod "$PROBE_B" -o jsonpath='{.spec.nodeName}')"
+          [ "$NODE_A" != "$NODE_B" ] \
+            || fail "antiaffinity failed: both probes on ${NODE_A}"
+
+          B_IPS="$($KCTL -n "$NAMESPACE" get pod "$PROBE_B" \
+            -o jsonpath='{range .status.podIPs[*]}{.ip}{"\n"}{end}')"
+          B_V4="$(echo "$B_IPS" | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | head -1 || true)"
+          B_V6="$(echo "$B_IPS" | grep ':' | head -1 || true)"
+          [ -n "$B_V4" ] || fail "${PROBE_B} has no IPv4 PodIP: ${B_IPS}"
+          [ -n "$B_V6" ] || fail "${PROBE_B} has no IPv6 PodIP: ${B_IPS}"
+
+          echo "    ${PROBE_A}@${NODE_A} -> ${PROBE_B}@${NODE_B}: v4=${B_V4} v6=${B_V6}"
+
+          echo "    ICMPv4 ${PROBE_A} -> ${B_V4}"
+          $KCTL -n "$NAMESPACE" exec "$PROBE_A" -- ping -c 3 -W 5 "$B_V4" \
+            || fail "ICMPv4 ${PROBE_A} -> ${B_V4} failed"
+
+          echo "    ICMPv6 ${PROBE_A} -> ${B_V6}"
+          # busybox ping on alpine takes -6 to switch family.
+          $KCTL -n "$NAMESPACE" exec "$PROBE_A" -- ping -6 -c 3 -W 5 "$B_V6" \
+            || fail "ICMPv6 ${PROBE_A} -> ${B_V6} failed"
+
+          # Best-effort cleanup; hook-succeeded delete-policy reaps the
+          # test Pod itself, but probe Pods are not part of the release.
+          $KCTL -n "$NAMESPACE" delete pod "$PROBE_A" "$PROBE_B" \
+            --ignore-not-found --wait=false >/dev/null 2>&1 || true
+
+          echo ""
+          echo "===> ALL CNI CHECKS PASSED (dual-stack pod-to-pod across ${NODE_A} <-> ${NODE_B})"

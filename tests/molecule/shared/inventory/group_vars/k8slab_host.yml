@@ -64,6 +64,16 @@ k8s_lab_management_cluster_name: "mgmt-1"
 k8s_lab_workload_cluster_name:   "lab-default"
 k8s_lab_kubernetes_version:      "v1.35.0"   # constrained by CAPN simplestreams image set, see §8 inline
 
+# --- Workload cluster CIDRs (plan §8) -----------------------------
+#
+# Dual-stack pod / service CIDRs. Consumed by charts/capi-workload-cluster
+# (Cluster.spec.clusterNetwork — §16.3) and charts/cni-calico
+# (Installation.spec.calicoNetwork.ipPools — §17.1); both must agree.
+k8s_lab_workload_pod_cidr_v4:     "10.244.0.0/16"
+k8s_lab_workload_pod_cidr_v6:     "fd42:77:2::/56"
+k8s_lab_workload_service_cidr_v4: "10.96.0.0/16"
+k8s_lab_workload_service_cidr_v6: "fd42:77:3::/112"
+
 # --- CAPN identity Secret target namespaces (plan §8 / §13.11) ----
 #
 # CAPN v1alpha2 LXCCluster.spec.secretRef has no namespace field;

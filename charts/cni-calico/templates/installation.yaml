@@ -1,0 +1,74 @@
+{{- include "cni-calico.requireOperator" . -}}
+{{- $podCIDRs := .Values.calico.pods.cidrBlocks -}}
+{{- $v4 := index $podCIDRs 0 -}}
+{{- $v6 := index $podCIDRs 1 -}}
+---
+# Installation CR — owned by this wrapper chart, NOT by the upstream
+# tigera-operator dependency (which has `installation.enabled: false`
+# pinned in values.yaml + values.schema.json).
+#
+# Substrate-required fields hardcoded here per memory rule
+# "Chart-required values are hardcoded":
+#
+#   * cni.type: Calico, ipam.type: Calico        — chart-level invariant
+#   * calicoNetwork.bgp: Disabled                — no BGP infra on the
+#                                                  CAPN/LXD lab substrate
+#   * calicoNetwork.linuxDataplane: Nftables     — native nf_tables, no
+#                                                  iptables compat layer.
+#                                                  Pairs with kube-proxy
+#                                                  `mode: nftables` set in
+#                                                  charts/capi-cluster-class
+#                                                  KubeadmControlPlaneTemplate
+#                                                  (KubeProxyConfiguration);
+#                                                  Calico's own docs
+#                                                  require kube-proxy to
+#                                                  match dataplane mode.
+#                                                  eBPF dataplane is
+#                                                  rejected by the
+#                                                  unprivileged-LXC
+#                                                  substrate (needs bpf()
+#                                                  syscall + CLONE_NEWUSER
+#                                                  privileges that user-
+#                                                  namespaces don't grant).
+#   * ipPools[*].encapsulation: VXLAN            — the only encapsulation
+#                                                  Calico supports for IPv6
+#                                                  (IPIP is IPv4-only)
+#   * ipPools[*].nodeSelector: all()             — single-tier lab; no
+#                                                  per-pool node tagging
+#   * controlPlaneReplicas: 2                    — HA pair §2.12 contract
+#                                                  for calico-kube-controllers
+#                                                  + calico-apiserver
+#                                                  Deployments
+#
+# Operator pins `metadata.name: default` — it only watches that exact
+# name. Cluster-scoped resource, no namespace.
+apiVersion: operator.tigera.io/v1
+kind: Installation
+metadata:
+  name: default
+  labels:
+    {{- include "cni-calico.labels" . | nindent 4 }}
+spec:
+  variant: Calico
+  cni:
+    type: Calico
+    ipam:
+      type: Calico
+  calicoNetwork:
+    bgp: Disabled
+    linuxDataplane: Nftables
+    ipPools:
+      - name: default-ipv4-ippool
+        cidr: {{ $v4 | quote }}
+        encapsulation: VXLAN
+        natOutgoing: Enabled
+        nodeSelector: all()
+      - name: default-ipv6-ippool
+        cidr: {{ $v6 | quote }}
+        encapsulation: VXLAN
+        # IPv6 pod traffic is routed natively via the LXD bridge —
+        # leaving NAT off keeps egress traceable per-pod and avoids
+        # double-translating already-globally-unique addresses.
+        natOutgoing: Disabled
+        nodeSelector: all()
+  controlPlaneReplicas: 2

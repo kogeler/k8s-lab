@@ -1487,8 +1487,8 @@ k8s_lab_workload_service_cidr_v6: {type: string, default: "fd42:77:3::/112"}
 # ---- helm charts (local, этого репо) ----
 # Версии локальных chart'ов pinned; bump версии = новое имя
 # ClusterClass/*Template через name-versioning pattern (§2.9).
-k8s_lab_capi_cluster_class_chart_version:    {type: string, default: "0.4.2"}
-k8s_lab_capi_workload_cluster_chart_version: {type: string, default: "0.4.2"}
+k8s_lab_capi_cluster_class_chart_version:    {type: string, default: "0.5.0"}
+k8s_lab_capi_workload_cluster_chart_version: {type: string, default: "0.5.0"}
 ```
 
 ## 8a. Verified version log
@@ -1837,8 +1837,18 @@ Vagrant VM, не libvirt-сеть):
   живёт на LXD-bridge IPv6, недоступном с runner'а, поэтому
   in-cluster jump-pod единственный путь. Единственный shell
   fallback — `helm test` (нет нативного эквивалента в
-  `kubernetes.core`). Расширения сценария на Phase 5.1+ (CNI
-  + add-ons + pivot + HA pair assertions §2.12) — последующие
+  `kubernetes.core`). **Step 13 (2026-04-26) расширил сценарий
+  до Phase 5.1 CNI** (см. §17.1 / §17.5 Step 13 acceptance):
+  converge ставит helm CLI на VM, пакетирует `charts/cni-calico/`
+  на runner'е (`helm dep update` + `helm package`), copy .tgz
+  на VM, polling и материализация workload kubeconfig в
+  `/opt/capi-lab/etc/<cluster>.kubeconfig`, install Calico через
+  `kubernetes.core.helm` на VM (workload API runner-нереachable,
+  helm обязан запускаться на VM); verify добавляет `helm test
+  cni-calico` (6-фазный chart-level acceptance — Calico Pods
+  Ready, workload Nodes Ready=True, dual-stack `podCIDRs`,
+  pod-to-pod ICMP4/ICMP6). Расширения на MetalLB (Phase 5.1
+  external L2) + pivot + HA pair assertions §2.12 — последующие
   Step'ы.
 
 ### Molecule harness style contract

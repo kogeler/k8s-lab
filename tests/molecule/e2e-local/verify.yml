@@ -12,6 +12,11 @@
     _workload_kubeconfig: "{{ _artifacts_root }}/clusters/{{ _workload_cluster_name }}.kubeconfig"
     _kubernetes_version: "{{ k8s_lab_kubernetes_version }}"
     _snapshot_pod_name: "{{ _workload_cluster_name }}-verify-snapshot"
+    # cni-calico release lives on the workload cluster (tigera-operator
+    # namespace); helm test is run on the VM because workload API is
+    # not runner-reachable (capi-int IPv6 endpoint).
+    _vm_helm_binary: "/opt/capi-lab/bin/helm"
+    _vm_workload_kubeconfig: "/opt/capi-lab/etc/{{ _workload_cluster_name }}.kubeconfig"
     _capi_kinds:
       - { api_version: "cluster.x-k8s.io/v1beta2", kind: "Cluster" }
       - { api_version: "controlplane.cluster.x-k8s.io/v1beta2", kind: "KubeadmControlPlane" }
@@ -40,6 +45,29 @@
           - 35m
       delegate_to: localhost
       register: _helm_test
+
+    # cni-calico release lives on the workload cluster — helm runs on
+    # the VM (workload API not runner-reachable). Same reasoning as the
+    # workload-chart test for `changed_when` masking: helm test creates
+    # ephemeral pods, `Phase: Succeeded` reaps them via
+    # `hook-delete-policy: hook-succeeded` — re-runnable but mutating.
+    - name: "Verify | e2e-local | run cni-calico helm test"
+      ansible.builtin.command:
+        argv:
+          - "{{ _vm_helm_binary }}"
+          - test
+          - cni-calico
+          - --namespace
+          - tigera-operator
+          - --kubeconfig
+          - "{{ _vm_workload_kubeconfig }}"
+          - --logs
+          - --timeout
+          - 15m
+      register: _cni_helm_test
+      # /opt/capi-lab/etc/<cluster>.kubeconfig is mode 0600 root-owned
+      # (materialised by converge); helm needs to read it.
+      become: true
 
     - name: "Verify | e2e-local | snapshot bootstrap-side CAPI objects"
       kubernetes.core.k8s_info:
@@ -201,6 +229,7 @@
       ansible.builtin.debug:
         msg:
           - "{{ _helm_test.stdout_lines | default([]) }}"
+          - "{{ _cni_helm_test.stdout_lines | default([]) }}"
           - >-
             {{ _capi_snapshot.results
                | map(attribute='resources')

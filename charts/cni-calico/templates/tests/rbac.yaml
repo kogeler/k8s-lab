@@ -1,0 +1,66 @@
+{{/*
+Test ServiceAccount + ClusterRole + ClusterRoleBinding (PLAN §17.3).
+
+Scope: enough for templates/tests/cni-ready.yaml to:
+  * read Pods cluster-wide (calico-system + tigera-operator);
+  * read Nodes (Ready condition + spec.podCIDRs assertion);
+  * read Namespaces (gating on calico-system existing);
+  * read Deployments / DaemonSets in apps (rollout-status / wait gating);
+  * create / delete the two ephemeral probe Pods in `.Release.Namespace`;
+  * `kubectl exec` into those probe Pods (pods/exec subresource).
+
+These RBAC objects are **regular release resources** (no
+`helm.sh/hook: test` annotation), installed at `helm install` time
+and torn down only on `helm uninstall`. The hook annotation was
+intentionally removed: `helm test` walks the manifest list looking
+for hook-annotated resources to surface as test results, and fetches
+pod logs for each. Annotating non-Pod RBAC objects as test resources
+makes `helm test` exit non-zero with `unable to get pod logs for ...`
+even when the actual test Pod's `Phase: Succeeded` — a cosmetic Helm
+quirk that breaks every CI driver gating on the exit code.
+*/}}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ .Release.Name }}-test
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "cni-calico.labels" . | nindent 4 }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ .Release.Name }}-test
+  labels:
+    {{- include "cni-calico.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["nodes", "namespaces"]
+    verbs: ["get", "list"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "create", "delete"]
+  - apiGroups: [""]
+    resources: ["pods/exec"]
+    verbs: ["create"]
+  # `kubectl wait deploy/...`, `kubectl rollout status ds/...`, etc. —
+  # the test script polls tigera-operator Deployment + calico-system
+  # DaemonSets/Deployments to gate on convergence.
+  - apiGroups: ["apps"]
+    resources: ["deployments", "daemonsets"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ .Release.Name }}-test
+  labels:
+    {{- include "cni-calico.labels" . | nindent 4 }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ .Release.Name }}-test
+    namespace: {{ .Release.Namespace }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ .Release.Name }}-test

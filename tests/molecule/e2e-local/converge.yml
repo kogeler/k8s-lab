@@ -9,11 +9,19 @@
     _bootstrap_kubeconfig: "{{ _artifacts_root }}/bootstrap.kubeconfig"
     _cluster_class_chart: "{{ _repo_root }}/charts/capi-cluster-class"
     _workload_chart: "{{ _repo_root }}/charts/capi-workload-cluster"
+    _cni_calico_chart: "{{ _repo_root }}/charts/cni-calico"
     _workload_namespace: "capi-clusters"
     _cluster_class_namespace: "capi-system"
     _workload_cluster_name: "{{ k8s_lab_workload_cluster_name }}"
     _kubernetes_version: "{{ k8s_lab_kubernetes_version }}"
     _infrastructure_secret_name: "{{ k8s_lab_infrastructure_secret_name | default('incus-identity') }}"
+    # Helm CLI on the VM. Chart contracts target the Helm 3 SDK
+    # (PLAN §16.3 hashicorp/helm 3.x compat); the latest 3.x line
+    # is what we install here. Bump on the same cadence as
+    # k8s_lab_helm_provider_version (§8a).
+    _helm_cli_version: "3.20.0"
+    _vm_helm_binary: "/opt/capi-lab/bin/helm"
+    _vm_workload_kubeconfig: "/opt/capi-lab/etc/{{ _workload_cluster_name }}.kubeconfig"
   tasks:
     - name: "Converge | e2e-local | build bootstrap management cluster + artifacts"
       ansible.builtin.include_role:
@@ -58,3 +66,118 @@
       become: false
       vars:
         ansible_python_interpreter: "{{ ansible_playbook_python }}"
+
+    # ---- CNI delivery ------------------------------------------------
+    # The workload-cluster API endpoint is published on the LXD-bridge
+    # IPv6 (capi-int) and is reachable only from inside the VM, not
+    # from the runner. So everything below runs on the VM (no
+    # `delegate_to: localhost`) — install helm CLI, ship the chart
+    # tree, materialise the workload kubeconfig from the bootstrap-
+    # side Secret, and `helm install` against it on the VM.
+
+    - name: "Converge | e2e-local | install helm CLI on VM"
+      ansible.builtin.unarchive:
+        src: "https://get.helm.sh/helm-v{{ _helm_cli_version }}-linux-amd64.tar.gz"
+        dest: "{{ _vm_helm_binary | dirname }}"
+        remote_src: true
+        extra_opts:
+          - "--strip-components=1"
+          - "--wildcards"
+          - "linux-amd64/helm"
+        creates: "{{ _vm_helm_binary }}"
+        mode: "0755"
+        owner: root
+        group: root
+
+    # Package the chart (with its tigera-operator subchart bundled)
+    # on the runner, then copy a single .tgz to the VM. Avoids
+    # `ansible.posix.synchronize`'s `dest_port` re-templating bug
+    # against the env-driven `ansible_port`, and avoids shipping the
+    # subchart cache that lives in the runner-side gitignore.
+    - name: "Converge | e2e-local | read cni-calico Chart.yaml on runner"
+      ansible.builtin.slurp:
+        src: "{{ _cni_calico_chart }}/Chart.yaml"
+      register: _cni_calico_chart_yaml
+      delegate_to: localhost
+      become: false
+
+    - name: "Converge | e2e-local | derive cni-calico chart version"
+      ansible.builtin.set_fact:
+        _cni_calico_chart_version: >-
+          {{ (_cni_calico_chart_yaml.content | b64decode | from_yaml).version }}
+
+    - name: "Converge | e2e-local | helm dependency update on runner"
+      ansible.builtin.command:
+        argv:
+          - helm
+          - dependency
+          - update
+          - "{{ _cni_calico_chart }}"
+      delegate_to: localhost
+      become: false
+      changed_when: true
+
+    - name: "Converge | e2e-local | helm package cni-calico on runner"
+      ansible.builtin.command:
+        argv:
+          - helm
+          - package
+          - "{{ _cni_calico_chart }}"
+          - --destination
+          - "{{ _artifacts_root }}"
+      delegate_to: localhost
+      become: false
+      changed_when: true
+
+    - name: "Converge | e2e-local | copy cni-calico chart tarball to VM"
+      ansible.builtin.copy:
+        src: "{{ _artifacts_root }}/cni-calico-{{ _cni_calico_chart_version }}.tgz"
+        dest: "/opt/capi-lab/etc/cni-calico-{{ _cni_calico_chart_version }}.tgz"
+        mode: "0644"
+        owner: root
+        group: root
+
+    - name: "Converge | e2e-local | wait for workload kubeconfig Secret on bootstrap"
+      kubernetes.core.k8s_info:
+        kubeconfig: "{{ _bootstrap_kubeconfig }}"
+        api_version: v1
+        kind: Secret
+        namespace: "{{ _workload_namespace }}"
+        name: "{{ _workload_cluster_name }}-kubeconfig"
+      register: _converge_wl_kc_secret
+      until: >-
+        (_converge_wl_kc_secret.resources | length) == 1
+        and ((_converge_wl_kc_secret.resources[0].data.value | default('')) | length) > 0
+      retries: 60
+      delay: 10
+      delegate_to: localhost
+      become: false
+      vars:
+        ansible_python_interpreter: "{{ ansible_playbook_python }}"
+
+    - name: "Converge | e2e-local | materialise workload kubeconfig on VM"
+      ansible.builtin.copy:
+        dest: "{{ _vm_workload_kubeconfig }}"
+        content: "{{ _converge_wl_kc_secret.resources[0].data.value | b64decode }}"
+        mode: "0600"
+        owner: root
+        group: root
+
+    - name: "Converge | e2e-local | install CNI Calico on workload cluster"
+      kubernetes.core.helm:
+        binary_path: "{{ _vm_helm_binary }}"
+        kubeconfig: "{{ _vm_workload_kubeconfig }}"
+        name: cni-calico
+        chart_ref: "/opt/capi-lab/etc/cni-calico-{{ _cni_calico_chart_version }}.tgz"
+        release_namespace: tigera-operator
+        create_namespace: true
+        wait: true
+        wait_timeout: 10m
+        values:
+          calico:
+            pods:
+              cidrBlocks:
+                - "{{ k8s_lab_workload_pod_cidr_v4 }}"
+                - "{{ k8s_lab_workload_pod_cidr_v6 }}"
+          tests:
+            kubectlVersion: "{{ _kubernetes_version }}"

@@ -101,6 +101,43 @@ spec:
               {{- toYaml . | nindent 14 }}
               {{- end }}
         preKubeadmCommands:
+          # Substrate-required: pin kube-proxy to nftables mode so the
+          # workload-cluster CNI (charts/cni-calico Installation CR) can
+          # run with `linuxDataplane: Nftables`. Calico's docs state
+          # that to use Calico in nftables mode, kube-proxy must also
+          # be in nftables mode — a fresh kubeadm cluster defaults to
+          # `mode: iptables`, so we append a KubeProxyConfiguration
+          # document to the kubeadm config file before `kubeadm init`
+          # consumes it. KubeProxyConfiguration is only honoured by
+          # `kubeadm init`; CP joins and worker joins read the
+          # `kube-system/kube-proxy` ConfigMap that init populated.
+          # Hence this block runs only when the init config file is
+          # present (workers / CP-joins use kubeadm-join-config.yaml).
+          - |
+            set -eu
+            if [ -f /run/kubeadm/kubeadm.yaml ] && [ ! -f /run/kubeadm/kubeadm-join-config.yaml ]; then
+              if ! grep -q '^kind: KubeProxyConfiguration$' /run/kubeadm/kubeadm.yaml; then
+                cat >> /run/kubeadm/kubeadm.yaml <<'EOF'
+            ---
+            apiVersion: kubeproxy.config.k8s.io/v1alpha1
+            kind: KubeProxyConfiguration
+            mode: nftables
+            conntrack:
+              # Disable kube-proxy's conntrack management. Default
+              # (`maxPerCore: 32768`, `min: 131072`) leads kube-proxy
+              # to write `/sys/module/nf_conntrack/parameters/hashsize`
+              # at startup; that path is host-global and not writable
+              # from inside an unprivileged LXC user namespace, so the
+              # kube-proxy Pod crashloops with `permission denied`.
+              # The kernel default conntrack hashsize is sufficient for
+              # a lab-scale cluster, and any production consumer that
+              # needs explicit tuning should set it host-side via the
+              # `nf_conntrack` module's modprobe parameter.
+              maxPerCore: 0
+              min: 0
+            EOF
+              fi
+            fi
           # Substrate-required: LXD DHCP/SLAAC addresses are dynamic,
           # but kubelet on bare-metal-style dual-stack nodes must be
           # started with both node IPs. Keep the same family priority
