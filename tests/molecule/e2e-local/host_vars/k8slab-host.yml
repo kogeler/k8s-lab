@@ -1,0 +1,4 @@
+---
+# LXD owns the pool disk in the full e2e path. `prepare-clean-disk.yml`
+# leaves no mounted btrfs filesystem for base_system to assert.
+base_system_btrfs_pool_required: false

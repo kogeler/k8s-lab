@@ -1,0 +1,15 @@
+---
+- name: "Prepare | e2e-local"
+  hosts: all
+  gather_facts: true
+  become: true
+  vars:
+    _molecule_project_dir: "{{ lookup('ansible.builtin.env', 'MOLECULE_PROJECT_DIRECTORY') }}"
+  tasks:
+    - name: "Prepare | e2e-local | shared base"
+      ansible.builtin.include_tasks:
+        file: "{{ _molecule_project_dir }}/shared/tasks/prepare.yml"
+
+    - name: "Prepare | e2e-local | clean pool disk"
+      ansible.builtin.include_tasks:
+        file: "{{ _molecule_project_dir }}/shared/tasks/prepare-clean-disk.yml"

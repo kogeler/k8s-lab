@@ -1,0 +1,56 @@
+---
+# Full local e2e scenario.
+#
+# Converge builds the bootstrap management cluster through the existing
+# role meta-chain (`export_artifacts`), then installs the local
+# ClusterClass and workload Cluster Helm charts against that bootstrap
+# cluster. Verify runs the workload chart's `helm test` hook and a few
+# post-hook state snapshots.
+
+dependency:
+  name: galaxy
+  options:
+    requirements-file: ../../../ansible/requirements.yml
+
+driver:
+  name: default
+  options:
+    managed: false
+
+platforms:
+  - name: k8slab-host
+    groups:
+      - k8slab_host
+
+provisioner:
+  name: ansible
+  config_options:
+    defaults:
+      interpreter_python: auto_silent
+      stdout_callback: ansible.builtin.default
+      result_format: yaml
+      forks: 5
+      callbacks_enabled: ansible.posix.profile_tasks
+    ssh_connection:
+      pipelining: true
+  inventory:
+    links:
+      group_vars: ../shared/inventory/group_vars
+      host_vars:  host_vars
+  playbooks:
+    prepare:  prepare.yml
+    converge: converge.yml
+    verify:   verify.yml
+
+scenario:
+  name: e2e_local
+  test_sequence:
+    - dependency
+    - create
+    - prepare
+    - converge
+    - verify
+    - destroy
+
+verifier:
+  name: ansible

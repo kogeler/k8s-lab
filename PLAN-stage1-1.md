@@ -25,7 +25,7 @@ PLAN-stage1-7.md ................. §20..§22 (Stage 1 meta: out-of-scope, self-
 
 Этот раздел охватывает Ansible-роли Stage 1, которые уже реализованы и
 прогнаны end-to-end в локальном Vagrant/libvirt-контуре по состоянию на
-Step 11 (2026-04-26):
+Step 12 (2026-04-26):
 
 * §13.1 `base_system` (Step 1 + Step 5 required-values refactor);
 * §13.2 `lxd_host` (Step 2);
@@ -38,8 +38,11 @@ Step 11 (2026-04-26):
 * §13.6 `lxd_profiles` (Step 3 lean baseline + Step 4 full CAPN
   unprivileged kubeadm baseline + Step 9 cloud-init vendor-data для
   capi-worker/capi-controlplane + **Step 11 `host-boot` disk device
-  на capi-controlplane/capi-worker — read-only `/boot` для kubeadm
-  SystemVerification на unprivileged-LXC nodes**);
+  на capi-controlplane (read-only `/boot` для kubeadm
+  SystemVerification на unprivileged-LXC nodes) + Step 12 тот же
+  `host-boot` device на capi-worker — `kubeadm join` preflight на
+  worker'е читает `/boot/config-<uname-r>` той же кодовой ветки, что
+  и `kubeadm init` на CP**);
 * §13.7 `lxd_bootstrap_instance` (Step 3 + Step 5 required-profiles
   refactor + **Step 9 image alias → `debian/13/cloud`**);
 * §13.8 `binary_fetch` (Step 4 — отложенная Phase 1.5 / §15.1);
@@ -121,6 +124,99 @@ substrate-required `kubeletExtraArgs: [feature-gates=KubeletInUserNamespace=true
 2 workers) **остаётся не зелёным** на dual-stack apiserver bind +
 admin.conf endpoint family mismatch — open issue, scope Step 12+
 (см. §16.7 Acceptance status note).
+
+**Step 12 (2026-04-26) — закрытие dual-stack acceptance gap'а из Step
+11 + e2e_local Molecule driver.** Оба чарта подняты до 0.4.2.
+
+* `charts/capi-cluster-class/` — substrate-required dual-stack
+  hardening (см. §16.2 Step 12 расширения для деталей):
+  * `KubeadmControlPlaneTemplate` всегда эмитит
+    `clusterConfiguration.apiServer.extraArgs.bind-address: "::"` и
+    `controllerManager.extraArgs.allocate-node-cidrs: "true"` —
+    apiserver слушает на обоих family, KCM раздаёт podCIDR per-Node.
+  * Хардкод `kubeletExtraArgs.provider-id: lxc:///{{ v1.local_hostname }}`
+    в обоих kubeadm-template'ах (`KubeadmControlPlaneTemplate` и
+    `KubeadmConfigTemplate` worker) — без него ноды регистрируются
+    с пустым `Node.spec.providerID` и CCM-style features ломаются.
+  * Substrate `preKubeadmCommands` на обоих template'ах patch'ит
+    `/run/kubeadm/kubeadm.yaml` (init / join config) на
+    `kubeletExtraArgs[node-ip]=<v4>,<v6>` от eth0; LXD выдаёт DHCP/
+    SLAAC адреса динамически, статически их в template не
+    зашьёшь.
+  * ClusterClass `patches` блок propagate'ит
+    `Cluster.spec.clusterNetwork.{pods,services}` в kubeadm
+    `apiServer.extraArgs.service-cluster-ip-range`,
+    `controllerManager.extraArgs.{cluster-cidr,service-cluster-ip-range}`
+    через CAPI v1beta2 `valueFrom.template`. clusterNetwork остаётся
+    Cluster-CR полем (§16.3); ClusterClass его не дублирует.
+  * `LXCClusterTemplate.customHAProxyConfigTemplate` зашит как
+    substrate-required dual-bind v4+v6 frontend (CAPN v0.8.x default
+    haproxy.cfg биндится только на v4; рабочий dual-stack endpoint
+    требует ручного template'а). Поле убрано из `values.yaml` —
+    больше не consumer-tunable.
+  * Reserved-arg guards: `apiServerExtraArgs` отбивает
+    `bind-address`, `service-cluster-ip-range`;
+    `controllerManagerExtraArgs` отбивает `allocate-node-cidrs`,
+    `cluster-cidr`, `service-cluster-ip-range`; `kubeletExtraArgs`
+    отбивает `feature-gates`, `node-ip`, `provider-id`. Попытка
+    consumer'а переопределить любой из этих ключей даёт `helm
+    template fail` с явным сообщением.
+* `charts/capi-workload-cluster/` — `templates/tests/cluster-ready.yaml`
+  Helm test hook расширен 7 → 10 фаз (детали в §16.3 Step 12
+  расширения):
+  * Phase 1 теперь дополнительно ассертит, что в LXCCluster
+    materialised dual-bind v4/v6 HAProxy template (regression-
+    guard на Step 12 chart-side hardcode);
+  * Phase 2 ждёт `Cluster.spec.controlPlaneEndpoint` materialised,
+    делает workload API `/livez` smoke через выбранный endpoint
+    (proves haproxy LB → CP serving работает на обоих family),
+    подтверждает per-Node `providerID = lxc:///<node>`, dual-stack
+    `InternalIP` и `podCIDR`'ы, плюс runtime probe — создаёт
+    `Service` с `ipFamilyPolicy: RequireDualStack` и проверяет, что
+    allocator выдаёт оба `clusterIPs` (v4 + v6). Replica counts
+    переведены с `>=` на `==` — точная топология.
+* `ansible/roles/lxd_profiles/vars/main.yml` — capi-worker профиль
+  получил `host-boot` read-only `/boot` mount (см. §13.6 — Step 11
+  закрыл CP, Step 12 закрыл worker, прежний Plan-описание
+  опережало код).
+* `tests/molecule/lxd-profiles/verify.yml` расширен:
+  ассертит `host-boot` device на обоих профилях; универсальный
+  device-equality predicate добавил проверки `source` и `readonly`
+  для disk devices.
+* `tests/molecule/e2e-local/` — новый Full E2E Molecule сценарий
+  (§9.4 last bullet, §10.2 driver). `converge.yml` инклюдит
+  `export_artifacts` (вся Phase 0..4 цепочка), затем нативно
+  устанавливает оба чарта через `kubernetes.core.helm`.
+  `verify.yml` гоняет workload chart `helm test` (35-min budget),
+  снимает CAPI snapshot через `kubernetes.core.k8s_info`,
+  материализует workload kubeconfig из bootstrap Secret через
+  `k8s_info` + `ansible.builtin.copy`, и снимает workload-side
+  `kubectl get nodes -o wide` через короткоживущий Pod
+  (`kubernetes.core.k8s` → `k8s_info` polling → `k8s_log` →
+  `k8s state: absent`); workload API endpoint живёт на
+  LXD-bridge IPv6, недоступном с runner'а, поэтому in-cluster
+  jump-pod единственный путь. Единственный shell — это `helm
+  test` (нет нативного эквивалента); `changed_when: false` НЕ
+  выставлен, так как `helm test` создаёт ephemeral pods.
+* `scripts/molecule_run.py` — `destroy` action теперь
+  short-circuit'ит `make up` + `vagrant ssh-config` discovery
+  (можно запускать destroy на stale state без живой VM).
+* Корневой `Makefile` — починен typo в `test-local-e2e` target
+  (`e2e_local-vagrant-*` → `e2e-local-vagrant-*`); `clean-local`
+  более не вызывает `destroy-all` Molecule wrapper'а (он сам
+  падает без живой VM на новых сценариях), вместо этого inline
+  `find $HOME/.ansible/tmp -name 'molecule.*' -exec rm -rf {} +`.
+
+End-to-end результат: `make -C tests/molecule e2e-local-vagrant-converge`
+→ `failed=0`; `make -C tests/molecule e2e-local-vagrant-verify` →
+`failed=0`, helm test выводит `cp=3/3 worker=2/2 total=5/5 ALL
+TOPOLOGY CHECKS PASSED`. Ноды видны через workload kubeconfig,
+у каждой dual-stack `InternalIP` (v4+v6), `providerID
+lxc:///<node>`, dual-stack `podCIDR`'ы (`10.244.x.x/24` +
+`fd42:77:2:x::/64`); workload allocator выдаёт dual-stack
+ClusterIP (`10.96.x.x` + `fd42:77:3:x::`). Ноды остаются
+`NotReady` — CNI ставит Phase 5.1 (§17.4) отдельным Helm
+release'ом, это ожидаемо.
 
 В процессе работы chart-level test обнаружил и закрыл серию
 substrate-required deviation'ов:
@@ -236,15 +332,28 @@ Vagrant VM):
   materialized, CAPN провизионирует LB + первый CP LXC instance
   (cloud-init проходит preflight, kubeadm генерит certs, static
   pods (etcd/apiserver/cm/scheduler) поднимаются healthy);
-* Chart-level **не зелёный** — `helm test` валится на `kubeadm
-  upload-config/kubeadm` phase (`client rate limiter Wait returned
-  an error: context deadline exceeded` при создании admin
-  ClusterRoleBinding). Root cause: kube-apiserver listens
-  `*:6443` (IPv4 wildcard, kubeadm default `--bind-address=0.0.0.0`),
-  но admin.conf и `Cluster.spec.controlPlaneEndpoint` (CAPN
+* Chart-level **не зелёный** в Step 11 — `helm test` валится на
+  `kubeadm upload-config/kubeadm` phase (`client rate limiter Wait
+  returned an error: context deadline exceeded` при создании admin
+  ClusterRoleBinding). Root cause: kube-apiserver listens `*:6443`
+  (IPv4 wildcard, kubeadm default `--bind-address=0.0.0.0`), но
+  admin.conf и `Cluster.spec.controlPlaneEndpoint` (CAPN
   auto-derived) указывают на IPv6 endpoint CP-ноды (или LB) —
-  family mismatch. Open issue scope Step 12+ (см. §16.7
-  Acceptance status).
+  family mismatch. **Закрыто Step 12** (apiserver
+  `--bind-address=::` + dual-bind v4/v6 HAProxy template +
+  patches пробрасывают service/pod CIDR'ы из Cluster CR'а в
+  kubeadm; см. §16.7 Step 12 Acceptance status).
+
+Test evidence Step 12 (chart-level acceptance + Full E2E Molecule
+сценарий на той же VM):
+* `e2e-local` converge — `failed=0`, оба чарта применяются
+  идемпотентно через `kubernetes.core.helm`;
+* `e2e-local` verify — `failed=0`, `helm test` (10 фаз) проходит
+  до конца: `cp=3/3 worker=2/2 ALL TOPOLOGY CHECKS PASSED`,
+  workload `/livez` отвечает через выбранный CP endpoint,
+  per-Node `providerID = lxc:///<node>`, dual-stack
+  `InternalIP`/`podCIDR`'ы, и `RequireDualStack` ClusterIP
+  Service получает оба адреса (v4 + v6).
 
 ## 13.1. `base_system`
 
@@ -632,15 +741,18 @@ _lxd_network_int_managed_required_config:
 **Статус: выполнено в Step 3 (2026-04-22) — lean subset baseline;
 доведено до полного CAPN unprivileged kubeadm baseline в Step 4 +
 Step 9 cloud-init vendor-data на capi-controlplane/capi-worker +
-Step 11 read-only `host-boot` disk device (host's /boot mount-in)
-на capi-controlplane/capi-worker для kubeadm SystemVerification
-доступа к `/boot/config-<uname-r>`
-(2026-04-22) после того как `bootstrap_k3s` (§13.9) определил
-точные requirements; cloud-init vendor-data baseline для eth1
-bring-up на `capi-controlplane` / `capi-worker` выполнен в Step 9
-(2026-04-24) — см. «Step 9 расширения» ниже. `boot-dir` disk
-mapping `/boot` всё ещё отложен до Phase 5+ (CAPN reference profile
-упоминает его для kubeadm-init, но `bootstrap_k3s` его не требует).**
+Step 11 (2026-04-26) read-only `host-boot` disk device (host's
+`/boot` mount-in) на capi-controlplane для kubeadm
+SystemVerification доступа к `/boot/config-<uname-r>` на
+unprivileged-LXC; **Step 12 (2026-04-26) расширил тот же
+`host-boot` device на capi-worker** — `kubeadm join` preflight
+выполняет ту же `SystemVerification` ветку, что и `kubeadm init`,
+и без `/boot` mount-in валится на отсутствии файла kernel
+build-config (Debian 13 kernel build без `CONFIG_IKCONFIG`,
+`/proc/config.gz` физически не существует). Cloud-init
+vendor-data baseline для eth1 bring-up на `capi-controlplane` /
+`capi-worker` выполнен в Step 9 (2026-04-24) — см. «Step 9
+расширения» ниже.**
 
 Обязательные profiles:
 

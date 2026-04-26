@@ -126,6 +126,21 @@ def main(argv: list[str]) -> int:
         )
 
     print(f"[molecule_run] scenario={scenario} action={action}")
+
+    if action == "destroy":
+        print("[molecule_run] destroy action: skipping `make up` and SSH discovery")
+        env = os.environ.copy()
+        env.update(
+            {
+                # Point Molecule at our non-standard scenario layout —
+                # `tests/molecule/<scenario>/` instead of `molecule/<scenario>/`.
+                "MOLECULE_GLOB": str(MOLECULE_DIR / "*" / "molecule.yml"),
+            }
+        )
+        cmd = [molecule_bin, action, "-s", scenario, *extra]
+        os.chdir(MOLECULE_DIR)
+        os.execvpe(cmd[0], cmd, env)  # noqa: returns only on failure
+
     print("[molecule_run] ensuring libvirt networks + host VM via `make up`")
     run_make("up")
 

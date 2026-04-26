@@ -61,7 +61,7 @@
       "minProperties": 1,
       "maxProperties": 1,
       "properties": {
-        "lxc":      { "type": "object" },
+        "lxc":      { "$ref": "#/$defs/lxcLoadBalancer" },
         "oci":      { "type": "object" },
         "ovn":      { "type": "object" },
         "kubeVIP":  { "type": "object" },
@@ -111,6 +111,31 @@
       "properties": {
         "ref":         { "type": "string", "minLength": 1 },
         "fingerprint": { "type": "string" }
+      }
+    },
+    "lxcLoadBalancer": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "image": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "flavor": {
+          "type": "string",
+          "minLength": 1
+        },
+        "target": {
+          "type": "string",
+          "minLength": 1
+        },
+        "disableHealthzCheck": {
+          "type": "boolean"
+        },
+        "profilesExtra": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        }
       }
     },
     "deviceList": {

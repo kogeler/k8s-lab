@@ -1,5 +1,10 @@
 {{- include "capi-cluster-class.requireKubeadm" . -}}
 {{- $w := .Values.worker -}}
+{{- range $arg := $w.kubeletExtraArgs }}
+{{- if or (eq $arg.name "feature-gates") (eq $arg.name "node-ip") (eq $arg.name "provider-id") }}
+{{- fail (printf "worker.kubeletExtraArgs must not set reserved arg %q; this chart hardcodes feature-gates, provider-id, and dynamic dual-stack node-ip for the unprivileged-LXC substrate." $arg.name) }}
+{{- end }}
+{{- end }}
 ---
 apiVersion: bootstrap.cluster.x-k8s.io/v1beta2
 kind: KubeadmConfigTemplate
@@ -28,11 +33,51 @@ spec:
           kubeletExtraArgs:
             - name: feature-gates
               value: "KubeletInUserNamespace=true"
+            - name: provider-id
+              value: "lxc:///{{ "{{" }} v1.local_hostname {{ "}}" }}"
             {{- with $w.kubeletExtraArgs }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
-      {{- with $w.preKubeadmCommands }}
       preKubeadmCommands:
+        # Substrate-required: LXD DHCP/SLAAC addresses are dynamic,
+        # but kubelet on bare-metal-style dual-stack nodes must be
+        # started with both node IPs. Keep the same family priority
+        # as bootstrap k3s: eth0 IPv4 first, eth0 IPv6 second.
+        - |
+          set -eu
+          iface=eth0
+          for _ in $(seq 1 120); do
+            v4="$(ip -o -4 addr show dev "$iface" scope global | awk '{split($4,a,"/"); print a[1]; exit}')"
+            v6="$(ip -o -6 addr show dev "$iface" scope global | awk '$4 !~ /^fe80:/ && $0 !~ /(temporary|deprecated|tentative)/ {split($4,a,"/"); print a[1]; exit}')"
+            if [ -n "$v4" ] && [ -n "$v6" ]; then
+              break
+            fi
+            sleep 1
+          done
+          test -n "$v4"
+          test -n "$v6"
+          kubeadm_config=/run/kubeadm/kubeadm.yaml
+          if [ ! -f "$kubeadm_config" ] && [ -f /run/kubeadm/kubeadm-join-config.yaml ]; then
+            kubeadm_config=/run/kubeadm/kubeadm-join-config.yaml
+          fi
+          test -f "$kubeadm_config"
+          if ! grep -q '^[[:space:]]*- name: node-ip$' "$kubeadm_config"; then
+            awk -v node_ip="${v4},${v6}" '
+              /^[[:space:]]*- name: feature-gates[[:space:]]*$/ {
+                item_indent = substr($0, 1, index($0, "-") - 1)
+              }
+              { print }
+              /^[[:space:]]*value: "?KubeletInUserNamespace=true"?[[:space:]]*$/ && item_indent != "" && !done {
+                value_indent = substr($0, 1, index($0, "v") - 1)
+                print item_indent "- name: node-ip"
+                print value_indent "value: \"" node_ip "\""
+                done = 1
+              }
+              END { if (!done) exit 42 }
+            ' "$kubeadm_config" > "$kubeadm_config.tmp"
+            mv "$kubeadm_config.tmp" "$kubeadm_config"
+          fi
+      {{- with $w.preKubeadmCommands }}
         {{- toYaml . | nindent 8 }}
       {{- end }}
       {{- with $w.postKubeadmCommands }}

@@ -572,7 +572,7 @@ reconciliation.
 Следствие:
 
 * в этом repo agent должен строить код вокруг prebuilt kubeadm image path;
-* install-kubeadm-at-runtime режим не является CR-полем в CAPN v1alpha2 API — он моделируется добавлением `preKubeadmCommands` в KCPT/KCT (chart §16.2 принимает их через `controlPlane.preKubeadmCommands` / `worker.preKubeadmCommands`, default пустой). MVP path использует prebuilt образы и пустой список;
+* install-kubeadm-at-runtime режим не является CR-полем в CAPN v1alpha2 API — он моделируется добавлением `preKubeadmCommands` в KCPT/KCT (chart §16.2 принимает их через `controlPlane.preKubeadmCommands` / `worker.preKubeadmCommands`, consumer-facing default — пустой список). Substrate-required `preKubeadmCommand` (dual-stack `node-ip` patch для kubeadm config'а — см. §16.2) рендерится всегда отдельно от consumer values, consumer'у его трогать не нужно. MVP path использует prebuilt образы и пустой consumer-список;
 * риск использования evaluation-oriented CAPN images должен быть явно отмечен и не маскироваться под production-ready supply path;
 * **cloud-init-capability — substrate-required для любого образа**,
   идущего в `k8s_lab_images_controlplane` / `k8s_lab_images_worker`.
@@ -1487,8 +1487,8 @@ k8s_lab_workload_service_cidr_v6: {type: string, default: "fd42:77:3::/112"}
 # ---- helm charts (local, этого репо) ----
 # Версии локальных chart'ов pinned; bump версии = новое имя
 # ClusterClass/*Template через name-versioning pattern (§2.9).
-k8s_lab_capi_cluster_class_chart_version:    {type: string, default: "0.3.0"}
-k8s_lab_capi_workload_cluster_chart_version: {type: string, default: "0.3.0"}
+k8s_lab_capi_cluster_class_chart_version:    {type: string, default: "0.4.2"}
+k8s_lab_capi_workload_cluster_chart_version: {type: string, default: "0.4.2"}
 ```
 
 ## 8a. Verified version log
@@ -1820,7 +1820,26 @@ Vagrant VM, не libvirt-сеть):
 
 * `e2e_local` — полный путь, включая повторение HA pair assertions
   §2.12 на финальном workload cluster после pivot (если
-  `k8s_lab_pivot_enabled=true`).
+  `k8s_lab_pivot_enabled=true`). **Статус: первая итерация
+  выполнена в Step 12 (2026-04-26)** — covers Phase 0..5
+  (substrate → bootstrap k3s → CAPI ClusterClass + workload
+  Cluster) на одной VM. `converge.yml` инклюдит роль
+  `export_artifacts` (вся Phase 0..4 цепочка через её meta-deps)
+  и устанавливает оба chart'а через `kubernetes.core.helm`;
+  `verify.yml` гоняет `helm test` workload chart'а (10-фазная
+  dual-stack acceptance драйвер из §16.3), снимает CAPI
+  snapshot через `kubernetes.core.k8s_info`, материализует
+  workload kubeconfig из bootstrap Secret через `k8s_info` +
+  `ansible.builtin.copy`, и снимает `kubectl get nodes` с
+  workload-стороны через короткоживущий Pod в bootstrap
+  cluster'е (`kubernetes.core.k8s` → `k8s_info` polling →
+  `k8s_log` → `k8s state: absent`); workload API endpoint
+  живёт на LXD-bridge IPv6, недоступном с runner'а, поэтому
+  in-cluster jump-pod единственный путь. Единственный shell
+  fallback — `helm test` (нет нативного эквивалента в
+  `kubernetes.core`). Расширения сценария на Phase 5.1+ (CNI
+  + add-ons + pivot + HA pair assertions §2.12) — последующие
+  Step'ы.
 
 ### Molecule harness style contract
 

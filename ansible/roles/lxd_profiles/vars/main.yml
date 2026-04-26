@@ -143,6 +143,14 @@ _lxd_profiles_catalog:
         type:   "unix-char"
         source: "/dev/kmsg"
         path:   "/dev/kmsg"
+      # Same kubeadm SystemVerification requirement as control-plane:
+      # workers run `kubeadm join` preflight and need host kernel config
+      # from /boot/config-<uname-r> inside the unprivileged container.
+      host-boot:
+        type:     "disk"
+        source:   "/boot"
+        path:     "/boot"
+        readonly: "true"
       eth1:
         type:    "nic"
         nictype: "bridged"

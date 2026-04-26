@@ -59,6 +59,13 @@ images:
 # LXD project and auto-tracks control-plane backends — suitable for a
 # 2-CP workload cluster on a single-node substrate.
 #
+# CAPN v0.8.x `lxc` and `oci` load balancers are singleton instances,
+# not replica sets. Upstream documents them as a control-plane access
+# SPOF intended for development / evaluation. HA load balancing requires
+# a different CAPN mode (`kubeVIP`, `ovn`, or `external`) plus a stable
+# predeclared `controlPlaneEndpoint.host`; that is outside this default
+# dynamic-address lab path.
+#
 # To switch modes, consumer values files MUST first null out the
 # default before setting their mode — Helm deep-merges maps, so
 # `loadBalancer: {kubeVIP: {...}}` alone ends up with both `lxc` and
@@ -82,12 +89,14 @@ images:
 #     where the LB instance lives in a multi-node LXD cluster.
 #     Ignored for single-node substrates. Passed to
 #     `instanceSpec.target`;
-#   * `customHAProxyConfigTemplate: <string>` — replace the default
-#     haproxy.cfg template (use with caution; CAPN does no validation);
 #   * `disableHealthzCheck: <bool>` — opt out of the haproxy /healthz
 #     check on kube-apiserver endpoints (e.g. when anonymous-auth=true);
 #   * `profilesExtra: [<profile>...]` — consumer profiles appended
 #     after the substrate-required `capi-base` baseline.
+#
+# The HAProxy config template itself is intentionally NOT exposed:
+# CAPN v0.8.x can publish an IPv6 load-balancer endpoint, so this chart
+# hardcodes a dual-bind v4/v6 HAProxy frontend as a substrate invariant.
 #
 # The `instanceSpec.profiles:` field itself is NOT exposed: `capi-base`
 # is hardcoded in the template (role lxd_profiles ships it;
@@ -125,6 +134,12 @@ controlPlane:
   # schedulerExtraArgs accept [{name,value}] pairs in v1beta2. The
   # chart only renders these blocks when the list is non-empty (CAPI
   # v1beta2 CRD validates minItems: 1).
+  #
+  # Reserved by the substrate and rejected by template guards:
+  #   * apiServerExtraArgs: bind-address, service-cluster-ip-range
+  #   * controllerManagerExtraArgs: allocate-node-cidrs, cluster-cidr,
+  #     service-cluster-ip-range
+  #   * kubeletExtraArgs: feature-gates, node-ip, provider-id
   apiServerExtraArgs: []
   controllerManagerExtraArgs: []
   schedulerExtraArgs: []
@@ -134,6 +149,8 @@ controlPlane:
 
 worker:
   featureGates: {}
+  # Reserved by the substrate and rejected by template guards:
+  # feature-gates, node-ip, provider-id.
   kubeletExtraArgs: []
   preKubeadmCommands: []
   postKubeadmCommands: []
@@ -149,8 +166,8 @@ worker:
 kubeProxy:
   nodePortAddresses: []
 
-# ClusterClass does NOT own clusterNetwork — the cidrBlocks for pods
-# and services live on the Cluster CR (`spec.clusterNetwork`, rendered
-# by charts/capi-workload-cluster — PLAN §16.3). This chart therefore
-# exposes NO clusterNetwork values; per-cluster CIDR policy is set
-# per-instance at Cluster creation time.
+# ClusterClass exposes NO clusterNetwork values. Per-cluster CIDR
+# policy lives on the Cluster CR (`spec.clusterNetwork`, rendered by
+# charts/capi-workload-cluster — PLAN §16.3), and the ClusterClass
+# patch layer propagates those built-in topology values into kubeadm
+# `ClusterConfiguration.networking.{podSubnet,serviceSubnet}`.

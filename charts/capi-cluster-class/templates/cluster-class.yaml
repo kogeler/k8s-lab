@@ -10,6 +10,34 @@ metadata:
   labels:
     {{- include "capi-cluster-class.labels" . | nindent 4 }}
 spec:
+  patches:
+    - name: kubeadm-dual-stack-component-args
+      description: "Propagate Cluster.spec.clusterNetwork CIDRs into kubeadm-managed control-plane component args."
+      definitions:
+        - selector:
+            apiVersion: controlplane.cluster.x-k8s.io/v1beta2
+            kind: KubeadmControlPlaneTemplate
+            matchResources:
+              controlPlane: true
+          jsonPatches:
+            - op: add
+              path: /spec/template/spec/kubeadmConfigSpec/clusterConfiguration/apiServer/extraArgs/-
+              valueFrom:
+                template: |
+                  name: service-cluster-ip-range
+                  value: "{{ "{{" }} .builtin.cluster.network.services | join "," {{ "}}" }}"
+            - op: add
+              path: /spec/template/spec/kubeadmConfigSpec/clusterConfiguration/controllerManager/extraArgs/-
+              valueFrom:
+                template: |
+                  name: cluster-cidr
+                  value: "{{ "{{" }} .builtin.cluster.network.pods | join "," {{ "}}" }}"
+            - op: add
+              path: /spec/template/spec/kubeadmConfigSpec/clusterConfiguration/controllerManager/extraArgs/-
+              valueFrom:
+                template: |
+                  name: service-cluster-ip-range
+                  value: "{{ "{{" }} .builtin.cluster.network.services | join "," {{ "}}" }}"
   # Topology-level infrastructure template applies once per Cluster.
   infrastructure:
     templateRef:

@@ -12,7 +12,7 @@ type: application
 # `metadata.name` rotation is desired by the consumer (default: chart
 # uses Values.cluster.name verbatim — CAPI tolerates in-place
 # topology updates).
-version: 0.3.0
+version: 0.4.2
 
 # Chart.appVersion tracks CAPI core (the API of the Cluster CR rendered
 # here). PLAN §8a verified version log: CAPI v1.12.5 (2026-04-21).
@@ -39,4 +39,4 @@ sources:
 # paired with a bump of `version:` above so chart traceability stays
 # meaningful (PLAN §16.3).
 annotations:
-  k8s-lab.io/capi-cluster-class-chart-version: "0.3.0"
+  k8s-lab.io/capi-cluster-class-chart-version: "0.4.2"

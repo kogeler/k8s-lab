@@ -13,15 +13,20 @@ Two phases inside one Pod (single `helm test` run, single PASS/FAIL):
     * Cluster CR exists in .Release.Namespace
     * .status.conditions[TopologyReconciled] == True (CAPI accepted topology)
     * owned KubeadmControlPlane, MachineDeployment, LXCCluster materialised
+    * LXCCluster carries the chart-required dual-stack HAProxy template
 
   Phase 2 — workload-side topology, slow (default 20 min):
     * <cluster>-kubeconfig Secret materialises (KCP controller emits it
       after the first CP node passes `kubeadm init` and is reachable)
-    * exactly .Values.topology.controlPlane.replicas Node objects with
-      role label node-role.kubernetes.io/control-plane registered in
-      the workload cluster API
-    * exactly .Values.topology.workers.replicas Node objects without
-      that label
+    * /livez succeeds through that kubeconfig, i.e. through the selected
+      control-plane endpoint / LB
+    * exactly .Values.topology.controlPlane.replicas control-plane
+      Nodes and exactly .Values.topology.workers.replicas worker Nodes
+      registered in the workload cluster API
+    * every Node has dual-stack InternalIPs, dual-stack podCIDRs, and
+      spec.providerID = lxc:///<node-name>
+    * the workload Service allocator can create a RequireDualStack
+      ClusterIP Service with both IPv4 and IPv6 ClusterIPs
     * NodeReady=True is NOT required — CNI is shipped by Phase 5.1
       (a separate Helm release on the workload cluster), so workers
       register as NotReady until then. "Came up" == "registered with
@@ -66,6 +71,14 @@ spec:
         - |
           set -eu
 
+          fail() {
+            echo "FAIL: $*" >&2
+            exit 1
+          }
+
+          has_v4() { grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+'; }
+          has_v6() { grep -Eq ':'; }
+
           EXPECTED_TOTAL=$((CP_REPLICAS + WORKER_REPLICAS))
 
           echo "==> install kubectl ${KUBECTL_VERSION} from dl.k8s.io"
@@ -97,15 +110,38 @@ spec:
             || { echo "FAIL: no MachineDeployment for cluster ${NAME}"; exit 1; }
 
           echo "==> [5/7] owned LXCCluster materialised"
-          $KCTL -n "$NS" get lxccluster.infrastructure.cluster.x-k8s.io \
+          LXC_NAME="$($KCTL -n "$NS" get lxccluster.infrastructure.cluster.x-k8s.io \
             -l "cluster.x-k8s.io/cluster-name=${NAME}" \
-            --no-headers | grep -q . \
-            || { echo "FAIL: no LXCCluster for cluster ${NAME}"; exit 1; }
+            -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)"
+          [ -n "$LXC_NAME" ] || fail "no LXCCluster for cluster ${NAME}"
+
+          echo "==> [6/10] LXCCluster carries dual-stack HAProxy frontend template"
+          HAPROXY_TEMPLATE="$($KCTL -n "$NS" get lxccluster.infrastructure.cluster.x-k8s.io "$LXC_NAME" \
+            -o jsonpath='{.spec.loadBalancer.lxc.customHAProxyConfigTemplate}' 2>/dev/null || true)"
+          echo "$HAPROXY_TEMPLATE" | grep -q 'bind 0.0.0.0:' \
+            || fail "LXCCluster ${LXC_NAME} missing IPv4 HAProxy control-plane bind"
+          echo "$HAPROXY_TEMPLATE" | grep -q 'bind :::' \
+            || fail "LXCCluster ${LXC_NAME} missing IPv6 HAProxy control-plane bind"
 
           # ---------- Phase 2: workload-side authoritative check ----------
           DEADLINE=$(( $(date +%s) + NODES_UP_TIMEOUT_SECONDS ))
 
-          echo "==> [6/7] wait for ${NAME}-kubeconfig Secret (KCP issues it post-init)"
+          echo "==> [7/10] wait for Cluster.spec.controlPlaneEndpoint"
+          while [ "$(date +%s)" -lt "$DEADLINE" ]; do
+            CP_ENDPOINT_HOST="$($KCTL -n "$NS" get cluster.cluster.x-k8s.io "$NAME" \
+              -o jsonpath='{.spec.controlPlaneEndpoint.host}' 2>/dev/null || true)"
+            CP_ENDPOINT_PORT="$($KCTL -n "$NS" get cluster.cluster.x-k8s.io "$NAME" \
+              -o jsonpath='{.spec.controlPlaneEndpoint.port}' 2>/dev/null || true)"
+            if [ -n "$CP_ENDPOINT_HOST" ] && [ "$CP_ENDPOINT_PORT" = "6443" ]; then
+              echo "    endpoint: ${CP_ENDPOINT_HOST}:${CP_ENDPOINT_PORT}"
+              break
+            fi
+            sleep 10
+          done
+          [ -n "${CP_ENDPOINT_HOST:-}" ] || fail "Cluster.spec.controlPlaneEndpoint.host not set"
+          [ "${CP_ENDPOINT_PORT:-}" = "6443" ] || fail "Cluster.spec.controlPlaneEndpoint.port=${CP_ENDPOINT_PORT:-<empty>}, expected 6443"
+
+          echo "==> [8/10] wait for ${NAME}-kubeconfig Secret (KCP issues it post-init)"
           while [ "$(date +%s)" -lt "$DEADLINE" ]; do
             if $KCTL -n "$NS" get secret "${NAME}-kubeconfig" >/dev/null 2>&1; then
               $KCTL -n "$NS" get secret "${NAME}-kubeconfig" \
@@ -116,13 +152,30 @@ spec:
             sleep 10
           done
           [ -s /tmp/wl.kubeconfig ] \
-            || { echo "FAIL: ${NAME}-kubeconfig Secret never materialised within ${NODES_UP_TIMEOUT_SECONDS}s"; exit 1; }
+            || fail "${NAME}-kubeconfig Secret never materialised within ${NODES_UP_TIMEOUT_SECONDS}s"
 
-          echo "==> [7/7] wait for ${CP_REPLICAS} CP + ${WORKER_REPLICAS} worker nodes registered"
+          echo "==> [9/10] workload API /livez succeeds through selected control-plane endpoint"
+          WL="$KCTL --kubeconfig=/tmp/wl.kubeconfig"
+          PROBE_SERVICE="k8s-lab-dualstack-probe"
+          cleanup_workload_probe() {
+            $WL -n default delete service "$PROBE_SERVICE" --ignore-not-found >/dev/null 2>&1 || true
+          }
+          trap cleanup_workload_probe EXIT
+          LIVEZ=""
+          while [ "$(date +%s)" -lt "$DEADLINE" ]; do
+            LIVEZ="$($WL get --raw=/livez 2>/dev/null || true)"
+            if [ "$LIVEZ" = "ok" ]; then
+              break
+            fi
+            echo "    /livez not ready yet: ${LIVEZ:-<empty>}"
+            sleep 10
+          done
+          [ "$LIVEZ" = "ok" ] || fail "workload API /livez returned '${LIVEZ:-<empty>}'"
+
+          echo "==> [10/10] wait for ${CP_REPLICAS} CP + ${WORKER_REPLICAS} worker nodes registered"
           # NodeReady is NOT a precondition — CNI ships in Phase 5.1.
           # Registration with the API server (kubeadm join completed)
           # is the authoritative "came up" signal.
-          WL="$KCTL --kubeconfig=/tmp/wl.kubeconfig"
           while [ "$(date +%s)" -lt "$DEADLINE" ]; do
             CP_NODES=$( $WL get nodes \
               -l 'node-role.kubernetes.io/control-plane' \
@@ -132,17 +185,55 @@ spec:
               --no-headers 2>/dev/null | wc -l )
             TOTAL=$((CP_NODES + WORKER_NODES))
             echo "    nodes: cp=${CP_NODES}/${CP_REPLICAS} worker=${WORKER_NODES}/${WORKER_REPLICAS} total=${TOTAL}/${EXPECTED_TOTAL}"
-            if [ "$CP_NODES" -ge "$CP_REPLICAS" ] \
-                 && [ "$WORKER_NODES" -ge "$WORKER_REPLICAS" ]; then
+            if [ "$CP_NODES" -eq "$CP_REPLICAS" ] \
+                 && [ "$WORKER_NODES" -eq "$WORKER_REPLICAS" ]; then
               break
             fi
             sleep 15
           done
-          if [ "$CP_NODES" -lt "$CP_REPLICAS" ] || [ "$WORKER_NODES" -lt "$WORKER_REPLICAS" ]; then
-            echo "FAIL: topology mismatch within ${NODES_UP_TIMEOUT_SECONDS}s — got cp=${CP_NODES} worker=${WORKER_NODES}, expected cp=${CP_REPLICAS} worker=${WORKER_REPLICAS}"
+          if [ "$CP_NODES" -ne "$CP_REPLICAS" ] || [ "$WORKER_NODES" -ne "$WORKER_REPLICAS" ]; then
+            echo "FAIL: topology mismatch within ${NODES_UP_TIMEOUT_SECONDS}s - got cp=${CP_NODES} worker=${WORKER_NODES}, expected cp=${CP_REPLICAS} worker=${WORKER_REPLICAS}"
             $WL get nodes -o wide || true
             exit 1
           fi
+
+          echo "==> assert workload Service allocator supports dual-stack ClusterIPs"
+          cat <<EOF | $WL apply -f -
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: ${PROBE_SERVICE}
+            namespace: default
+          spec:
+            type: ClusterIP
+            ipFamilyPolicy: RequireDualStack
+            ipFamilies:
+              - IPv4
+              - IPv6
+            ports:
+              - name: https
+                port: 443
+                targetPort: 6443
+                protocol: TCP
+          EOF
+          SVC_IPS="$($WL -n default get svc "$PROBE_SERVICE" -o jsonpath='{range .spec.clusterIPs[*]}{@}{"\n"}{end}')"
+          echo "$SVC_IPS" | has_v4 || fail "dual-stack probe Service missing IPv4 ClusterIP: ${SVC_IPS}"
+          echo "$SVC_IPS" | has_v6 || fail "dual-stack probe Service missing IPv6 ClusterIP: ${SVC_IPS}"
+
+          echo "==> assert every workload Node has providerID + dual-stack addresses"
+          for node in $($WL get nodes -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}'); do
+            provider_id="$($WL get node "$node" -o jsonpath='{.spec.providerID}')"
+            [ "$provider_id" = "lxc:///${node}" ] \
+              || fail "node ${node} providerID=${provider_id:-<empty>}, expected lxc:///${node}"
+
+            internal_ips="$($WL get node "$node" -o jsonpath='{range .status.addresses[?(@.type=="InternalIP")]}{.address}{"\n"}{end}')"
+            echo "$internal_ips" | has_v4 || fail "node ${node} missing IPv4 InternalIP: ${internal_ips}"
+            echo "$internal_ips" | has_v6 || fail "node ${node} missing IPv6 InternalIP: ${internal_ips}"
+
+            pod_cidrs="$($WL get node "$node" -o jsonpath='{range .spec.podCIDRs[*]}{@}{"\n"}{end}')"
+            echo "$pod_cidrs" | has_v4 || fail "node ${node} missing IPv4 podCIDR: ${pod_cidrs}"
+            echo "$pod_cidrs" | has_v6 || fail "node ${node} missing IPv6 podCIDR: ${pod_cidrs}"
+          done
 
           echo ""
           echo "==> workload cluster nodes:"

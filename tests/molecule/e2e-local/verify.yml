@@ -1,0 +1,211 @@
+---
+- name: "Verify | e2e-local | workload cluster Helm hook"
+  hosts: all
+  gather_facts: false
+  become: false
+  vars:
+    _repo_root: "{{ lookup('env', 'MOLECULE_PROJECT_DIRECTORY') | dirname | dirname }}"
+    _artifacts_root: "{{ _repo_root }}/.artifacts"
+    _bootstrap_kubeconfig: "{{ _artifacts_root }}/bootstrap.kubeconfig"
+    _workload_namespace: "capi-clusters"
+    _workload_cluster_name: "{{ k8s_lab_workload_cluster_name }}"
+    _workload_kubeconfig: "{{ _artifacts_root }}/clusters/{{ _workload_cluster_name }}.kubeconfig"
+    _kubernetes_version: "{{ k8s_lab_kubernetes_version }}"
+    _snapshot_pod_name: "{{ _workload_cluster_name }}-verify-snapshot"
+    _capi_kinds:
+      - { api_version: "cluster.x-k8s.io/v1beta2", kind: "Cluster" }
+      - { api_version: "controlplane.cluster.x-k8s.io/v1beta2", kind: "KubeadmControlPlane" }
+      - { api_version: "cluster.x-k8s.io/v1beta2", kind: "MachineDeployment" }
+      - { api_version: "cluster.x-k8s.io/v1beta2", kind: "Machine" }
+      - { api_version: "infrastructure.cluster.x-k8s.io/v1alpha2", kind: "LXCCluster" }
+      - { api_version: "infrastructure.cluster.x-k8s.io/v1alpha2", kind: "LXCMachine" }
+  tasks:
+    # `helm test` has no equivalent in kubernetes.core; this is the only
+    # shell fallback in this play. The chart's own `before-hook-creation,
+    # hook-succeeded` policy makes re-runs idempotent (prior test pod is
+    # deleted on the next invocation), so we don't add a synthetic pre-
+    # check; we just don't mask the `changed: true` the run rightly emits.
+    - name: "Verify | e2e-local | run workload chart helm test"
+      ansible.builtin.command:
+        argv:
+          - helm
+          - test
+          - "{{ _workload_cluster_name }}"
+          - --namespace
+          - "{{ _workload_namespace }}"
+          - --kubeconfig
+          - "{{ _bootstrap_kubeconfig }}"
+          - --logs
+          - --timeout
+          - 35m
+      delegate_to: localhost
+      register: _helm_test
+
+    - name: "Verify | e2e-local | snapshot bootstrap-side CAPI objects"
+      kubernetes.core.k8s_info:
+        kubeconfig: "{{ _bootstrap_kubeconfig }}"
+        api_version: "{{ item.api_version }}"
+        kind: "{{ item.kind }}"
+        namespace: "{{ _workload_namespace }}"
+      loop: "{{ _capi_kinds }}"
+      loop_control:
+        label: "{{ item.kind }}"
+      register: _capi_snapshot
+      delegate_to: localhost
+      vars:
+        ansible_python_interpreter: "{{ ansible_playbook_python }}"
+
+    - name: "Verify | e2e-local | read workload kubeconfig Secret"
+      kubernetes.core.k8s_info:
+        kubeconfig: "{{ _bootstrap_kubeconfig }}"
+        api_version: v1
+        kind: Secret
+        namespace: "{{ _workload_namespace }}"
+        name: "{{ _workload_cluster_name }}-kubeconfig"
+      register: _wl_kubeconfig_secret
+      delegate_to: localhost
+      vars:
+        ansible_python_interpreter: "{{ ansible_playbook_python }}"
+
+    - name: "Verify | e2e-local | assert workload kubeconfig Secret has body"
+      ansible.builtin.assert:
+        that:
+          - (_wl_kubeconfig_secret.resources | length) == 1
+          - (_wl_kubeconfig_secret.resources[0].data.value | default('')) | length > 0
+        fail_msg: >-
+          {{ _workload_cluster_name }}-kubeconfig Secret missing or empty
+          in {{ _workload_namespace }}.
+
+    - name: "Verify | e2e-local | ensure runner-side clusters/ dir exists"
+      ansible.builtin.file:
+        path: "{{ _workload_kubeconfig | dirname }}"
+        state: directory
+        mode: "0700"
+      delegate_to: localhost
+
+    - name: "Verify | e2e-local | export workload kubeconfig for inspection"
+      ansible.builtin.copy:
+        dest: "{{ _workload_kubeconfig }}"
+        content: "{{ _wl_kubeconfig_secret.resources[0].data.value | b64decode }}"
+        mode: "0600"
+      delegate_to: localhost
+
+    # The workload API endpoint in the kubeconfig is an LXD-bridge IPv6
+    # address that is NOT reachable from the runner — only from inside
+    # the bootstrap cluster. We therefore run `kubectl get nodes` from a
+    # short-lived Pod on the bootstrap cluster, scheduled under the test
+    # ServiceAccount the workload chart already provisions.
+    - name: "Verify | e2e-local | clean any prior workload-nodes snapshot pod"
+      kubernetes.core.k8s:
+        kubeconfig: "{{ _bootstrap_kubeconfig }}"
+        state: absent
+        api_version: v1
+        kind: Pod
+        namespace: "{{ _workload_namespace }}"
+        name: "{{ _snapshot_pod_name }}"
+        wait: true
+      delegate_to: localhost
+      vars:
+        ansible_python_interpreter: "{{ ansible_playbook_python }}"
+
+    - name: "Verify | e2e-local | apply workload-nodes snapshot pod"
+      kubernetes.core.k8s:
+        kubeconfig: "{{ _bootstrap_kubeconfig }}"
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Pod
+          metadata:
+            name: "{{ _snapshot_pod_name }}"
+            namespace: "{{ _workload_namespace }}"
+          spec:
+            serviceAccountName: "{{ _workload_cluster_name }}-test"
+            restartPolicy: Never
+            containers:
+              - name: probe
+                image: alpine:3.21
+                imagePullPolicy: IfNotPresent
+                env:
+                  - name: KUBECTL_VERSION
+                    value: "{{ _kubernetes_version }}"
+                  - name: NAME
+                    value: "{{ _workload_cluster_name }}"
+                  - name: NS
+                    value: "{{ _workload_namespace }}"
+                command: ["/bin/sh", "-ceu"]
+                args:
+                  - |
+                    wget -qO /tmp/kubectl \
+                      "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/amd64/kubectl"
+                    chmod +x /tmp/kubectl
+                    /tmp/kubectl -n "$NS" get secret "${NAME}-kubeconfig" \
+                      -o jsonpath="{.data.value}" \
+                      | base64 -d > /tmp/wl.kubeconfig
+                    /tmp/kubectl --kubeconfig=/tmp/wl.kubeconfig get nodes -o wide
+      delegate_to: localhost
+      vars:
+        ansible_python_interpreter: "{{ ansible_playbook_python }}"
+
+    - name: "Verify | e2e-local | wait for snapshot pod to reach a terminal phase"
+      kubernetes.core.k8s_info:
+        kubeconfig: "{{ _bootstrap_kubeconfig }}"
+        api_version: v1
+        kind: Pod
+        namespace: "{{ _workload_namespace }}"
+        name: "{{ _snapshot_pod_name }}"
+      register: _snapshot_pod
+      until: >-
+        (_snapshot_pod.resources | length) > 0
+        and (_snapshot_pod.resources[0].status.phase | default('')) in ['Succeeded', 'Failed']
+      retries: 60
+      delay: 5
+      delegate_to: localhost
+      vars:
+        ansible_python_interpreter: "{{ ansible_playbook_python }}"
+
+    - name: "Verify | e2e-local | fetch snapshot pod logs"
+      kubernetes.core.k8s_log:
+        kubeconfig: "{{ _bootstrap_kubeconfig }}"
+        api_version: v1
+        kind: Pod
+        namespace: "{{ _workload_namespace }}"
+        name: "{{ _snapshot_pod_name }}"
+      register: _workload_nodes
+      delegate_to: localhost
+      vars:
+        ansible_python_interpreter: "{{ ansible_playbook_python }}"
+
+    - name: "Verify | e2e-local | assert snapshot pod succeeded"
+      ansible.builtin.assert:
+        that:
+          - (_snapshot_pod.resources[0].status.phase | default('')) == 'Succeeded'
+        fail_msg: >-
+          workload-nodes snapshot pod ended in phase
+          {{ _snapshot_pod.resources[0].status.phase | default('?') }}.
+          logs: {{ _workload_nodes.log | default('<none>') }}
+
+    - name: "Verify | e2e-local | delete snapshot pod"
+      kubernetes.core.k8s:
+        kubeconfig: "{{ _bootstrap_kubeconfig }}"
+        state: absent
+        api_version: v1
+        kind: Pod
+        namespace: "{{ _workload_namespace }}"
+        name: "{{ _snapshot_pod_name }}"
+        wait: true
+      delegate_to: localhost
+      vars:
+        ansible_python_interpreter: "{{ ansible_playbook_python }}"
+
+    - name: "Verify | e2e-local | print compact state"
+      ansible.builtin.debug:
+        msg:
+          - "{{ _helm_test.stdout_lines | default([]) }}"
+          - >-
+            {{ _capi_snapshot.results
+               | map(attribute='resources')
+               | map('default', [])
+               | map('map', attribute='metadata.name')
+               | map('list')
+               | list }}
+          - "{{ (_workload_nodes.log | default('')).split('\n') }}"

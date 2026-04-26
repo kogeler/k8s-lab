@@ -44,6 +44,7 @@
         description_must_contain: "control-plane"
         required_devices:
           - {name: "kmsg", type: "unix-char"}
+          - {name: "host-boot", type: "disk", source: "/boot", path: "/boot", readonly: "true"}
           - {name: "eth1", type: "nic", nictype: "bridged", parent: "br-ext6"}
         required_config:
           security.nesting:                     "true"
@@ -57,6 +58,7 @@
         description_must_contain: "worker"
         required_devices:
           - {name: "kmsg", type: "unix-char"}
+          - {name: "host-boot", type: "disk", source: "/boot", path: "/boot", readonly: "true"}
           - {name: "eth1", type: "nic", nictype: "bridged", parent: "br-ext6"}
         required_config:
           security.nesting:                     "true"
@@ -176,8 +178,10 @@
         that:
           - item.name in (item.live_devices.keys() | list)
           - (item.live_devices[item.name].get('type', '')) == item.type
-          - (item.type != 'disk') or ((item.live_devices[item.name].get('path', '')) == item.path)
-          - (item.type != 'disk') or ((item.live_devices[item.name].get('pool', '')) == item.pool)
+          - (item.type != 'disk') or (item.path is not defined) or ((item.live_devices[item.name].get('path', '')) == item.path)
+          - (item.type != 'disk') or (item.pool is not defined) or ((item.live_devices[item.name].get('pool', '')) == item.pool)
+          - (item.type != 'disk') or (item.source is not defined) or ((item.live_devices[item.name].get('source', '')) == item.source)
+          - (item.readonly is not defined) or ((item.live_devices[item.name].get('readonly', '')) == item.readonly)
           - (item.type != 'nic')  or ((item.live_devices[item.name].get('nictype', '')) == item.nictype)
           - (item.type != 'nic')  or ((item.live_devices[item.name].get('parent', '')) == item.parent)
         fail_msg: >-

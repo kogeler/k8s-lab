@@ -10,7 +10,7 @@ type: application
 # (PLAN §16.2 — CAPI webhook blocks most field edits on referenced
 # ClusterClass/*Template CRs, so every values/template change must bump
 # this version to produce fresh object names).
-version: 0.3.0
+version: 0.4.2
 
 # Chart.appVersion tracks the CAPN provider it is tested against.
 # PLAN §8 k8s_lab_capn_provider_version (verified 2026-04-21).

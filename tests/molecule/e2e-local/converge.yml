@@ -1,0 +1,60 @@
+---
+- name: "Converge | e2e-local | bootstrap substrate and install charts"
+  hosts: all
+  gather_facts: true
+  become: true
+  vars:
+    _repo_root: "{{ lookup('env', 'MOLECULE_PROJECT_DIRECTORY') | dirname | dirname }}"
+    _artifacts_root: "{{ _repo_root }}/.artifacts"
+    _bootstrap_kubeconfig: "{{ _artifacts_root }}/bootstrap.kubeconfig"
+    _cluster_class_chart: "{{ _repo_root }}/charts/capi-cluster-class"
+    _workload_chart: "{{ _repo_root }}/charts/capi-workload-cluster"
+    _workload_namespace: "capi-clusters"
+    _cluster_class_namespace: "capi-system"
+    _workload_cluster_name: "{{ k8s_lab_workload_cluster_name }}"
+    _kubernetes_version: "{{ k8s_lab_kubernetes_version }}"
+    _infrastructure_secret_name: "{{ k8s_lab_infrastructure_secret_name | default('incus-identity') }}"
+  tasks:
+    - name: "Converge | e2e-local | build bootstrap management cluster + artifacts"
+      ansible.builtin.include_role:
+        name: export_artifacts
+
+    - name: "Converge | e2e-local | install ClusterClass chart"
+      kubernetes.core.helm:
+        kubeconfig: "{{ _bootstrap_kubeconfig }}"
+        name: capi-cluster-class
+        chart_ref: "{{ _cluster_class_chart }}"
+        release_namespace: "{{ _cluster_class_namespace }}"
+        create_namespace: false
+        wait: true
+        wait_timeout: 5m
+        values:
+          kubernetes:
+            version: "{{ _kubernetes_version }}"
+          capn:
+            infrastructureSecretName: "{{ _infrastructure_secret_name }}"
+      delegate_to: localhost
+      become: false
+      vars:
+        ansible_python_interpreter: "{{ ansible_playbook_python }}"
+
+    - name: "Converge | e2e-local | install workload Cluster chart"
+      kubernetes.core.helm:
+        kubeconfig: "{{ _bootstrap_kubeconfig }}"
+        name: "{{ _workload_cluster_name }}"
+        chart_ref: "{{ _workload_chart }}"
+        release_namespace: "{{ _workload_namespace }}"
+        create_namespace: false
+        wait: true
+        wait_timeout: 5m
+        values:
+          cluster:
+            name: "{{ _workload_cluster_name }}"
+          clusterClass:
+            namespace: "{{ _cluster_class_namespace }}"
+          kubernetes:
+            version: "{{ _kubernetes_version }}"
+      delegate_to: localhost
+      become: false
+      vars:
+        ansible_python_interpreter: "{{ ansible_playbook_python }}"

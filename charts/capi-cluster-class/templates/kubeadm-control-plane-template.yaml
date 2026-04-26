@@ -1,6 +1,20 @@
 {{- include "capi-cluster-class.requireKubeadm" . -}}
 {{- $cp := .Values.controlPlane -}}
-{{- $hasClusterCfg := or (not (empty $cp.featureGates)) (not (empty $cp.apiServerExtraArgs)) (not (empty $cp.controllerManagerExtraArgs)) (not (empty $cp.schedulerExtraArgs)) -}}
+{{- range $arg := $cp.apiServerExtraArgs }}
+{{- if or (eq $arg.name "bind-address") (eq $arg.name "service-cluster-ip-range") }}
+{{- fail (printf "controlPlane.apiServerExtraArgs must not set reserved arg %q; this chart hardcodes apiserver dual-stack serving and patches service CIDRs from Cluster.spec.clusterNetwork." $arg.name) }}
+{{- end }}
+{{- end }}
+{{- range $arg := $cp.controllerManagerExtraArgs }}
+{{- if or (eq $arg.name "allocate-node-cidrs") (eq $arg.name "cluster-cidr") (eq $arg.name "service-cluster-ip-range") }}
+{{- fail (printf "controlPlane.controllerManagerExtraArgs must not set reserved arg %q; this chart hardcodes/patches controller-manager dual-stack CIDR handling from Cluster.spec.clusterNetwork." $arg.name) }}
+{{- end }}
+{{- end }}
+{{- range $arg := $cp.kubeletExtraArgs }}
+{{- if or (eq $arg.name "feature-gates") (eq $arg.name "node-ip") (eq $arg.name "provider-id") }}
+{{- fail (printf "controlPlane.kubeletExtraArgs must not set reserved arg %q; this chart hardcodes feature-gates, provider-id, and dynamic dual-stack node-ip for the unprivileged-LXC substrate." $arg.name) }}
+{{- end }}
+{{- end }}
 ---
 apiVersion: controlplane.cluster.x-k8s.io/v1beta2
 kind: KubeadmControlPlaneTemplate
@@ -21,20 +35,27 @@ spec:
         # `kubeadmConfigSpec.minProperties >= 1` even when every
         # tunable below is empty.
         format: cloud-config
-        {{- if $hasClusterCfg }}
         clusterConfiguration:
           {{- with $cp.featureGates }}
           featureGates:
             {{- toYaml . | nindent 12 }}
           {{- end }}
-          {{- with $cp.apiServerExtraArgs }}
+          # Substrate-required: the workload API server must serve the
+          # control plane endpoint over IPv6 as well as IPv4. kubeadm's
+          # advertiseAddress remains a single-family node address; this
+          # bind override only controls the listener.
           apiServer:
             extraArgs:
+              - name: bind-address
+                value: "::"
+          {{- with $cp.apiServerExtraArgs }}
               {{- toYaml . | nindent 14 }}
           {{- end }}
-          {{- with $cp.controllerManagerExtraArgs }}
           controllerManager:
             extraArgs:
+              - name: allocate-node-cidrs
+                value: "true"
+          {{- with $cp.controllerManagerExtraArgs }}
               {{- toYaml . | nindent 14 }}
           {{- end }}
           {{- with $cp.schedulerExtraArgs }}
@@ -42,7 +63,6 @@ spec:
             extraArgs:
               {{- toYaml . | nindent 14 }}
           {{- end }}
-        {{- end }}
         # init / join nodeRegistration baseline.
         #
         # Substrate-required `kubeletExtraArgs` baseline ALWAYS emitted:
@@ -65,6 +85,8 @@ spec:
             kubeletExtraArgs:
               - name: feature-gates
                 value: "KubeletInUserNamespace=true"
+              - name: provider-id
+                value: "lxc:///{{ "{{" }} v1.local_hostname {{ "}}" }}"
               {{- with $cp.kubeletExtraArgs }}
               {{- toYaml . | nindent 14 }}
               {{- end }}
@@ -73,11 +95,54 @@ spec:
             kubeletExtraArgs:
               - name: feature-gates
                 value: "KubeletInUserNamespace=true"
+              - name: provider-id
+                value: "lxc:///{{ "{{" }} v1.local_hostname {{ "}}" }}"
               {{- with $cp.kubeletExtraArgs }}
               {{- toYaml . | nindent 14 }}
               {{- end }}
-        {{- with $cp.preKubeadmCommands }}
         preKubeadmCommands:
+          # Substrate-required: LXD DHCP/SLAAC addresses are dynamic,
+          # but kubelet on bare-metal-style dual-stack nodes must be
+          # started with both node IPs. Keep the same family priority
+          # as bootstrap k3s: eth0 IPv4 first, eth0 IPv6 second.
+          - |
+            set -eu
+            iface=eth0
+            for _ in $(seq 1 120); do
+              v4="$(ip -o -4 addr show dev "$iface" scope global | awk '{split($4,a,"/"); print a[1]; exit}')"
+              v6="$(ip -o -6 addr show dev "$iface" scope global | awk '$4 !~ /^fe80:/ && $0 !~ /(temporary|deprecated|tentative)/ {split($4,a,"/"); print a[1]; exit}')"
+              if [ -n "$v4" ] && [ -n "$v6" ]; then
+                break
+              fi
+              sleep 1
+            done
+            test -n "$v4"
+            test -n "$v6"
+            kubeadm_config=/run/kubeadm/kubeadm.yaml
+            if [ ! -f "$kubeadm_config" ] && [ -f /run/kubeadm/kubeadm-join-config.yaml ]; then
+              kubeadm_config=/run/kubeadm/kubeadm-join-config.yaml
+            fi
+            test -f "$kubeadm_config"
+            if grep -q '^localAPIEndpoint: {}$' "$kubeadm_config"; then
+              sed -i "s/^localAPIEndpoint: {}/localAPIEndpoint:\\n  advertiseAddress: ${v4}\\n  bindPort: 6443/" "$kubeadm_config"
+            fi
+            if ! grep -q '^[[:space:]]*- name: node-ip$' "$kubeadm_config"; then
+              awk -v node_ip="${v4},${v6}" '
+                /^[[:space:]]*- name: feature-gates[[:space:]]*$/ {
+                  item_indent = substr($0, 1, index($0, "-") - 1)
+                }
+                { print }
+                /^[[:space:]]*value: "?KubeletInUserNamespace=true"?[[:space:]]*$/ && item_indent != "" && !done {
+                  value_indent = substr($0, 1, index($0, "v") - 1)
+                  print item_indent "- name: node-ip"
+                  print value_indent "value: \"" node_ip "\""
+                  done = 1
+                }
+                END { if (!done) exit 42 }
+              ' "$kubeadm_config" > "$kubeadm_config.tmp"
+              mv "$kubeadm_config.tmp" "$kubeadm_config"
+            fi
+        {{- with $cp.preKubeadmCommands }}
           {{- toYaml . | nindent 10 }}
         {{- end }}
         {{- with $cp.postKubeadmCommands }}

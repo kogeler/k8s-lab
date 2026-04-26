@@ -87,13 +87,13 @@ test-local-harness: ## Bring up / verify the shared Vagrant VM and mocked networ
 .PHONY: test-local-e2e
 test-local-e2e: ## Full local pipeline (plan §13.2); may take significant time
 	$(MAKE) -C $(VAGRANT_DIR) up
-	$(MAKE) -C $(MOLECULE_DIR) e2e_local-vagrant-converge
-	$(MAKE) -C $(MOLECULE_DIR) e2e_local-vagrant-verify
+	$(MAKE) -C $(MOLECULE_DIR) e2e-local-vagrant-converge
+	$(MAKE) -C $(MOLECULE_DIR) e2e-local-vagrant-verify
 
 .PHONY: clean-local
 clean-local: ## Destroy local Vagrant VM, Molecule state, ephemeral artifacts
-	-$(MAKE) -C $(MOLECULE_DIR) destroy-all
 	-$(MAKE) -C $(VAGRANT_DIR) destroy
+	-find $$HOME/.ansible/tmp -maxdepth 1 -type d -name 'molecule.*' -exec rm -rf {} +
 	rm -rf $(REPO_ROOT)/.artifacts/*
 	touch $(REPO_ROOT)/.artifacts/.gitkeep
 

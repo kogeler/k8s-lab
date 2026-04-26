@@ -37,13 +37,19 @@ spec:
       # with "No root device could be found" at instance-creation
       # time.
       #
+      # Important: CAPN v0.8.x `lxc` creates one haproxy instance.
+      # There is no replicas field in LXCLoadBalancerInstance; true HA
+      # must use kubeVIP/OVN/external with a predeclared endpoint.
+      #
       # CAPN v0.8.x LXCLoadBalancerSpec shape:
       #   loadBalancer.lxc:
       #     instanceSpec:        { profiles, image, flavor, target }
       #     customHAProxyConfigTemplate: <string>
       #     disableHealthzCheck:         <bool>
-      # consumer-tunable knobs are exposed below; substrate-required
-      # profile baseline is fixed in templates/_helpers.tpl.
+      # consumer-tunable instanceSpec fields are exposed below. The
+      # profile baseline is fixed in templates/_helpers.tpl, and
+      # customHAProxyConfigTemplate is hardcoded here to preserve
+      # dual-stack LB behaviour.
       #
       # For the other modes (`kubeVIP`, `oci`, `ovn`, `external`) the
       # block is passed through verbatim — those LB types do not spawn
@@ -65,10 +71,47 @@ spec:
             {{- with $lxc.target }}
             target: {{ . | quote }}
             {{- end }}
-          {{- with $lxc.customHAProxyConfigTemplate }}
+          # Substrate-required: CAPN v0.8.x may select an IPv6
+          # controlPlaneEndpoint for the LB instance, while its default
+          # HAProxy config binds only IPv4 because the internal IPv6 flag
+          # is never set. Bind both frontend families explicitly.
           customHAProxyConfigTemplate: |
-            {{- . | nindent 12 }}
-          {{- end }}
+            global
+              log /dev/log local0
+              log /dev/log local1 notice
+              daemon
+              maxconn 100000
+
+            defaults
+              log global
+              mode tcp
+              option dontlognull
+              timeout connect 5000
+              timeout client 50000
+              timeout server 50000
+              default-server init-addr none
+
+            frontend stats
+              mode http
+              bind 0.0.0.0:8404
+              bind :::8404 v6only
+              stats enable
+              stats uri /stats
+              stats refresh 1s
+              stats admin if TRUE
+
+            frontend control-plane
+              bind 0.0.0.0:{{ "{{" }} .FrontendControlPlanePort {{ "}}" }}
+              bind :::{{ "{{" }} .FrontendControlPlanePort {{ "}}" }} v6only
+              default_backend kube-apiservers
+
+            backend kube-apiservers
+              {{ "{{" }} if .EnableHealthzCheck -{{ "}}" }}
+              option httpchk GET /healthz
+              {{ "{{" }}- end {{ "}}" }}
+              {{ "{{" }}range $server, $backend := .BackendServers{{ "}}" }}
+              server {{ "{{" }} $server {{ "}}" }} {{ "{{" }} JoinHostPort $backend.Address $.BackendControlPlanePort {{ "}}" }} weight {{ "{{" }} $backend.Weight {{ "}}" }} check check-ssl verify none
+              {{ "{{" }}- end{{ "}}" }}
           {{- if $lxc.disableHealthzCheck | default false }}
           disableHealthzCheck: true
           {{- end }}
