@@ -11,7 +11,7 @@
 #
 # Public extras for tunable surface live in `defaults/main.yml` under
 # `bootstrap_capn_secret_*` (cert metadata, paths, pivot flag, wait
-# tuning).
+# tuning, target namespaces).
 
 # ---- Snap-LXD invariants (lxd_host owns these paths) -------------------
 
@@ -35,20 +35,6 @@ _bootstrap_capn_secret_lxd_server_cert_path: "/var/snap/lxd/common/lxd/server.cr
 # would cascade as broken `server: https://...:<port>` in the Secret;
 # CAPN would then emit confused TLS-handshake errors.
 _bootstrap_capn_secret_required_lxd_https_port: 8443
-
-# ---- Secret namespace (CAPN-installed) -------------------------------
-
-# CAPN reads the LXD identity Secret from `<namespace>/<name>`. The
-# namespace is fixed by the upstream CAPN release manifest
-# (`capn-system` for v0.8.x); a consumer cannot change it without
-# patching the manifest itself, so it lives here as substrate.
-#
-# The Secret NAME, by contrast, is a project-wide tunable
-# (`k8s_lab_infrastructure_secret_name` per plan §8) — both this role
-# AND the Phase 5+ Cluster CR identityRef must read the same value.
-# It is sourced from the global in defaults/main.yml as
-# `bootstrap_capn_secret_name`.
-_bootstrap_capn_secret_required_namespace: "capn-system"
 
 # ---- Required Secret data keys per CAPN identity-secret spec ---------
 #

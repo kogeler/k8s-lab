@@ -1,0 +1,33 @@
+#!/bin/sh
+{{ ansible_managed | comment }}
+#
+# Tiny launcher invoked as ExecStart by k3s.service. Resolves the
+# bootstrap container's IPv4 + IPv6 on the substrate-required interface
+# at process-start time and exec()s `k3s server` with an injected
+# `--node-ip=<v4>,<v6>` followed by every flag the systemd unit passed
+# in. Required because k3s' network-policy controller refuses to start
+# under dual-stack `--cluster-cidr` if kubelet auto-detected only IPv4
+# (default behaviour without explicit --node-ip), aborting with
+# "IPv6 was enabled, but no IPv6 address was found on the node" and
+# entering Restart=always crash loop.
+#
+# Why a wrapper rather than `EnvironmentFile=` populated by ExecStartPre:
+# systemd loads EnvironmentFile when the unit's environment block is
+# set up, BEFORE any Exec* runs — so `${K3S_NODE_IP}` written by an
+# ExecStartPre would still be unset at ExecStart expansion time. A
+# wrapper script that exec()s k3s avoids the timing issue entirely
+# (kept in the role rather than as static `--node-ip` from a §8 global
+# so multiple bootstrap-shaped containers each resolve their own IPs).
+set -eu
+
+IFACE="{{ _bootstrap_k3s_required_node_iface }}"
+
+V4=$(ip -4 -o addr show "$IFACE" scope global | awk '{print $4}' | cut -d/ -f1 | head -n1)
+V6=$(ip -6 -o addr show "$IFACE" scope global -tentative | awk '{print $4}' | cut -d/ -f1 | head -n1)
+
+if [ -z "$V4" ] || [ -z "$V6" ]; then
+  echo "k3s-server-launcher: missing v4=\"$V4\" v6=\"$V6\" on $IFACE — aborting k3s start" >&2
+  exit 1
+fi
+
+exec {{ bootstrap_k3s_container_bin_path }} server --node-ip="${V4},${V6}" "$@"

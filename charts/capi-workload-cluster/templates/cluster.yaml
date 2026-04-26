@@ -1,0 +1,43 @@
+{{- include "capi-workload-cluster.requireCAPI" . -}}
+---
+apiVersion: cluster.x-k8s.io/v1beta2
+kind: Cluster
+metadata:
+  name: {{ .Values.cluster.name | quote }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "capi-workload-cluster.labels" . | nindent 4 }}
+spec:
+  clusterNetwork:
+    pods:
+      cidrBlocks:
+        {{- range .Values.clusterNetwork.pods.cidrBlocks }}
+        - {{ . | quote }}
+        {{- end }}
+    services:
+      cidrBlocks:
+        {{- range .Values.clusterNetwork.services.cidrBlocks }}
+        - {{ . | quote }}
+        {{- end }}
+  topology:
+    # ClassRef reproduces the rendered metadata.name of the
+    # ClusterClass shipped by charts/capi-cluster-class — see
+    # templates/_helpers.tpl for the slug formula contract.
+    classRef:
+      name: {{ include "capi-workload-cluster.classFullName" . | quote }}
+      {{- with .Values.clusterClass.namespace }}
+      namespace: {{ . | quote }}
+      {{- end }}
+    version: {{ .Values.kubernetes.version | quote }}
+    controlPlane:
+      replicas: {{ .Values.topology.controlPlane.replicas }}
+    workers:
+      machineDeployments:
+        # The class name "md-0" matches the single MachineDeployment
+        # class baked into capi-cluster-class
+        # (templates/cluster-class.yaml). Substrate-required, not
+        # consumer-tunable — see PLAN §16.3 + memory rule
+        # "Chart-required values are hardcoded".
+        - class: md-0
+          name: md-0
+          replicas: {{ .Values.topology.workers.replicas }}

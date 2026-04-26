@@ -1,69 +1,71 @@
 ---
 # Role-internal healthchecks (plan §2.6.6). Re-probe live state from
-# the host to catch drift between the rendered manifest and what
-# actually landed in the cluster / LXD trust store.
+# the host independently of the role's own apply tasks to catch drift
+# between the rendered manifest and what actually landed in the
+# cluster / LXD trust store.
+#
+# Per-namespace Secret healthchecks loop over
+# `bootstrap_capn_secret_namespaces`. Empty list → those checks skip
+# entirely (the per-task `when` guard short-circuits), but LXD trust
+# / fingerprint healthchecks always run since they cover substrate-
+# level state independent of the per-cluster fanout.
 
-# ---- Secret exists with all required keys ------------------------------
+# ---- Secret exists in every target namespace, with all required keys ---
 
-- name: "bootstrap-capn-secret | healthchecks | fetch live Secret"
+- name: "bootstrap-capn-secret | healthchecks | fetch live Secret per namespace"
   kubernetes.core.k8s_info:
     kubeconfig: "{{ bootstrap_capn_secret_kubeconfig_path }}"
     api_version: "v1"
     kind: "Secret"
-    namespace: "{{ _bootstrap_capn_secret_required_namespace }}"
+    namespace: "{{ item }}"
     name: "{{ bootstrap_capn_secret_name }}"
   register: _bootstrap_capn_secret_get_register
+  loop: "{{ bootstrap_capn_secret_namespaces }}"
+  loop_control:
+    label: "{{ item }}"
 
-- name: "bootstrap-capn-secret | healthchecks | assert Secret exists"
+- name: "bootstrap-capn-secret | healthchecks | assert Secret + keys + label per namespace"
   ansible.builtin.assert:
     that:
-      - (_bootstrap_capn_secret_get_register.resources | length) == 1
-    fail_msg: >-
-      bootstrap_capn_secret healthcheck: Secret
-      {{ _bootstrap_capn_secret_required_namespace }}/{{ bootstrap_capn_secret_name }}
-      not found by k8s_info.
-
-- name: "bootstrap-capn-secret | healthchecks | record live data keys + label"
-  ansible.builtin.set_fact:
-    _bootstrap_capn_secret_live_keys: >-
-      {{ (_bootstrap_capn_secret_get_register.resources[0].data | default({})).keys() | list | sort }}
-    _bootstrap_capn_secret_live_pivot_label: >-
-      {{
-        (_bootstrap_capn_secret_get_register.resources[0].metadata.labels | default({}))
-        ['clusterctl.cluster.x-k8s.io/move'] | default('')
-      }}
-
-- name: "bootstrap-capn-secret | healthchecks | assert all required keys present"
-  ansible.builtin.assert:
-    that:
-      - "(_bootstrap_capn_secret_required_keys | difference(_bootstrap_capn_secret_live_keys)) | length == 0"
-    fail_msg: >-
-      bootstrap_capn_secret healthcheck failed: live Secret
-      {{ _bootstrap_capn_secret_required_namespace }}/{{ bootstrap_capn_secret_name }}
-      is missing keys
-      {{ _bootstrap_capn_secret_required_keys | difference(_bootstrap_capn_secret_live_keys) }}.
-      live keys = {{ _bootstrap_capn_secret_live_keys }}.
-
-# ---- Pivot label discipline -------------------------------------------
-
-- name: "bootstrap-capn-secret | healthchecks | assert pivot label matches contract"
-  ansible.builtin.assert:
-    that:
+      # Exactly one Secret object returned per namespace probe.
+      - (item.resources | length) == 1
+      # All 5 required keys present on the live Secret.
+      - >-
+        (
+          _bootstrap_capn_secret_required_keys
+          | difference(
+              (item.resources[0].data | default({})).keys() | list | sort
+            )
+        ) | length == 0
+      # Pivot label discipline: present iff k8s_lab_pivot_enabled.
       - >-
         (
           (bootstrap_capn_secret_pivot_enabled | bool)
-          and _bootstrap_capn_secret_live_pivot_label == 'true'
+          and (
+            (item.resources[0].metadata.labels | default({}))
+            ['clusterctl.cluster.x-k8s.io/move'] | default('') == 'true'
+          )
         )
         or
         (
           (not (bootstrap_capn_secret_pivot_enabled | bool))
-          and (_bootstrap_capn_secret_live_pivot_label | length == 0)
+          and (
+            ((item.resources[0].metadata.labels | default({}))
+             ['clusterctl.cluster.x-k8s.io/move'] | default('')) | length == 0
+          )
         )
     fail_msg: >-
-      bootstrap_capn_secret healthcheck failed: k8s_lab_pivot_enabled=
-      {{ bootstrap_capn_secret_pivot_enabled }} but Secret label
-      `clusterctl.cluster.x-k8s.io/move`=
-      "{{ _bootstrap_capn_secret_live_pivot_label }}".
+      bootstrap_capn_secret healthcheck failed for namespace
+      "{{ item.item }}": Secret {{ bootstrap_capn_secret_name }} not
+      found OR missing required keys OR pivot label mismatch.
+      live data keys =
+      {{ (item.resources[0].data | default({})).keys() | list | sort }};
+      live labels =
+      {{ item.resources[0].metadata.labels | default({}) }};
+      pivot_enabled = {{ bootstrap_capn_secret_pivot_enabled }}.
+  loop: "{{ _bootstrap_capn_secret_get_register.results }}"
+  loop_control:
+    label: "{{ item.item }}"
 
 # ---- LXD trust store membership reflects role state -------------------
 

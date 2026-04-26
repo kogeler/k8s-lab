@@ -1,0 +1,42 @@
+apiVersion: v2
+name: capi-workload-cluster
+description: |
+  Single CAPI Cluster CR (cluster.x-k8s.io/v1beta2) in topology mode that
+  references the ClusterClass shipped by charts/capi-cluster-class. One
+  release == one workload cluster. See PLAN-stage1-3.md §16.3.
+type: application
+
+# Chart.Version is the single source of truth for Cluster CR rotation.
+# Cluster.spec.topology is largely mutable, so unlike capi-cluster-class
+# this version drives the CR's metadata.name only when explicit
+# `metadata.name` rotation is desired by the consumer (default: chart
+# uses Values.cluster.name verbatim — CAPI tolerates in-place
+# topology updates).
+version: 0.3.0
+
+# Chart.appVersion tracks CAPI core (the API of the Cluster CR rendered
+# here). PLAN §8a verified version log: CAPI v1.12.5 (2026-04-21).
+appVersion: "1.12.5"
+
+kubeVersion: ">=1.31.0-0"
+
+keywords:
+  - cluster-api
+  - cluster
+  - capn
+  - topology
+
+home: https://cluster-api.sigs.k8s.io/
+
+sources:
+  - https://cluster-api.sigs.k8s.io/
+  - https://github.com/lxc/cluster-api-provider-incus
+
+# Pinned compatibility with charts/capi-cluster-class. The slug helper
+# in templates/_helpers.tpl reads this annotation to reproduce the
+# rendered ClusterClass metadata.name without requiring the consumer
+# to pass the version through values. Bumping this value MUST be
+# paired with a bump of `version:` above so chart traceability stays
+# meaningful (PLAN §16.3).
+annotations:
+  k8s-lab.io/capi-cluster-class-chart-version: "0.3.0"

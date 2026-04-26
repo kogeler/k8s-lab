@@ -100,41 +100,47 @@ top-level fields), substrate-required values в `vars/main.yml`
 
 ## 15.4. Role: `bootstrap_capn_secret`
 
-**Статус: выполнено в Step 6 (2026-04-23) — полное описание,
-deviation notes (PEM→base64 DER strip для LXD trust API, async PATCH
-core.https_address с readiness poll, restriction-drift assertion на
-existing trust entries) и substrate-required values в `vars/main.yml`
-живут в §13.11.**
+Полное описание (cross-section invariants, native-first execution,
+idempotence model, substrate-required values, cleanup contract) —
+§13.11.
 
-Создаёт Secret с:
+Phase-level summary:
 
-* `server`
-* `server-crt`
-* `client-crt`
-* `client-key`
-* `project`
-* label `clusterctl.cluster.x-k8s.io/move: "true"` если `k8s_lab_pivot_enabled=true`
+* Materialise CAPN identity Secret в **каждой** workload-cluster
+  namespace из `k8s_lab_capn_identity_namespaces` (§8 default
+  `["capi-clusters"]`). 5 substrate-required ключей per CAPN
+  identity-secret format ([capn.linuxcontainers.org][19]):
+  `server`, `server-crt`, `client-crt`, `client-key`, `project`.
+  Conditional label `clusterctl.cluster.x-k8s.io/move: "true"` под
+  `k8s_lab_pivot_enabled=true`.
+* Architectural truth (verified Step 11 chart-level acceptance):
+  CAPN v1alpha2 `LXCCluster.spec.secretRef` ищет Secret в namespace
+  LXCCluster CR'а; cross-ns lookup не поддерживается. Поэтому Secret
+  обязан жить в namespace'е каждого workload Cluster CR'а (в namespace
+  controller'а его НЕ кладём — там CAPN его не читает).
+* Дополнительно роль владеет двумя host/LXD-уровневыми операциями
+  (минимально-инвазивный scope, не пересекается с lxd_host's
+  snap/socket-ownership):
+  * PATCH `core.https_address: <bridge-ipv4>:8443` на LXD daemon —
+    binding только на `k8s_lab_internal_network_name` LXD-managed
+    bridge IP, чтобы CAPN внутри bootstrap LXC мог дотянуться до
+    `/1.0/...` через project internal subnet, а на host'овые внешние
+    NIC ничего не торчало;
+  * регистрация client TLS cert как `restricted: true + projects:
+    ["{{ k8s_lab_project_name }}"]` trust entry — CAPN не сможет
+    коснуться чужих проектов даже если будут операторские LXD-
+    сущности вне k8s_lab_project_name.
 
-CAPN identity secret format это прямо описывает. ([capn.linuxcontainers.org][19])
+Public defaults sourced из §8 globals (single-source-of-truth для
+координации с Phase 5+ Cluster CR's `identityRef`, `clusterctl move`
+workflow и chart consumers):
 
-Дополнительно к собственно Secret-материализации, роль владеет двумя
-host/LXD-уровневыми операциями (минимально-инвазивный scope, не
-пересекается с lxd_host's snap/socket-ownership):
-
-* PATCH `core.https_address: <bridge-ipv4>:8443` на LXD daemon —
-  binding только на `capi-int` LXD-managed bridge IP, чтобы CAPN
-  внутри bootstrap LXC мог дотянуться до `/1.0/...` через project
-  internal subnet, а на host'овые внешние NIC ничего не торчало;
-* регистрация client TLS cert как `restricted: true + projects:
-  [capi-lab]` trust entry — CAPN не сможет коснуться чужих проектов
-  (даже если будут операторские LXD-сущности вне `capi-lab`).
-
-Public defaults `bootstrap_capn_secret_name` и
-`bootstrap_capn_secret_pivot_enabled` sourced из плана §8 globals
-(`k8s_lab_infrastructure_secret_name` и `k8s_lab_pivot_enabled`
-соответственно), что обеспечивает single-source-of-truth для
-координации с Phase 5+ Cluster CR's `identityRef` и `clusterctl move`
-workflow.
+* `bootstrap_capn_secret_name ← k8s_lab_infrastructure_secret_name`;
+* `bootstrap_capn_secret_namespaces ← k8s_lab_capn_identity_namespaces`;
+* `bootstrap_capn_secret_pivot_enabled ← k8s_lab_pivot_enabled`;
+* `bootstrap_capn_secret_lxd_project ← k8s_lab_project_name`;
+* `bootstrap_capn_secret_internal_network_name ←
+  k8s_lab_internal_network_name`.
 
 ## 15.5. Публикация bootstrap API (LXD proxy device, не отдельная роль)
 

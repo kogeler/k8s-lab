@@ -1,0 +1,126 @@
+# capi-workload-cluster — public values interface (PLAN §16.3).
+#
+# Renders exactly one Cluster CR (cluster.x-k8s.io/v1beta2) in topology
+# mode. The CR references the ClusterClass shipped by
+# charts/capi-cluster-class via spec.topology.classRef.{name,namespace}.
+#
+# Substrate-required CR shape (apiVersion/kind, the topology mode itself,
+# the worker MachineDeployment class name "md-0" that mirrors what the
+# capi-cluster-class chart hardcodes) is baked into templates/*.yaml — a
+# consumer MUST NOT be able to silently break the chart by overriding
+# them. See the memory rule "Chart-required values are hardcoded, not
+# variables".
+#
+# The Cluster CR namespace is taken from .Release.Namespace
+# (i.e. `helm install --namespace ...`) — the chart does NOT ship a
+# Namespace resource. Namespace lifecycle is owned by the Terraform
+# wrapper (helm_release.create_namespace) or the operator: a per-cluster
+# chart cannot own a namespace that is shared across multiple workload
+# clusters (see PLAN §16.3 deviation note).
+
+# ---- Cluster identity --------------------------------------------------------
+cluster:
+  # Logical Cluster name. Becomes both metadata.name AND the value
+  # passed to CAPI as the cluster-name label on every owned object.
+  # Default tracks PLAN §8 k8s_lab_workload_cluster_name reference
+  # deployment; consumers always override per their own cluster.
+  name: lab-default
+
+# ---- ClusterClass reference --------------------------------------------------
+# Reproduces the ClusterClass metadata.name rendered by
+# charts/capi-cluster-class via the shared slug formula (Chart.Version
+# with "." → "-"). The cluster-class chart VERSION used to compute the
+# slug is NOT exposed here — it is pinned in this chart's Chart.yaml
+# under annotations."k8s-lab.io/capi-cluster-class-chart-version" so
+# the two charts evolve in lockstep without an extra plumbing point.
+# See Chart.yaml + templates/_helpers.tpl for the rotation contract.
+clusterClass:
+  # Logical prefix matching capi-cluster-class .Values.clusterClass.name.
+  name: capn-default
+  # Namespace where the ClusterClass lives. Empty string → omits
+  # classRef.namespace, which makes CAPI default to the Cluster's own
+  # namespace (same-namespace pattern). Set explicitly (e.g.
+  # "capi-system") for a cross-namespace ClusterClass reference —
+  # CAPI v1beta2 supports this natively via the ClusterClassRef.namespace
+  # field.
+  namespace: ""
+
+# ---- Kubernetes version ------------------------------------------------------
+# Goes to spec.topology.version; CAPI passes it through to
+# KubeadmControlPlane and to MachineDeployments, and CAPN substitutes
+# the literal "VERSION" in the LXCMachineTemplate image refs
+# (charts/capi-cluster-class) with this exact value.
+#
+# Constrained by the set of prebuilt `capi:kubeadm/<ver>` images that
+# upstream CAPN simplestreams publishes
+# (https://images.linuxcontainers.org/capn/streams/v1/images.json) —
+# NOT by `dl.k8s.io/release/stable.txt`. Picking a version absent
+# from simplestreams fails LXCMachine creation with `Failed getting
+# image: The requested image couldn't be found`. Verify upstream
+# image availability before bumping.
+kubernetes:
+  version: "v1.35.0"  # verified 2026-04-25 against CAPN simplestreams
+
+# ---- Topology replica counts -------------------------------------------------
+# Tracks PLAN §8 k8s_lab_workload_{controlplane,worker}_count.
+# CAPI v1beta2 allows live `replicas` updates on a referenced
+# ClusterClass — bumping these is safe to roll into an existing cluster
+# without rotating Chart.Version.
+#
+# controlPlane.replicas MUST be odd when KubeadmControlPlane uses the
+# default stacked etcd topology — CAPI's KCP webhook explicitly rejects
+# even values to avoid quorum/split-brain risk on partitioned etcd.
+# Default 3 = minimum odd value with HA semantics (1 = single-CP, no
+# HA). This is enforced by upstream CAPI, not by the schema below — if
+# you intentionally want to test single-CP, use replicas: 1.
+topology:
+  controlPlane:
+    replicas: 3
+  workers:
+    # Single MachineDeployment instance for MVP. The class name "md-0"
+    # is hardcoded in the template (it must match the
+    # `workers.machineDeployments[].class` baked into the
+    # capi-cluster-class ClusterClass — chart-required, not
+    # consumer-tunable).
+    replicas: 2
+
+# ---- Cluster pod / service networking ---------------------------------------
+# Dual-stack support: each cidrBlocks list accepts up to two entries
+# ([IPv4, IPv6]); a single-stack cluster may pass a single entry.
+# Defaults track PLAN §8 k8s_lab_workload_{pod,service}_cidr_{v4,v6}
+# reference deployment. This block is the ONE place where pod/service
+# CIDRs are declared in topology mode (ClusterClass intentionally does
+# not own clusterNetwork — the same ClusterClass can back many Cluster
+# CRs with different CIDR policies).
+clusterNetwork:
+  pods:
+    cidrBlocks:
+      - "10.244.0.0/16"
+      - "fd42:77:2::/56"
+  services:
+    cidrBlocks:
+      - "10.96.0.0/16"
+      - "fd42:77:3::/112"
+
+# ---- helm test hook configuration -------------------------------------------
+# `helm test <release>` runs an in-cluster Pod that verifies the chart
+# end-to-end: Cluster CR + topology reconciled + KCP/MD/LXCCluster owned
+# by CAPI + every node in `topology.{controlPlane,workers}.replicas`
+# actually joined the workload cluster API. See
+# templates/tests/cluster-ready.yaml for the full check matrix.
+#
+# Helm-3-only features used (the hashicorp/helm Terraform provider is
+# pinned to the Helm 3 SDK — Helm 4 hooks are not portable):
+#   * helm.sh/hook: test
+#   * helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+tests:
+  # Base image. Pinned to current stable Alpine; the test pod fetches
+  # the official upstream kubectl binary at runtime via busybox wget
+  # (no apk, no vendor-wrapped tooling images — see memory rules).
+  image: "alpine:3.21"
+  # Maximum wait for Phase 2 (workload-side node registration).
+  # Provisioning 3 CP + 2 W via CAPN on a cold lab host typically takes
+  # 10-15 minutes (image fetch + kubeadm init + sequential KCP rollout
+  # + worker join); 1200 s gives a generous buffer. Bump if the
+  # substrate is slower or the topology larger.
+  nodesUpTimeoutSeconds: 1200

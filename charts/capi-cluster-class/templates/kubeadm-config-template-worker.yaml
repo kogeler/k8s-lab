@@ -17,12 +17,20 @@ spec:
       # `spec.template.spec.minProperties >= 1` when no tuning knob is
       # overridden.
       format: cloud-config
-      {{- with $w.kubeletExtraArgs }}
+      # Substrate-required `kubeletExtraArgs` baseline (same rationale
+      # as KubeadmControlPlaneTemplate): `KubeletInUserNamespace=true`
+      # tells kubelet to ignore oomWatcher init failure under
+      # unprivileged userns where /dev/kmsg open is not permitted.
+      # Without it kubelet enters Restart=always crash loop on every
+      # CAPN-spawned worker. Consumer extras append after baseline.
       joinConfiguration:
         nodeRegistration:
           kubeletExtraArgs:
+            - name: feature-gates
+              value: "KubeletInUserNamespace=true"
+            {{- with $w.kubeletExtraArgs }}
             {{- toYaml . | nindent 12 }}
-      {{- end }}
+            {{- end }}
       {{- with $w.preKubeadmCommands }}
       preKubeadmCommands:
         {{- toYaml . | nindent 8 }}

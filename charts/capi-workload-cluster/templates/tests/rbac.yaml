@@ -1,0 +1,65 @@
+{{/*
+RBAC for the helm.sh/hook:test pod (PLAN §16.3 / chart-level acceptance).
+
+These objects are REGULAR Helm-managed resources (no hook annotation):
+they live with the release and get garbage-collected on `helm uninstall`,
+which means re-running `helm test <release>` re-uses the same SA without
+re-creating it. The test Pod itself is the only hook resource — see
+templates/tests/cluster-ready.yaml.
+
+RBAC scope is intentionally narrow:
+* read-only on the CAPI / CAPN CRs the chart owns or directly observes;
+* read on the *single* `<cluster>-kubeconfig` Secret created by KCP
+  (resourceNames-restricted) — broader Secret read would let the test
+  pod exfiltrate any other Secret in the namespace, which is not its
+  job.
+*/}}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ .Release.Name }}-test
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "capi-workload-cluster.labels" . | nindent 4 }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ .Release.Name }}-test
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "capi-workload-cluster.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    resourceNames: ["{{ .Values.cluster.name }}-kubeconfig"]
+    verbs: ["get"]
+  # `watch` is required by `kubectl wait`, which the test script uses
+  # to block on Cluster.status.conditions[TopologyReconciled]; without
+  # it kubectl falls back to a single-shot `get` and the wait silently
+  # degrades to a 1-iteration check.
+  - apiGroups: ["cluster.x-k8s.io"]
+    resources: ["clusters", "machinedeployments", "machines"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["controlplane.cluster.x-k8s.io"]
+    resources: ["kubeadmcontrolplanes"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["infrastructure.cluster.x-k8s.io"]
+    resources: ["lxcclusters", "lxcmachines"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ .Release.Name }}-test
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "capi-workload-cluster.labels" . | nindent 4 }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ .Release.Name }}-test
+    namespace: {{ .Release.Namespace }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ .Release.Name }}-test

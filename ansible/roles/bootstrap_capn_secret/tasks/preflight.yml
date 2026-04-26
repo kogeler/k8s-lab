@@ -41,6 +41,31 @@
       `k8s_lab_infrastructure_secret_name` (plan §8) — check both the global
       and any role-level override.
 
+- name: "bootstrap-capn-secret | preflight | validate target namespace list"
+  # `bootstrap_capn_secret_namespaces` resolves from project-wide
+  # `k8s_lab_capn_identity_namespaces` (plan §8). Each entry must be a
+  # valid Kubernetes namespace name (DNS-1123 label, max 63 chars,
+  # lowercase alphanumeric + hyphens, must start with a letter). Empty
+  # list is valid: HTTPS listener + LXD trust still execute, Secret
+  # apply / healthchecks short-circuit (plan §13.11 acceptance bullet
+  # "empty-list edge case").
+  ansible.builtin.assert:
+    that:
+      - bootstrap_capn_secret_namespaces is iterable
+      - bootstrap_capn_secret_namespaces is not string
+      - bootstrap_capn_secret_namespaces | map('regex_search', '^[a-z]([-a-z0-9]*[a-z0-9])?$')
+                                         | reject('none') | list | length
+                                         == bootstrap_capn_secret_namespaces | length
+      - bootstrap_capn_secret_namespaces | map('length') | reject('gt', 63) | list | length
+                                         == bootstrap_capn_secret_namespaces | length
+      - bootstrap_capn_secret_namespaces | unique | length == bootstrap_capn_secret_namespaces | length
+    fail_msg: >-
+      bootstrap_capn_secret: target namespaces must be a list of unique
+      DNS-1123 labels (max 63 chars). Got
+      {{ bootstrap_capn_secret_namespaces }}. Note: this resolves from
+      `k8s_lab_capn_identity_namespaces` (plan §8) — check the global
+      and any role-level override.
+
 - name: "bootstrap-capn-secret | preflight | validate paths + modes"
   ansible.builtin.assert:
     that:

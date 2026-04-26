@@ -5,10 +5,13 @@ galaxy_info:
   author: k8s-lab contributors
   description: >-
     Materialise the LXD identity Secret CAPN reads to talk to the host
-    daemon (plan §15.4). Generates a client cert/key, trusts it into
-    LXD restricted to the capi-lab project, exposes the LXD HTTPS
-    listener on the capi-int bridge, and applies the Secret to
-    capn-system in the bootstrap k3s cluster.
+    daemon (plan §13.11). Generates a client cert/key, trusts it into
+    LXD restricted to the project from k8s_lab_project_name, exposes
+    the LXD HTTPS listener on the LXD-managed internal bridge, and
+    applies the Secret in every namespace listed in
+    k8s_lab_capn_identity_namespaces (default ["capi-clusters"]) — the
+    workload Cluster CR namespaces where CAPN will look up
+    LXCCluster.spec.secretRef at reconcile time.
   license: MIT
   min_ansible_version: "2.16"
   platforms:

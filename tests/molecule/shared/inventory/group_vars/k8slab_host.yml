@@ -62,7 +62,15 @@ k8s_lab_capn_provider_version: "v0.8.5"
 # --- Cluster identity ---------------------------------------------
 k8s_lab_management_cluster_name: "mgmt-1"
 k8s_lab_workload_cluster_name:   "lab-default"
-k8s_lab_kubernetes_version:      "v1.35.3"
+k8s_lab_kubernetes_version:      "v1.35.0"   # constrained by CAPN simplestreams image set, see §8 inline
+
+# --- CAPN identity Secret target namespaces (plan §8 / §13.11) ----
+#
+# CAPN v1alpha2 LXCCluster.spec.secretRef has no namespace field;
+# the Secret must live in the namespace of every workload Cluster
+# CR. Default tracks charts/capi-workload-cluster's default
+# Release.Namespace (§16.3).
+k8s_lab_capn_identity_namespaces: ["capi-clusters"]
 
 # --- LXD btrfs pool contract (shared across prepare + base_system) -
 #

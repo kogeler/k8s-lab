@@ -100,6 +100,27 @@ _lxd_profiles_catalog:
         type:   "unix-char"
         source: "/dev/kmsg"
         path:   "/dev/kmsg"
+      # Read-only bind-mount of host's /boot. kubeadm SystemVerification
+      # preflight reads kernel build config to validate required
+      # CONFIG_* features (cgroups, namespaces, netfilter). It looks
+      # for the config in this order: /proc/config.gz →
+      # /boot/config-<uname-r> → /usr/src/linux-<uname-r>/.config →
+      # /lib/modules/<uname-r>/config. Debian 13 kernel is built without
+      # CONFIG_IKCONFIG, so /proc/config.gz never exists and
+      # `modprobe configs` fails ("Module configs not found in
+      # directory /lib/modules/<...>"). Inside an unprivileged LXC
+      # `uname -r` returns the host kernel, so the second lookup hits
+      # when host's /boot is mounted. Whitelisted on the project via
+      # `restricted.devices.disk: allow` + `restricted.devices.disk.paths:
+      # /boot` (lxd_project §13.3). Architectural fix vs.
+      # `--ignore-preflight-errors=SystemVerification` in
+      # KubeadmControlPlaneTemplate: kubeadm performs the real
+      # kernel-feature check, not a silenced one.
+      host-boot:
+        type:     "disk"
+        source:   "/boot"
+        path:     "/boot"
+        readonly: "true"
       eth1:
         type:    "nic"
         nictype: "bridged"

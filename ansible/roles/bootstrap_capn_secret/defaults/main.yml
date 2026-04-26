@@ -115,6 +115,24 @@ bootstrap_capn_secret_name: "{{ k8s_lab_infrastructure_secret_name | default('in
 # adds the label idempotently via server-side apply.
 bootstrap_capn_secret_pivot_enabled: "{{ k8s_lab_pivot_enabled | default(false) }}"
 
+# Target namespaces where the CAPN identity Secret must be materialised
+# (plan §13.11 + §16.3). CAPN v1alpha2 `LXCCluster.spec.secretRef` does
+# NOT carry a namespace field — CAPN looks the Secret up in the same
+# namespace as the LXCCluster CR (i.e. the workload Cluster CR's
+# namespace). The role therefore creates the Secret in EVERY namespace
+# listed here. The role also ensures each target namespace exists
+# before applying the Secret; consumers (Phase 5 helm_release with
+# `create_namespace = true`) see the namespace already present and
+# treat it as no-op.
+#
+# Sourced from the project-wide `k8s_lab_capn_identity_namespaces`
+# (plan §8). Default `["capi-clusters"]` matches charts/capi-workload-cluster
+# default Release.Namespace. Empty list is valid — HTTPS listener +
+# LXD trust still execute (they are substrate, not per-cluster), and
+# Secret apply / healthchecks short-circuit. Multi-cluster operators
+# add per-tenant namespaces here.
+bootstrap_capn_secret_namespaces: "{{ k8s_lab_capn_identity_namespaces | default(['capi-clusters']) }}"
+
 # Rendered Secret manifest staged on the host for ops audit. The
 # runtime apply path uses the in-memory definition, this file is
 # byte-stable read-only artefact.

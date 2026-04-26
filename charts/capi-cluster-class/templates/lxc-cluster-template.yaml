@@ -28,7 +28,50 @@ spec:
       # sufficient. Stage 2 CCM wiring is a separate plan §.
       cloudProviderNodePatch: false
       # loadBalancer is a REQUIRED field on CAPN v1alpha2
-      # LXCClusterTemplate — pass through whatever mode the consumer
-      # selected in values.yaml (MVP default = {lxc: {}}).
+      # LXCClusterTemplate. For the `lxc` mode (haproxy LXC instance,
+      # MVP default) the chart hardcodes the substrate-required
+      # `instanceSpec.profiles: [capi-base, ...profilesExtra]`
+      # baseline — the LB container needs a root-disk device and an
+      # internal-net NIC, both of which `capi-base` (role
+      # lxd_profiles, PLAN §13.6) supplies. Without this CAPN aborts
+      # with "No root device could be found" at instance-creation
+      # time.
+      #
+      # CAPN v0.8.x LXCLoadBalancerSpec shape:
+      #   loadBalancer.lxc:
+      #     instanceSpec:        { profiles, image, flavor, target }
+      #     customHAProxyConfigTemplate: <string>
+      #     disableHealthzCheck:         <bool>
+      # consumer-tunable knobs are exposed below; substrate-required
+      # profile baseline is fixed in templates/_helpers.tpl.
+      #
+      # For the other modes (`kubeVIP`, `oci`, `ovn`, `external`) the
+      # block is passed through verbatim — those LB types do not spawn
+      # an LXD instance the chart has to provision.
       loadBalancer:
+        {{- if hasKey .Values.loadBalancer "lxc" }}
+        {{- $lxc := .Values.loadBalancer.lxc | default dict }}
+        lxc:
+          instanceSpec:
+            profiles:
+              {{- include "capi-cluster-class.loadBalancerProfiles" . | nindent 14 }}
+            {{- with $lxc.image }}
+            image:
+              {{- toYaml . | nindent 14 }}
+            {{- end }}
+            {{- with $lxc.flavor }}
+            flavor: {{ . | quote }}
+            {{- end }}
+            {{- with $lxc.target }}
+            target: {{ . | quote }}
+            {{- end }}
+          {{- with $lxc.customHAProxyConfigTemplate }}
+          customHAProxyConfigTemplate: |
+            {{- . | nindent 12 }}
+          {{- end }}
+          {{- if $lxc.disableHealthzCheck | default false }}
+          disableHealthzCheck: true
+          {{- end }}
+        {{- else }}
         {{- toYaml .Values.loadBalancer | nindent 8 }}
+        {{- end }}

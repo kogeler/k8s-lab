@@ -16,6 +16,7 @@ SHELL := /bin/bash
 
 HERE          := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
 NET_DIR       := $(HERE)/libvirt-networks
+ARTIFACTS_DIR := $(abspath $(HERE)/../../../.artifacts)
 VAGRANT       ?= vagrant
 # virsh talks to the system libvirtd via the libvirt group socket; the
 # runner is expected to be a member of `libvirt`. No sudo — if the call
@@ -41,15 +42,21 @@ up: networks
 		cd $(HERE) && $(VAGRANT) up --provider=libvirt probe ; \
 	fi
 
-# Molecule scenario state is invalidated automatically on the next molecule
-# run by `scripts/molecule_run.py`: it compares the live VM identity at
-# `.vagrant/machines/host/libvirt/id` against the tracker written under
-# `.artifacts/harness-vm-id` and wipes stale state on mismatch. Keeping
-# the destroy target minimal avoids a second, duplicate mechanism — single
-# source of truth beats belt-and-braces for this.
+# `destroy` tears down the VM AND wipes runner-side artefacts: the
+# bootstrap kubeconfig, the auto.tfvars.json handoff, per-cluster
+# kubeconfigs, and the harness-vm-id tracker all refer to the VM we
+# are about to remove and would otherwise mislead the next run (the
+# `scripts/molecule_run.py` drift check is one consumer of the
+# tracker; helm / kubectl invocations against the stale kubeconfig
+# are another). `.gitkeep` is preserved so the directory stays
+# tracked.
 .PHONY: destroy
 destroy:
 	-cd $(HERE) && $(VAGRANT) destroy -f
+	@if [ -d $(ARTIFACTS_DIR) ]; then \
+		echo "== cleanup: wiping $(ARTIFACTS_DIR)/* (preserving .gitkeep)" ; \
+		find $(ARTIFACTS_DIR) -mindepth 1 ! -name '.gitkeep' -exec rm -rf {} + 2>/dev/null || true ; \
+	fi
 	@# Safety net for the case where vagrant was killed mid-flight (SIGKILL
 	@# on `vagrant up`, OOM, session drop). `vagrant destroy` can no longer
 	@# clean up orphan libvirt domains + volumes if its own state tracker

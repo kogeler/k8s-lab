@@ -59,7 +59,7 @@
       # --- Topology counts (plan §8) ---
       k8s_lab_management_controlplane_count: "{{ k8s_lab_management_controlplane_count | default(1) | int }}"
       k8s_lab_management_worker_count:       "{{ k8s_lab_management_worker_count | default(1) | int }}"
-      k8s_lab_workload_controlplane_count:   "{{ k8s_lab_workload_controlplane_count | default(2) | int }}"
+      k8s_lab_workload_controlplane_count:   "{{ k8s_lab_workload_controlplane_count | default(3) | int }}"
       k8s_lab_workload_worker_count:         "{{ k8s_lab_workload_worker_count | default(2) | int }}"
       # --- CAPN pinning ---
       k8s_lab_capn_provider_version:   "{{ k8s_lab_capn_provider_version | default('v0.8.5') }}"

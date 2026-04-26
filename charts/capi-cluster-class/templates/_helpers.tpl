@@ -74,6 +74,27 @@ not user-tunable per memory rule "Chart-required values are hardcoded".
 {{- end -}}
 
 {{/*
+Substrate-required LXD profile baseline for the haproxy load balancer
+LXC instance that CAPN spawns when `loadBalancer.lxc` mode is selected.
+The LB instance must carry a profile that supplies a root disk device
+and at least the internal-net NIC (so haproxy can reach control-plane
+backends via capi-int) — without it CAPN aborts with
+"No root device could be found" at instance-creation time.
+
+`capi-base` (owned by role lxd_profiles, PLAN §13.6) is the minimal
+profile that ships both prerequisites; consumer extras append after the
+baseline through `loadBalancer.lxc.profilesExtra`. Like the CP / worker
+baselines, this list is NOT user-tunable: the baseline is a hard
+substrate invariant, only the extras are.
+*/}}
+{{- define "capi-cluster-class.loadBalancerProfiles" -}}
+- capi-base
+{{- range (((.Values.loadBalancer | default dict).lxc | default dict).profilesExtra | default list) }}
+- {{ . }}
+{{- end }}
+{{- end -}}
+
+{{/*
 Common labels attached to every rendered object.
 */}}
 {{- define "capi-cluster-class.labels" -}}

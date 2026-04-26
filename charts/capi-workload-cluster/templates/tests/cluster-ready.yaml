@@ -1,0 +1,151 @@
+{{/*
+Helm test hook (PLAN §16.3 / chart-level acceptance).
+
+Run with `helm test <release>` after `helm install`/`helm upgrade`.
+Targets only Helm 3 features (helm.sh/hook:test, hook-delete-policy
+before-hook-creation,hook-succeeded) so the chart stays compatible
+with the hashicorp/helm Terraform provider, which is pinned to the
+Helm 3 SDK.
+
+Two phases inside one Pod (single `helm test` run, single PASS/FAIL):
+
+  Phase 1 — bootstrap-side shape, fast (~2 min):
+    * Cluster CR exists in .Release.Namespace
+    * .status.conditions[TopologyReconciled] == True (CAPI accepted topology)
+    * owned KubeadmControlPlane, MachineDeployment, LXCCluster materialised
+
+  Phase 2 — workload-side topology, slow (default 20 min):
+    * <cluster>-kubeconfig Secret materialises (KCP controller emits it
+      after the first CP node passes `kubeadm init` and is reachable)
+    * exactly .Values.topology.controlPlane.replicas Node objects with
+      role label node-role.kubernetes.io/control-plane registered in
+      the workload cluster API
+    * exactly .Values.topology.workers.replicas Node objects without
+      that label
+    * NodeReady=True is NOT required — CNI is shipped by Phase 5.1
+      (a separate Helm release on the workload cluster), so workers
+      register as NotReady until then. "Came up" == "registered with
+      the API server", which is what kubeadm join finishing proves.
+
+Image: alpine:<pinned> + upstream kubectl downloaded at runtime via
+busybox wget (no apk, no bitnami — see memory rules
+"Never use bitnami images" / "Always use latest stable").
+*/}}
+apiVersion: v1
+kind: Pod
+metadata:
+  name: {{ .Release.Name }}-test-cluster-ready
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "capi-workload-cluster.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": test
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  serviceAccountName: {{ .Release.Name }}-test
+  restartPolicy: Never
+  containers:
+    - name: probe
+      image: {{ .Values.tests.image | quote }}
+      imagePullPolicy: IfNotPresent
+      env:
+        - name: NAME
+          value: {{ .Values.cluster.name | quote }}
+        - name: NS
+          value: {{ .Release.Namespace | quote }}
+        - name: CP_REPLICAS
+          value: {{ .Values.topology.controlPlane.replicas | quote }}
+        - name: WORKER_REPLICAS
+          value: {{ .Values.topology.workers.replicas | quote }}
+        - name: KUBECTL_VERSION
+          value: {{ .Values.kubernetes.version | quote }}
+        - name: NODES_UP_TIMEOUT_SECONDS
+          value: {{ .Values.tests.nodesUpTimeoutSeconds | quote }}
+      command: ["/bin/sh", "-c"]
+      args:
+        - |
+          set -eu
+
+          EXPECTED_TOTAL=$((CP_REPLICAS + WORKER_REPLICAS))
+
+          echo "==> install kubectl ${KUBECTL_VERSION} from dl.k8s.io"
+          wget -qO /tmp/kubectl \
+            "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/amd64/kubectl"
+          chmod +x /tmp/kubectl
+          KCTL=/tmp/kubectl
+
+          # ---------- Phase 1: bootstrap-side shape ----------
+          echo "==> [1/7] Cluster CR present in ${NS}/${NAME}"
+          $KCTL -n "$NS" get cluster.cluster.x-k8s.io "$NAME"
+
+          echo "==> [2/7] Cluster TopologyReconciled=True (timeout 2m)"
+          $KCTL -n "$NS" wait \
+            cluster.cluster.x-k8s.io/"$NAME" \
+            --for=condition=TopologyReconciled=True \
+            --timeout=120s
+
+          echo "==> [3/7] owned KubeadmControlPlane materialised"
+          $KCTL -n "$NS" get kubeadmcontrolplane \
+            -l "cluster.x-k8s.io/cluster-name=${NAME}" \
+            --no-headers | grep -q . \
+            || { echo "FAIL: no KCP for cluster ${NAME}"; exit 1; }
+
+          echo "==> [4/7] owned MachineDeployment materialised"
+          $KCTL -n "$NS" get machinedeployment \
+            -l "cluster.x-k8s.io/cluster-name=${NAME}" \
+            --no-headers | grep -q . \
+            || { echo "FAIL: no MachineDeployment for cluster ${NAME}"; exit 1; }
+
+          echo "==> [5/7] owned LXCCluster materialised"
+          $KCTL -n "$NS" get lxccluster.infrastructure.cluster.x-k8s.io \
+            -l "cluster.x-k8s.io/cluster-name=${NAME}" \
+            --no-headers | grep -q . \
+            || { echo "FAIL: no LXCCluster for cluster ${NAME}"; exit 1; }
+
+          # ---------- Phase 2: workload-side authoritative check ----------
+          DEADLINE=$(( $(date +%s) + NODES_UP_TIMEOUT_SECONDS ))
+
+          echo "==> [6/7] wait for ${NAME}-kubeconfig Secret (KCP issues it post-init)"
+          while [ "$(date +%s)" -lt "$DEADLINE" ]; do
+            if $KCTL -n "$NS" get secret "${NAME}-kubeconfig" >/dev/null 2>&1; then
+              $KCTL -n "$NS" get secret "${NAME}-kubeconfig" \
+                -o jsonpath='{.data.value}' \
+                | base64 -d > /tmp/wl.kubeconfig
+              [ -s /tmp/wl.kubeconfig ] && break
+            fi
+            sleep 10
+          done
+          [ -s /tmp/wl.kubeconfig ] \
+            || { echo "FAIL: ${NAME}-kubeconfig Secret never materialised within ${NODES_UP_TIMEOUT_SECONDS}s"; exit 1; }
+
+          echo "==> [7/7] wait for ${CP_REPLICAS} CP + ${WORKER_REPLICAS} worker nodes registered"
+          # NodeReady is NOT a precondition — CNI ships in Phase 5.1.
+          # Registration with the API server (kubeadm join completed)
+          # is the authoritative "came up" signal.
+          WL="$KCTL --kubeconfig=/tmp/wl.kubeconfig"
+          while [ "$(date +%s)" -lt "$DEADLINE" ]; do
+            CP_NODES=$( $WL get nodes \
+              -l 'node-role.kubernetes.io/control-plane' \
+              --no-headers 2>/dev/null | wc -l )
+            WORKER_NODES=$( $WL get nodes \
+              -l '!node-role.kubernetes.io/control-plane' \
+              --no-headers 2>/dev/null | wc -l )
+            TOTAL=$((CP_NODES + WORKER_NODES))
+            echo "    nodes: cp=${CP_NODES}/${CP_REPLICAS} worker=${WORKER_NODES}/${WORKER_REPLICAS} total=${TOTAL}/${EXPECTED_TOTAL}"
+            if [ "$CP_NODES" -ge "$CP_REPLICAS" ] \
+                 && [ "$WORKER_NODES" -ge "$WORKER_REPLICAS" ]; then
+              break
+            fi
+            sleep 15
+          done
+          if [ "$CP_NODES" -lt "$CP_REPLICAS" ] || [ "$WORKER_NODES" -lt "$WORKER_REPLICAS" ]; then
+            echo "FAIL: topology mismatch within ${NODES_UP_TIMEOUT_SECONDS}s — got cp=${CP_NODES} worker=${WORKER_NODES}, expected cp=${CP_REPLICAS} worker=${WORKER_REPLICAS}"
+            $WL get nodes -o wide || true
+            exit 1
+          fi
+
+          echo ""
+          echo "==> workload cluster nodes:"
+          $WL get nodes -o wide
+          echo ""
+          echo "===> ALL TOPOLOGY CHECKS PASSED (cp=${CP_NODES}, workers=${WORKER_NODES})"

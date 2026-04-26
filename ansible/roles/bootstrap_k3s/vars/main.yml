@@ -26,3 +26,68 @@
 _bootstrap_k3s_required_disable_components:
   - "traefik"
   - "servicelb"
+
+# ---- Dual-stack pod / service CIDRs (substrate-required) ----------------
+#
+# Bootstrap k3s pod CNI MUST be dual-stack (plan §13.9 / §16.3): CAPN
+# v1alpha2 LXCCluster auto-derives `Cluster.spec.controlPlaneEndpoint`
+# from the workload-cluster LB instance, and the LB instance picks an
+# IPv6 address on capi-int (LXD-managed dual-stack network, plan §5.2).
+# CAPI controllers run as pods inside bootstrap k3s and need pod-network
+# IPv6 to dial that endpoint — without it KCP can never populate
+# Machine.status.nodeRef and the workload cluster never reaches Ready.
+#
+# IPv4 portions stay on k3s upstream defaults (10.42/16, 10.43/16) so
+# stock kubeadm tooling stays familiar; IPv6 portions are ULAs from
+# `fd42:77::/48` family, distinct from capi-int (`fd42:77:1::/64`) and
+# workload pod/service CIDRs (`fd42:77:2::/56` / `fd42:77:3::/112`).
+# Cluster DNS sits at the 10th address of each service range
+# (k3s convention).
+_bootstrap_k3s_required_cluster_cidr_v4:  "10.42.0.0/16"
+_bootstrap_k3s_required_cluster_cidr_v6:  "fd42:77:42::/56"
+_bootstrap_k3s_required_service_cidr_v4:  "10.43.0.0/16"
+_bootstrap_k3s_required_service_cidr_v6:  "fd42:77:43::/112"
+_bootstrap_k3s_required_cluster_dns_v4:   "10.43.0.10"
+_bootstrap_k3s_required_cluster_dns_v6:   "fd42:77:43::a"
+
+# Flannel must SNAT pod-originated IPv6 to the node IPv6 — without it
+# pods reach IPv6 destinations from a non-routable pod-CIDR address and
+# every reply gets dropped at the first hop. Required for the very
+# `cluster_accessor` traffic the dual-stack design unlocks.
+_bootstrap_k3s_required_flannel_ipv6_masq: true
+
+# k3s embeds kube-router as its NetworkPolicy controller. Under
+# dual-stack `--cluster-cidr` inside an unprivileged LXC bootstrap
+# container kube-router's IPv6 init aborts the entire k3s server
+# process with `Shutdown request received: failed to start
+# networking: unable to initialize network policy controller: IPv6
+# was enabled, but no IPv6 address was found on the node` — even
+# when kubelet has correctly registered both IPv4 + IPv6 in
+# node.status.addresses (verified via k3s.io/node-args annotation).
+# Bootstrap k3s is a single-node management cluster carrying CAPI/
+# CAPN controllers; NetworkPolicy enforcement is a multi-tenant
+# concern that doesn't apply, so the controller is disabled
+# substrate-wide. Workload clusters get their own CNI + policy via
+# Phase 5.1 (Calico, MetalLB) — completely separate plane.
+_bootstrap_k3s_required_disable_network_policy: true
+
+# Node-IP resolution: kubelet without `--node-ip` defaults to picking
+# ONE address from the default route (IPv4) — k3s' network-policy
+# controller then aborts with "IPv6 was enabled, but no IPv6 address
+# was found on the node" and enters Restart=always crash loop. Since
+# the bootstrap container takes its IPs from LXD DHCP/SLAAC and the
+# concrete values are not known at template-render time, the role
+# ships a tiny launcher script that runs as ExecStart inside the
+# container, resolves IPv4 + IPv6 on the substrate-required interface
+# at process-start time, and exec()s `k3s server` with an injected
+# `--node-ip=<v4>,<v6>` followed by every other flag the systemd unit
+# passed. EnvironmentFile-based approaches do not work — systemd
+# loads EnvironmentFile BEFORE any Exec* fires, so an ExecStartPre
+# that writes `K3S_NODE_IP=...` cannot be picked up by ExecStart's
+# `${K3S_NODE_IP}` substitution.
+#
+# Net effect — no §8 globals for bootstrap IPs, no cross-role
+# coupling, and any number of bootstrap-shaped instances co-exist
+# without IP collisions.
+_bootstrap_k3s_required_node_iface: "eth0"
+_bootstrap_k3s_required_launcher_path: "/usr/local/sbin/k3s-server-launcher"

@@ -92,7 +92,21 @@
     group: "root"
     mode:  "0600"
 
-- name: "bootstrap-k3s | install | read in-container env + unit for drift compare"
+- name: "bootstrap-k3s | install | render k3s launcher script to staging path"
+  # Wrapper invoked as ExecStart by k3s.service. Resolves IPv4 + IPv6
+  # on eth0 inside the bootstrap container at process-start time and
+  # exec()s `k3s server --node-ip=<v4>,<v6> <orig flags>`. Keeping the
+  # launcher in the role (vs static `--node-ip` from a §8 global)
+  # avoids per-instance IP pinning and works for any number of
+  # bootstrap-shaped containers.
+  ansible.builtin.template:
+    src:   "k3s-server-launcher.sh.j2"
+    dest:  "{{ bootstrap_k3s_host_staging_dir }}/k3s-server-launcher"
+    owner: "root"
+    group: "root"
+    mode:  "0755"
+
+- name: "bootstrap-k3s | install | read in-container env + unit + launcher for drift compare"
   ansible.builtin.command:
     argv:
       - "{{ bootstrap_k3s_lxc_cli }}"
@@ -105,17 +119,19 @@
       - >-
         echo '==ENV=='; [ -f {{ bootstrap_k3s_env_path }} ] && cat {{ bootstrap_k3s_env_path }};
         echo '==UNIT=='; [ -f {{ bootstrap_k3s_unit_path }} ] && cat {{ bootstrap_k3s_unit_path }};
+        echo '==LAUNCHER=='; [ -f {{ _bootstrap_k3s_required_launcher_path }} ] && cat {{ _bootstrap_k3s_required_launcher_path }};
         echo '==END=='
   register: _bootstrap_k3s_live_register
   changed_when: false
 
-- name: "bootstrap-k3s | install | read staged env + unit"
+- name: "bootstrap-k3s | install | read staged env + unit + launcher"
   ansible.builtin.slurp:
     src: "{{ item }}"
   register: _bootstrap_k3s_staged_register
   loop:
     - "{{ bootstrap_k3s_host_staging_dir }}/k3s.env"
     - "{{ bootstrap_k3s_host_staging_dir }}/k3s.service"
+    - "{{ bootstrap_k3s_host_staging_dir }}/k3s-server-launcher"
 
 - name: "bootstrap-k3s | install | compute drift flags"
   ansible.builtin.set_fact:
@@ -127,6 +143,11 @@
     _bootstrap_k3s_unit_drift: >-
       {{
         (_bootstrap_k3s_staged_register.results[1].content | b64decode)
+        not in _bootstrap_k3s_live_register.stdout
+      }}
+    _bootstrap_k3s_launcher_drift: >-
+      {{
+        (_bootstrap_k3s_staged_register.results[2].content | b64decode)
         not in _bootstrap_k3s_live_register.stdout
       }}
 
@@ -148,11 +169,14 @@
       - "sh"
       - "-c"
       - >-
-        mkdir -p {{ bootstrap_k3s_env_path | dirname }} {{ bootstrap_k3s_unit_path | dirname }}
-  when: _bootstrap_k3s_env_drift or _bootstrap_k3s_unit_drift
-  changed_when: _bootstrap_k3s_env_drift or _bootstrap_k3s_unit_drift
+        mkdir -p
+        {{ bootstrap_k3s_env_path | dirname }}
+        {{ bootstrap_k3s_unit_path | dirname }}
+        {{ _bootstrap_k3s_required_launcher_path | dirname }}
+  when: _bootstrap_k3s_env_drift or _bootstrap_k3s_unit_drift or _bootstrap_k3s_launcher_drift
+  changed_when: _bootstrap_k3s_env_drift or _bootstrap_k3s_unit_drift or _bootstrap_k3s_launcher_drift
 
-# ---- Push env + unit on drift ------------------------------------------
+# ---- Push env + unit + resolver on drift -------------------------------
 
 - name: "bootstrap-k3s | install | push env file into container"
   ansible.builtin.command:
@@ -168,6 +192,22 @@
       - "{{ bootstrap_k3s_instance_name }}{{ bootstrap_k3s_env_path }}"
   when: _bootstrap_k3s_env_drift
   changed_when: _bootstrap_k3s_env_drift
+  notify: "bootstrap-k3s | handlers | restart k3s"
+
+- name: "bootstrap-k3s | install | push k3s server launcher into container"
+  ansible.builtin.command:
+    argv:
+      - "{{ bootstrap_k3s_lxc_cli }}"
+      - "file"
+      - "push"
+      - "--project={{ bootstrap_k3s_project }}"
+      - "--mode=0755"
+      - "--uid=0"
+      - "--gid=0"
+      - "{{ bootstrap_k3s_host_staging_dir }}/k3s-server-launcher"
+      - "{{ bootstrap_k3s_instance_name }}{{ _bootstrap_k3s_required_launcher_path }}"
+  when: _bootstrap_k3s_launcher_drift
+  changed_when: _bootstrap_k3s_launcher_drift
   notify: "bootstrap-k3s | handlers | restart k3s"
 
 - name: "bootstrap-k3s | install | push systemd unit into container"

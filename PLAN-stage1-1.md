@@ -25,25 +25,39 @@ PLAN-stage1-7.md ................. §20..§22 (Stage 1 meta: out-of-scope, self-
 
 Этот раздел охватывает Ansible-роли Stage 1, которые уже реализованы и
 прогнаны end-to-end в локальном Vagrant/libvirt-контуре по состоянию на
-Step 9 (2026-04-24):
+Step 11 (2026-04-26):
 
 * §13.1 `base_system` (Step 1 + Step 5 required-values refactor);
 * §13.2 `lxd_host` (Step 2);
 * §13.3 `lxd_project` (Step 3 + Step 4 substrate расширение + Step 7
-  `restricted.devices.proxy` allow);
+  `restricted.devices.proxy` allow + **Step 11 `restricted.devices.disk:
+  allow` + `restricted.devices.disk.paths: /boot` для kubeadm
+  SystemVerification под unprivileged-LXC**);
 * §13.4 `lxd_storage_pools` (Step 3 + Step 5 required-config refactor);
 * §13.5 `lxd_network_int_managed` (Step 3 + Step 5 required-config refactor);
 * §13.6 `lxd_profiles` (Step 3 lean baseline + Step 4 full CAPN
-  unprivileged kubeadm baseline + **Step 9 cloud-init vendor-data
-  для capi-worker/capi-controlplane**);
+  unprivileged kubeadm baseline + Step 9 cloud-init vendor-data для
+  capi-worker/capi-controlplane + **Step 11 `host-boot` disk device
+  на capi-controlplane/capi-worker — read-only `/boot` для kubeadm
+  SystemVerification на unprivileged-LXC nodes**);
 * §13.7 `lxd_bootstrap_instance` (Step 3 + Step 5 required-profiles
   refactor + **Step 9 image alias → `debian/13/cloud`**);
 * §13.8 `binary_fetch` (Step 4 — отложенная Phase 1.5 / §15.1);
-* §13.9 `bootstrap_k3s` (Step 4 + Step 5 required-disables refactor);
+* §13.9 `bootstrap_k3s` (Step 4 + Step 5 required-disables refactor +
+  **Step 11 dual-stack pod CNI: cluster-cidr/service-cidr/cluster-dns
+  v4+v6, `--flannel-ipv6-masq`, `--disable-network-policy` под
+  unprivileged-LXC kube-router-incompat, `--node-ip=v4,v6` через
+  ExecStart wrapper-launcher**);
 * §13.10 `bootstrap_clusterctl` (Step 6 — Phase 4 продолжение, §15.3);
-* §13.11 `bootstrap_capn_secret` (Step 6 — Phase 4 продолжение, §15.4);
-* §13.12 `export_artifacts` (Step 8 — Phase 4 закрытие, §15.6;
-  Molecule-цикл ещё не прогон).
+* §13.11 `bootstrap_capn_secret` (Step 6 — Phase 4 продолжение, §15.4 +
+  **Step 11 namespace fanout: Secret материализуется в каждой ns из
+  `k8s_lab_capn_identity_namespaces` (per-cluster), вместо ранее
+  ошибочного capn-system; CAPN читает Secret из namespace LXCCluster
+  CR'а, cross-ns lookup в v1alpha2 не поддерживается**);
+* §13.12 `export_artifacts` (Step 8 — Phase 4 закрытие, §15.6 +
+  **Step 11 `k8s_lab_workload_controlplane_count` default 2 → 3**:
+  CAPI's KCP webhook отбивает чётный CP replicas под stacked etcd —
+  min HA = 3).
 
 Phase 8 destroy-role `cleanup_bootstrap` (§19.1) реализована в Step 9 —
 единственная Stage-1 роль в реверс-направлении, живёт в PLAN-stage1-6.md
@@ -93,6 +107,144 @@ verify, changed=0 на повторных проходах).
 * `requirements.yml` комментарий уточнён: Python `kubernetes` нужен на
   executor node (целевой VM), не на controller;
 * пустые `handlers/` директории удалены из обеих ролей.
+
+**Step 11 (2026-04-26) — Phase 5 chart-level acceptance драйвер +
+substrate fixes для unprivileged-LXC kubeadm path.** Реализован чарт
+`charts/capi-workload-cluster/` (§16.3, новый), уточнён чарт
+`charts/capi-cluster-class/` под верифицированную CAPN v0.8.5 CRD
+shape (`loadBalancer.lxc.instanceSpec.profiles: [capi-base]`,
+`KubeadmControlPlaneTemplate` + `KubeadmConfigTemplate` несут
+substrate-required `kubeletExtraArgs: [feature-gates=KubeletInUserNamespace=true]`
+для unprivileged-LXC oomWatcher), bumped 0.1.0 → 0.3.0. Helm install
+обоих чартов против bootstrap k3s зелёный, `TopologyReconciled=True`
+на первом apply. Helm test (CAPN-driven full provisioning из 3 CP +
+2 workers) **остаётся не зелёным** на dual-stack apiserver bind +
+admin.conf endpoint family mismatch — open issue, scope Step 12+
+(см. §16.7 Acceptance status note).
+
+В процессе работы chart-level test обнаружил и закрыл серию
+substrate-required deviation'ов:
+
+* `bootstrap_capn_secret` (§13.11) — **namespace fanout**: CAPN
+  v1alpha2 LXCCluster.spec.secretRef не имеет namespace-поля; Secret
+  обязан жить в namespace LXCCluster CR'а (т.е. workload Cluster CR
+  namespace). Roль расширена loop'ом по новому §8 global
+  `k8s_lab_capn_identity_namespaces` (default `["capi-clusters"]`).
+  Старый `_required_namespace: capn-system` substrate value удалён —
+  CAPN не читает Secret из своего controller namespace.
+* §8 `k8s_lab_workload_controlplane_count` default `2 → 3` — CAPI's
+  KubeadmControlPlane webhook отбивает чётный CP replicas под
+  stacked etcd (split-brain risk), min HA = 3.
+* §8 `k8s_lab_kubernetes_version` `v1.35.3 → v1.35.0` — pin
+  constrained by CAPN simplestreams image set
+  (https://images.linuxcontainers.org/capn/), не upstream
+  dl.k8s.io/release/stable.txt; 2026-04-25 актуальный latest =
+  `v1.35.0`. Inline rationale в §8a.
+* §13.3 `lxd_project` — `restricted.devices.disk: managed → allow`
+  + `restricted.devices.disk.paths: /boot`. Только `allow` mode
+  поддерживает path-based bind-mount whitelist'ы; `block` блочит
+  всё включая pool-backed root disks, `managed` игнорирует `paths`
+  whitelist. Whitelist `/boot` нужен для §13.6 `host-boot` device
+  (см. ниже).
+* §13.6 `lxd_profiles` — **`host-boot` disk device** на
+  `capi-controlplane`/`capi-worker` (НЕ на `capi-bootstrap` — k3s
+  не делает kubeadm preflight). Read-only mount host's `/boot` в
+  container — kubeadm SystemVerification читает
+  `/boot/config-<uname-r>` для проверки CONFIG_NAMESPACES, CGROUPS,
+  NETFILTER, etc. Debian 13 kernel built без CONFIG_IKCONFIG —
+  `/proc/config.gz` физически не существует, `modprobe configs` в
+  unprivileged-LXC безусловно валится. Архитектурный fix вместо
+  `--ignore-preflight-errors=SystemVerification` в KCPT.
+* §13.9 `bootstrap_k3s` — **dual-stack pod CNI**:
+  `--cluster-cidr=10.42.0.0/16,fd42:77:42::/56`,
+  `--service-cidr=10.43.0.0/16,fd42:77:43::/112`,
+  `--cluster-dns=10.43.0.10,fd42:77:43::a`, `--flannel-ipv6-masq`,
+  `--disable-network-policy` (kube-router IPv6 init crash под
+  unprivileged-LXC даже после правильной node-ip регистрации).
+  `--node-ip=v4,v6` инжектится через wrapper-script
+  `/usr/local/sbin/k3s-server-launcher` на ExecStart — `ip -o addr
+  show eth0` инсайд container'а резолвит обе family'и в момент
+  старта k3s, exec'ит `k3s server --node-ip=<v4>,<v6> "$@"` поверх
+  всех systemd-флагов. EnvironmentFile-based подходы не работают
+  (systemd загружает env block ДО ExecStartPre); wrapper не зависит
+  от per-instance IP pinning, multi-bootstrap setup'ы работают без
+  collision. Trigger: workload-cluster CR's `Cluster.spec.controlPlaneEndpoint`
+  под dual-stack capi-int picks IPv6 family — CAPI controllers в
+  bootstrap k3s pods ОБЯЗАНЫ иметь IPv6-reachable pod CNI чтобы
+  достучаться до workload LB endpoint'а.
+* §16.2 `charts/capi-cluster-class` — bumped 0.1.0 → 0.3.0; четыре
+  substrate-required hardcoded додобавления:
+  * `loadBalancer.lxc.instanceSpec.profiles: [capi-base]` baseline
+    — без него CAPN падает на `Failed getting root disk: No root
+    device could be found` при создании haproxy LB instance
+    (LXD requires NIC + root disk;`capi-base` profile несёт оба).
+  * `KubeadmControlPlaneTemplate.spec.template.spec.kubeadmConfigSpec.
+    initConfiguration/joinConfiguration.nodeRegistration.kubeletExtraArgs`
+    всегда эмитит `feature-gates=KubeletInUserNamespace=true`
+    baseline (consumer extras append) — kubelet's oomWatcher
+    constructor open'ит `/dev/kmsg`, в unprivileged userns это
+    permission-denied; KubeletInUserNamespace gate говорит kubelet
+    игнорировать failure и стартовать.
+  * `KubeadmConfigTemplate` (worker) — то же самое в
+    `joinConfiguration`.
+  * `loadBalancer.lxc` shape under CAPN v0.8.5 CRD — `instanceSpec`
+    wrapper (вместо ранее предполагаемой плоской структуры);
+    consumer-tunable knobs: `image`, `flavor`, `target`,
+    `customHAProxyConfigTemplate`, `disableHealthzCheck`,
+    `profilesExtra`. Проверено против live LXCClusterTemplate CRD.
+* §16.3 `charts/capi-workload-cluster` — **новый чарт** (полное
+  описание contract'а — ниже в §16.3). Cluster CR + helm test hook
+  (RBAC + alpine + upstream kubectl wget) для in-cluster topology
+  validation. Helm-3-only features (TF helm provider compat).
+  ClusterClass version coupling через `Chart.yaml.annotations`,
+  не values — consumer / TF fixture не передаёт версию руками.
+
+§16.4/§16.5 Terraform module contracts обновлены: input
+`cluster_class_chart_version` removed (annotation-pinned теперь),
+`cluster_class_namespace` input добавлен (cross-ns ClusterClass
+support, поскольку workload Cluster CR живёт в `capi-clusters`,
+а ClusterClass — в `capi-system`).
+
+Memory rules введённые в этом Step (см. `MEMORY.md`):
+* `feedback_test_artifact_naming.md` — k8s-lab* префикс для test
+  artifacts вместо generic placeholders;
+* `feedback_no_bitnami_images.md` — bitnami/* banned, alpine + apk
+  / upstream binary fetch для test pods;
+* `feedback_no_ad_hoc_fixes.md` — hard rule: после root-cause —
+  править архитектурно + всю цепочку, никаких ручных kubectl
+  apply / sed-yaml / hand-copy;
+* `feedback_active_provisioning_monitor.md` — при долгих CAPN
+  тестах поднимать второй monitor на controller logs + CR status,
+  не ждать пассивного timeout'а на test pod stdout;
+* `feedback_per_role_molecule_sequence.md` — на чистой VM
+  запускать сценарии Molecule поочерёдно для каждой изменённой
+  роли (dep-graph order), продолжить цепочку до credential-
+  producing роли (`export_artifacts`).
+
+Test evidence Step 11 (per-role sequential scenarios на свежей
+Vagrant VM):
+* `bootstrap-k3s` — `converge ok=209 changed=34 / idempotence ok=199
+  changed=0 / verify ok=156 changed=4 / failed=0`;
+* `bootstrap-capn-secret` — `converge ok=274 changed=14 / idempotence
+  ok=271 changed=0 / verify ok=12 changed=0 / failed=0` (все 12
+  multi-namespace asserts: Secret в `capi-clusters` с 5 keys + correct
+  pivot label + LXD trust + HTTPS endpoint);
+* `export-artifacts` — `converge ok=298 changed=3 / idempotence ok=298
+  changed=0 / verify ok=16 changed=0 / failed=0`;
+* Chart-level — `helm install` cluster-class + workload-cluster чисто
+  применилась, `TopologyReconciled=True`, owned KCP/MD/LXCCluster
+  materialized, CAPN провизионирует LB + первый CP LXC instance
+  (cloud-init проходит preflight, kubeadm генерит certs, static
+  pods (etcd/apiserver/cm/scheduler) поднимаются healthy);
+* Chart-level **не зелёный** — `helm test` валится на `kubeadm
+  upload-config/kubeadm` phase (`client rate limiter Wait returned
+  an error: context deadline exceeded` при создании admin
+  ClusterRoleBinding). Root cause: kube-apiserver listens
+  `*:6443` (IPv4 wildcard, kubeadm default `--bind-address=0.0.0.0`),
+  но admin.conf и `Cluster.spec.controlPlaneEndpoint` (CAPN
+  auto-derived) указывают на IPv6 endpoint CP-ноды (или LB) —
+  family mismatch. Open issue scope Step 12+ (см. §16.7
+  Acceptance status).
 
 ## 13.1. `base_system`
 
@@ -214,7 +366,10 @@ Implementation notes (зафиксированы в Step 2):
 
 ## 13.3. `lxd_project`
 
-**Статус: выполнено в Step 3 (2026-04-22).**
+**Статус: выполнено в Step 3 (2026-04-22) + Step 7 расширение
+(`restricted.devices.proxy: allow`) + Step 11 расширение
+(`restricted.devices.disk: allow` + `restricted.devices.disk.paths:
+/boot`).**
 
 Делает:
 
@@ -311,6 +466,29 @@ Driver: подъём `bootstrap_k3s` в unprivileged LXC потребовал д
   substrate-restrictions не меняются; security trade-off умеренный
   — host firewall владеет оператор, proxy listener LXD'а запускается
   только если consumer явно добавил device в host_vars.
+* **`restricted.devices.disk: allow` + `restricted.devices.disk.paths:
+  "/boot"`** в `_lxd_project_required_restrictions`. По LXD docs три
+  режима для `restricted.devices.disk` mutually-exclusive:
+  * `block` — forbids EVERY disk except root (наш `host-boot`
+    bind-mount тоже блочится);
+  * `managed` — только pool-backed (`pool=...`); path-based disks
+    запрещены, `paths` whitelist игнорируется;
+  * `allow` — все disk types разрешены; security обеспечивается
+    `restricted.devices.disk.paths` whitelist'ом source-prefix'ов
+    для path-based disks (pool-backed disks без source key — не
+    подпадают под whitelist gate).
+
+  Это единственная комбинация одновременно разрешающая pool-backed
+  root disks И specific path-based bind-mount'ы. Substrate-required
+  whitelist:
+  * `/boot` — для `host-boot` device на capi-controlplane /
+    capi-worker profiles (§13.6); read-only mount даёт kubeadm
+    доступ к `/boot/config-<uname-r>` для SystemVerification preflight
+    без bypass-флагов.
+
+  Future host-share devices добавляют префикс в comma-separated
+  список `restricted.devices.disk.paths` вместо ослабления до
+  `allow`-без-whitelist.
 
 ## 13.4. `lxd_storage_pools`
 
@@ -452,7 +630,11 @@ _lxd_network_int_managed_required_config:
 ## 13.6. `lxd_profiles`
 
 **Статус: выполнено в Step 3 (2026-04-22) — lean subset baseline;
-доведено до полного CAPN unprivileged kubeadm baseline в Step 4
+доведено до полного CAPN unprivileged kubeadm baseline в Step 4 +
+Step 9 cloud-init vendor-data на capi-controlplane/capi-worker +
+Step 11 read-only `host-boot` disk device (host's /boot mount-in)
+на capi-controlplane/capi-worker для kubeadm SystemVerification
+доступа к `/boot/config-<uname-r>`
 (2026-04-22) после того как `bootstrap_k3s` (§13.9) определил
 точные requirements; cloud-init vendor-data baseline для eth1
 bring-up на `capi-controlplane` / `capi-worker` выполнен в Step 9
@@ -532,6 +714,27 @@ Driver: `bootstrap_k3s` (§13.9) на debian/13 LXD image потребовал
   host-namespace. Risk model: information disclosure (host kernel
   log виден контейнеру) — для local lab acceptable; production
   consumer должен пере-оценить (см. ресерч в conversation log).
+* **`host-boot` disk device** (`source: /boot`, `path: /boot`,
+  `readonly: true`) на `capi-controlplane` и `capi-worker` (НЕ на
+  `capi-bootstrap` — bootstrap k3s не делает kubeadm preflight).
+  kubeadm SystemVerification читает kernel build config (`CONFIG_*`
+  для cgroups, namespaces, netfilter) и ищет файл в порядке:
+  `/proc/config.gz` → `/boot/config-<uname-r>` →
+  `/usr/src/linux-<uname-r>/.config` →
+  `/lib/modules/<uname-r>/config`. Debian 13 kernel built without
+  `CONFIG_IKCONFIG`, поэтому `/proc/config.gz` физически не
+  существует, а `modprobe configs` изнутри unprivileged-LXC
+  безусловно валится с `Module configs not found in directory ...`
+  (нет `configs.ko` модуля даже на хосте, нечего грузить). Read-only
+  bind-mount `/boot` хоста делает второй lookup-путь (`/boot/config-<uname-r>`)
+  доступным внутри container'а — kubeadm читает напрямую и проходит
+  preflight без bypass'ов. Inside LXC `uname -r` возвращает host
+  kernel, поэтому пути совпадают. Risk model: information disclosure
+  (host kernel image, initrd, grub-config видны контейнеру в read-
+  only) — для local lab + workload Cluster path acceptable; production
+  consumer может ограничить single-file mount через ansible-templated
+  device path с `uname -r` lookup, но kernel-config само по себе не
+  секрет.
 * **Refactor: substrate baseline → `vars/main.yml`.** Раньше
   `lxd_profiles_profiles` был user-overridable list со всем содержимым
   каждого из 4 профилей. Permissive override → consumer мог "случайно"
@@ -964,7 +1167,11 @@ sha256:<digest>`. Owner/group/mode деривируются от
 
 ## 13.9. `bootstrap_k3s`
 
-**Статус: выполнено в Step 4 (2026-04-22) — Phase 4 первая роль.**
+**Статус: выполнено в Step 4 (2026-04-22) — Phase 4 первая роль +
+Step 5 substrate-required disables refactor + Step 11 dual-stack pod
+CNI (`--cluster-cidr`/`--service-cidr`/`--cluster-dns` v4+v6,
+`--flannel-ipv6-masq`, `--disable-network-policy`, `--node-ip=v4,v6`
+через ExecStart wrapper-launcher script).**
 
 Внутри bootstrap LXC:
 
@@ -1016,6 +1223,68 @@ sha256:<digest>`. Owner/group/mode деривируются от
     gates через `bootstrap_k3s_extra_kubelet_feature_gates: []`
     (rendered в тот же `--kubelet-arg=feature-gates=<csv>` поверх
     required gate, нельзя его убрать).
+  * **Dual-stack pod / service network** —
+    `--cluster-cidr=10.42.0.0/16,fd42:77:42::/56`
+    `--service-cidr=10.43.0.0/16,fd42:77:43::/112`
+    `--cluster-dns=10.43.0.10,fd42:77:43::a`
+    `--flannel-ipv6-masq`. Источник — substrate-required values в
+    `vars/main.yml` (`_bootstrap_k3s_required_{cluster_cidr,service_cidr,cluster_dns}_v[46]`,
+    `_bootstrap_k3s_required_flannel_ipv6_masq`), не consumer-tunable.
+    Зачем: §16.3 workload-cluster CR + LXCCluster get IPv6 endpoint
+    через CAPN auto-derivation на capi-int (LXD-managed dual-stack
+    network, §5.2). CAPI controllers живут pod'ами в bootstrap k3s и
+    обязаны иметь IPv6-reachability через pod CNI чтобы попасть на
+    workload LB endpoint — иначе `Cluster.spec.controlPlaneEndpoint`
+    остаётся unreachable, KCP не получает Machine.nodeRef и cluster
+    никогда не доходит до Ready. IPv4 portions = k3s upstream defaults
+    (10.42/16, 10.43/16); IPv6 ULAs из `fd42:77::/48` family,
+    distinct от capi-int (`fd42:77:1::/64`) и workload pod/service
+    CIDRs (`fd42:77:2::/56` / `fd42:77:3::/112`).
+    `--flannel-ipv6-masq` обязателен — без него pod-originated IPv6
+    выходит из non-routable pod-CIDR и пакет дропается на первом
+    hop'е.
+  * **`--disable-network-policy` (kube-router off)** —
+    `_bootstrap_k3s_required_disable_network_policy: true`. k3s
+    embed'ит kube-router как NetworkPolicy controller. Под dual-stack
+    `--cluster-cidr` внутри unprivileged LXC bootstrap container'а
+    kube-router'овская IPv6-init фаза падает с `Shutdown request
+    received: failed to start networking: unable to initialize
+    network policy controller: IPv6 was enabled, but no IPv6 address
+    was found on the node` — даже когда kubelet корректно регистрирует
+    обе family в `Node.status.addresses` (видно через
+    `k3s.io/node-args` annotation). Bootstrap k3s — single-node mgmt
+    cluster для CAPI/CAPN controllers; NetworkPolicy enforcement —
+    multi-tenant concern, который тут не применяется. Workload
+    cluster'ы получают собственный CNI + policy через Phase 5.1
+    (Calico/MetalLB) — отдельная сетевая плоскость.
+  * **`--node-ip` через wrapper-launcher на ExecStart.** kubelet
+    auto-detects ровно ОДИН адрес из default route (IPv4); под dual-
+    stack k3s этого мало и network-policy controller валится с
+    «IPv6 was enabled, but no IPv6 address was found on the node» в
+    Restart=always loop. Адреса bootstrap container'а назначает
+    LXD (DHCPv4 + SLAAC/DHCPv6) — конкретные значения не известны на
+    template-render time. Решение: роль доставляет в container короткий
+    POSIX-shell wrapper `/usr/local/sbin/k3s-server-launcher` (template
+    `k3s-server-launcher.sh.j2`), который вызывается systemd как
+    `ExecStart`. Wrapper ВНУТРИ container'а на каждый
+    `systemctl start k3s` резолвит global-scope IPv4 + IPv6 на
+    `eth0` через `ip -o addr show` и `exec`'ит
+    `k3s server --node-ip=<v4>,<v6> "$@"`, прокидывая все остальные
+    флаги из systemd unit (write-kubeconfig-mode, disable-cloud-controller,
+    cluster-cidr, service-cidr, etc.) как позиционные аргументы.
+    `exec` передаёт PID и Type=notify-сигналы дальше k3s'у, systemd
+    видит k3s как Main PID штатно. EnvironmentFile-based подходы НЕ
+    работают: systemd загружает EnvironmentFile ОДИН раз при unit
+    startup, ДО того как любой Exec* стартует — `${K3S_NODE_IP}`,
+    записанный ExecStartPre, остался бы пустым на момент substitution
+    в ExecStart. Без §8 globals, без cross-role coupling, без pin'а
+    IP на конкретный bootstrap LXC — multiple bootstrap-shaped
+    instances работают без коллизий. Source of truth — `vars/main.yml`
+    константы: `_bootstrap_k3s_required_node_iface: "eth0"`,
+    `_bootstrap_k3s_required_launcher_path:
+    "/usr/local/sbin/k3s-server-launcher"`. Idempotence — drift-compare
+    staged-vs-live (тот же паттерн что для unit/env file); push
+    triggers handler restart k3s.
 * **`Type=notify` оставлен**, как в upstream
   `github.com/k3s-io/k3s/blob/master/k3s.service`. После всех
   substrate-fix'ов k3s корректно доставляет sd_notify READY=1 и
@@ -1165,15 +1434,20 @@ overrides, без `insecure-skip-tls-verify`. Fix в одну строку:
 
 ## 13.11. `bootstrap_capn_secret`
 
-**Статус: выполнено в Step 6 (2026-04-23) — Phase 4 продолжение, §15.4.**
+**Статус: выполнено в Step 6 (2026-04-23) + Step 10 §8 global binding
+для project/network + Step 11 namespace fanout (Secret материализуется
+в каждой ns из `k8s_lab_capn_identity_namespaces`, бывший
+`_required_namespace: capn-system` substrate-value удалён — CAPN не
+читает Secret из своего controller namespace).**
 
-Материализует CAPN identity Secret в bootstrap k3s кластере. Три
-кросс-секущие части:
+Материализует CAPN identity Secret в bootstrap k3s кластере + смежные
+host/LXD-уровневые предусловия, без которых Secret не смог бы получить
+рабочий endpoint и trust entry. Owner трёх кросс-секущих обязательств:
 
 * **host LXD HTTPS listener.** PATCH `/1.0` через REST: устанавливает
   `core.https_address: <bridge-ipv4>:8443`, где `<bridge-ipv4>` —
   IP `capi-int` LXD-managed bridge (gateway изнутри bootstrap LXC).
-  Auto-resolve через `GET /1.0/networks/capi-int/state →
+  Auto-resolve через `GET /1.0/networks/<network>/state →
   state.addresses[]`. Listener доступен только из capi-int subnet
   (CAPN внутри bootstrap LXC) — на внешних NIC хоста ничего не
   торчит.
@@ -1183,24 +1457,34 @@ overrides, без `insecure-skip-tls-verify`. Fix в одну строку:
   `community.crypto.x509_certificate_info` (native, не shell openssl).
   Probe trust store через REST `/1.0/certificates/<fingerprint>`
   (200/404), POST только при отсутствии. **`restricted: true +
-  projects: ["capi-lab"]`** — CAPN не сможет коснуться чужих проектов.
-* **K8s Secret apply.** `kubernetes.core.k8s` с `apply: true,
-  state: present` (server-side apply), 5 substrate-required ключей
-  (`server`, `server-crt`, `client-crt`, `client-key`, `project`) per
-  CAPN identity-secret spec. Conditional label
-  `clusterctl.cluster.x-k8s.io/move: "true"` когда
-  `k8s_lab_pivot_enabled=true`.
+  projects: ["{{ k8s_lab_project_name }}"]`** — CAPN не сможет
+  коснуться чужих проектов.
+* **K8s Secret apply — fanout по namespace'ам workload Cluster
+  CR'ов.** `kubernetes.core.k8s` с `apply: true, state: present`
+  (server-side apply), 5 substrate-required ключей (`server`,
+  `server-crt`, `client-crt`, `client-key`, `project`) per CAPN
+  identity-secret spec. Цикл `loop:
+  k8s_lab_capn_identity_namespaces` (§8 default
+  `["capi-clusters"]`) — Secret материализуется в **каждой**
+  namespace'е, в которой будут жить workload Cluster CR'ы (§16.3).
+  Conditional label `clusterctl.cluster.x-k8s.io/move: "true"`
+  когда `k8s_lab_pivot_enabled=true`.
 
-### Implementation notes (Step 6)
+Намеренно вне CAPN controller namespace (`capn-system`): CAPN
+v1alpha2 `LXCCluster.spec.secretRef` ищет Secret в namespace
+LXCCluster CR'а, поле `namespace` в secretRef отсутствует. Cross-ns
+lookup не поддерживается. Поэтому identity Secret обязан лежать в
+namespace'е каждого workload Cluster CR'а, а не в namespace
+controller'а.
+
+### Implementation notes
 
 * **Native-first execution.** Никаких command/shell. LXD REST через
   `ansible.builtin.uri`, cert pipeline через `community.crypto.*`,
   Secret через `kubernetes.core.k8s` + `k8s_info`.
-* **PEM→base64 DER strip для LXD trust API.** Регрессия первой
-  попытки: POST `/1.0/certificates` с full PEM body упал с
-  `illegal base64 data at input byte 0` — LXD ожидает чистый base64
-  без BEGIN/END markers и whitespace. Исправлено через
-  `regex_replace` chain (BEGIN, END, `\\s+` → `''`).
+* **PEM→base64 DER strip для LXD trust API.** POST `/1.0/certificates`
+  принимает чистый base64 без BEGIN/END markers и whitespace. Pipeline:
+  PEM → `regex_replace` chain (BEGIN, END, `\\s+` → `''`) → POST body.
 * **HTTPS listener async PATCH.** PATCH `/1.0` асинхронен с точки
   зрения kernel'а: daemon rebind, последующий immediate request
   может попасть в gap. Role poll'ит unix-socket `/1.0` пока
@@ -1212,15 +1496,14 @@ overrides, без `insecure-skip-tls-verify`. Fix в одну строку:
     (existing valid cert satisfies criteria → не пересоздают);
   - LXD trust: probe by fingerprint, skip POST если найден; **assert
     drift на restriction shape** — если cert в trust store без
-    `restricted=true` или без `capi-lab` в `projects[]`, fail
-    громко (operator, видимо, релаксировал scope руками);
-  - Secret apply: server-side apply + byte-stable manifest body →
-    `unchanged` на повторных проходах. Pivot label flip via global
-    `k8s_lab_pivot_enabled` распространяется чисто (server-side apply
-    field-manager корректно стомпит/убирает label).
+    `restricted=true` или без `k8s_lab_project_name` в `projects[]`,
+    fail громко (operator, видимо, релаксировал scope руками);
+  - Secret apply (per target ns): server-side apply + byte-stable
+    manifest body → `unchanged` на повторных проходах. Pivot label
+    flip via global `k8s_lab_pivot_enabled` распространяется чисто
+    (server-side apply field-manager корректно стомпит/убирает
+    label) — параллельно во всех target namespace'ах.
 * **Substrate-required в `vars/main.yml`:**
-  - `_bootstrap_capn_secret_required_namespace: "capn-system"` —
-    fixed by upstream CAPN release manifest (v0.8.x);
   - `_bootstrap_capn_secret_required_lxd_https_port: 8443` —
     CAPN-wide convention (CAPN identityRef.server, host firewall
     rules в §15.5 — все ожидают этот порт);
@@ -1236,8 +1519,19 @@ overrides, без `insecure-skip-tls-verify`. Fix в одну строку:
   - `bootstrap_capn_secret_name ← k8s_lab_infrastructure_secret_name`
     — Phase 5+ Cluster CR `identityRef.name` и Secret name меняются
     одной глобальной переменной (без silent-disconnect);
+  - `bootstrap_capn_secret_namespaces ← k8s_lab_capn_identity_namespaces`
+    — список target namespace'ов; пустой список → Secret task
+    short-circuit'ится (HTTPS listener + LXD trust всё равно
+    выполняются, т.к. они substrate, а не per-cluster);
   - `bootstrap_capn_secret_pivot_enabled ← k8s_lab_pivot_enabled` —
-    global flag flip автоматически добавляет `move` label.
+    global flag flip автоматически добавляет `move` label;
+  - `bootstrap_capn_secret_lxd_project ← k8s_lab_project_name` —
+    единственный source of truth для CAPN project-scoping (CAPN
+    v1alpha2 `LXCClusterSpec` не имеет поля `project` — scope лежит
+    внутри Secret payload, ключ `project`);
+  - `bootstrap_capn_secret_internal_network_name ←
+    k8s_lab_internal_network_name` — auto-resolve
+    `core.https_address`.
 * **Public defaults — tunable:** cert metadata (CN/country/org/
   validity/key size+type), staging paths, auto-resolve override
   (`bootstrap_capn_secret_lxd_https_bind_address`), wait timing.
@@ -1245,52 +1539,36 @@ overrides, без `insecure-skip-tls-verify`. Fix в одну строку:
   (мог бы жить в `lxd_host`), но реально нужен только под CAPN —
   локальный scope в `bootstrap_capn_secret` минимально-инвазивен и
   не пересекается с lxd_host's snap/socket-ownership.
+* **Cleanup contract.** Phase 8 destroy (§19.x `cleanup_bootstrap`)
+  обязан удалить Secret из **каждой** namespace'ы, перечисленной в
+  `k8s_lab_capn_identity_namespaces` — иначе stale Secret'ы утекут и
+  при следующем bootstrap'е будут конфликтовать с server-side apply
+  field-manager'а (особенно при смене client TLS pair).
 
-### Step 10 расширения — §8 global binding для project/network (2026-04-24)
+### Acceptance
 
-Step 10 на §16.2 (chart `capi-cluster-class`) verified, что CAPN
-v1alpha2 `LXCClusterSpec` **не имеет** поля `project` — scope лежит
-внутри identity Secret payload'а (ключ `project`). Значит Secret,
-который materialize'ит эта роль, есть единственный source of truth
-для CAPN project-scoping — и он ОБЯЗАН трекать §8 `k8s_lab_project_name`
-атомарно, иначе workload CR'ы начнут создаваться в другом project'е,
-чем тот, на который LXD client cert ограничен.
-
-Defaults правятся: `bootstrap_capn_secret_lxd_project` и
-`bootstrap_capn_secret_internal_network_name` теперь биндятся к
-`{{ k8s_lab_project_name | default('capi-lab') }}` и
-`{{ k8s_lab_internal_network_name | default('capi-int') }}`. Fallback
-в `'capi-lab'` / `'capi-int'` сохраняется для standalone молекул-
-запусков и ad-hoc reruns, где globals не заданы.
-
-Бинды распространяются сразу на три стороны (без silent-disconnect):
-
-* `secret.yaml.j2` → `stringData.project: "{{ bootstrap_capn_secret_lxd_project }}"`
-  — CAPN читает этот ключ на каждом CR reconcile;
-* `lxd_trust.yml` → POST `/1.0/certificates` с `restricted: true,
-  projects: ["{{ bootstrap_capn_secret_lxd_project }}"]`, + assert
-  на drift restriction;
-* `lxd_https.yml` — auto-resolve `core.https_address` по имени
-  LXD-managed network `{{ bootstrap_capn_secret_internal_network_name }}`.
-
-Test evidence: molecule `bootstrap-capn-secret` полный цикл зелёный
-против shared group_vars (`k8s_lab_project_name: "capi-lab"`,
-`k8s_lab_internal_network_name: "capi-int"`):
-`converge ok=283 changed=45 failed=0`,
-`idempotence ok=271 changed=0 failed=0`,
-`verify ok=14 changed=0 failed=0`. Все 14 assertions в `verify.yml`
-прошли, включая `project == "capi-lab"` в Secret data и exactly-one
-`capi-lab`-restricted trust entry.
-
-Side-fix: `k8s_lab_infrastructure_secret_name` в §8 default выровнен
-на CAPN upstream `"incus-identity"` (раньше числился `"capn-identity"`
-— расходилось с Ansible role default'ом и tfvars payload'ом; теперь
-всё три пути `export_artifacts`/`bootstrap_capn_secret`/§8 держат
-одно имя).
+* HTTPS listener: `core.https_address` совпадает с auto-resolved
+  bridge IPv4 + `:8443`; idempotent re-run → no PATCH;
+* LXD trust: ровно одна entry с `name=k8slab-capn`, `restricted=true`,
+  `projects=[k8s_lab_project_name]`; idempotent re-run → no POST;
+* Secret(s): для каждой ns из `k8s_lab_capn_identity_namespaces`
+  существует `<infrastructure_secret_name>` Secret с 5 substrate-
+  required ключами + `project = k8s_lab_project_name`; conditional
+  `clusterctl.cluster.x-k8s.io/move=true` label под
+  `k8s_lab_pivot_enabled=true`;
+* TLS round-trip: HTTPS endpoint reachable из bootstrap LXC через
+  client cert + `incus-identity` Secret payload; `GET /1.0/projects`
+  возвращает только проект из payload (доказывает confinement);
+* Empty-list edge case: `k8s_lab_capn_identity_namespaces: []` →
+  HTTPS + trust выполнены, ни одного Secret'а не создано, role
+  завершается без ошибок.
 
 ## 13.12. `export_artifacts`
 
-**Статус: выполнено в Step 8 (2026-04-23) — Phase 4 закрытие, §15.6.
+**Статус: выполнено в Step 8 (2026-04-23) — Phase 4 закрытие, §15.6 +
+Step 11 default `k8s_lab_workload_controlplane_count` 2 → 3 в emitted
+tfvars (CAPI's KCP webhook отбивает чётный CP replicas под stacked
+etcd; min HA = 3).
 End-to-end прогон на Vagrant VM зелёный (`converge ok=296 changed=4`,
 `idempotence ok=296 changed=0`, `verify ok=16 changed=0 failed=0`);
 `kubectl --kubeconfig=.artifacts/bootstrap.kubeconfig get nodes` с

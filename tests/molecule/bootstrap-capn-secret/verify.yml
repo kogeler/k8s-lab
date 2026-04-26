@@ -2,6 +2,11 @@
 # bootstrap_capn_secret verify — plan §9.4 real-runtime assertions.
 # Re-probes live state from the host independently of the role's own
 # healthchecks. All Kubernetes reads go through kubernetes.core.k8s_info.
+#
+# Multi-namespace fanout (plan §13.11): the Secret is materialised in
+# every namespace listed in `k8s_lab_capn_identity_namespaces`
+# (shared group_vars default = ["capi-clusters"]). The verify
+# scenario probes each.
 
 - name: "Verify | bootstrap_capn_secret"
   hosts: all
@@ -10,11 +15,11 @@
   vars:
     _kubeconfig: "/opt/capi-lab/etc/bootstrap_clusterctl/bootstrap.kubeconfig"
     _socket:     "/var/snap/lxd/common/lxd/unix.socket"
-    _project:    "capi-lab"
-    _namespace:  "capn-system"
-    _name:       "incus-identity"
+    _project:    "{{ k8s_lab_project_name }}"
+    _name:       "{{ k8s_lab_infrastructure_secret_name | default('incus-identity') }}"
+    _namespaces: "{{ k8s_lab_capn_identity_namespaces }}"
   tasks:
-    # ---- Live LXD daemon has HTTPS listener bound on capi-int IP -----
+    # ---- Live LXD daemon has HTTPS listener bound on internal-net IP ----
     - name: "Verify | bootstrap_capn_secret | read LXD daemon config"
       ansible.builtin.uri:
         url:         "http://localhost/1.0"
@@ -29,14 +34,14 @@
         _verify_https: >-
           {{ (_verify_daemon_register.json.metadata.config | default({}))['core.https_address'] | default('') }}
 
-    - name: "Verify | bootstrap_capn_secret | assert HTTPS listener bound to capi-int IP"
+    - name: "Verify | bootstrap_capn_secret | assert HTTPS listener bound to internal-net IP"
       ansible.builtin.assert:
         that:
           - _verify_https | length > 0
           - _verify_https is search('^10\\.77\\.')
           - _verify_https is search(':8443$')
         fail_msg: >-
-          core.https_address not bound on capi-int subnet:
+          core.https_address not bound on internal-net subnet:
           got "{{ _verify_https }}".
 
     # ---- LXD trust store has exactly one project-restricted entry ----
@@ -49,7 +54,7 @@
         return_content: true
       register: _verify_trust_register
 
-    - name: "Verify | bootstrap_capn_secret | filter trust entries restricted to capi-lab"
+    - name: "Verify | bootstrap_capn_secret | filter trust entries restricted to project"
       ansible.builtin.set_fact:
         _verify_capn_entries: >-
           {{
@@ -60,7 +65,7 @@
             | list
           }}
 
-    - name: "Verify | bootstrap_capn_secret | assert exactly one capi-lab-restricted client cert"
+    - name: "Verify | bootstrap_capn_secret | assert exactly one project-restricted client cert"
       ansible.builtin.assert:
         that:
           - (_verify_capn_entries | length) == 1
@@ -70,80 +75,89 @@
           "{{ _project }}", got {{ _verify_capn_entries | length }};
           names={{ _verify_capn_entries | map(attribute='name') | list }}.
 
-    # ---- Kubernetes Secret carries all 5 required keys --------------
-    - name: "Verify | bootstrap_capn_secret | fetch live Secret"
+    # ---- Secret materialised in every target namespace --------------
+    #
+    # Per plan §13.11: Secret fanout across k8s_lab_capn_identity_namespaces.
+    # Default scenario (= shared group_vars) ships ["capi-clusters"]; an
+    # extended scenario can set the global to a multi-element list and
+    # this loop scales accordingly.
+
+    - name: "Verify | bootstrap_capn_secret | fetch live Secret per target namespace"
       kubernetes.core.k8s_info:
         kubeconfig: "{{ _kubeconfig }}"
         api_version: "v1"
         kind: "Secret"
-        namespace: "{{ _namespace }}"
+        namespace: "{{ item }}"
         name: "{{ _name }}"
-      register: _verify_secret_register
+      register: _verify_secret_fanout
+      loop: "{{ _namespaces }}"
+      loop_control:
+        label: "{{ item }}"
 
-    - name: "Verify | bootstrap_capn_secret | record decoded Secret data"
-      # `data` from the API is base64 — decode each value once into
-      # the shape the assertions below expect.
-      ansible.builtin.set_fact:
-        _verify_secret_data: >-
-          {{
-            dict(
-              (_verify_secret_register.resources[0].data | default({})).keys()
-              | zip(
-                  (_verify_secret_register.resources[0].data | default({})).values()
-                  | map('b64decode') | list
-                )
-            )
-          }}
-
-    - name: "Verify | bootstrap_capn_secret | assert all 5 required keys present"
+    - name: "Verify | bootstrap_capn_secret | assert each Secret carries 5 required keys + correct values"
       ansible.builtin.assert:
         that:
-          - "'server' in _verify_secret_data"
-          - "'server-crt' in _verify_secret_data"
-          - "'client-crt' in _verify_secret_data"
-          - "'client-key' in _verify_secret_data"
-          - "'project' in _verify_secret_data"
+          # Exactly one Secret per namespace probe.
+          - (item.resources | length) == 1
+          # All 5 required keys present.
+          - "'server' in (item.resources[0].data | default({}))"
+          - "'server-crt' in (item.resources[0].data | default({}))"
+          - "'client-crt' in (item.resources[0].data | default({}))"
+          - "'client-key' in (item.resources[0].data | default({}))"
+          - "'project' in (item.resources[0].data | default({}))"
+          # `server` URL points at the internal-net :8443 listener.
+          - (item.resources[0].data['server'] | b64decode) is search('^https://10\\.77\\..*:8443$')
+          # `project` matches the project-wide global.
+          - (item.resources[0].data['project'] | b64decode) == _project
+          # Cert / key payloads are well-formed PEM.
+          - (item.resources[0].data['server-crt'] | b64decode) is search('-----BEGIN CERTIFICATE-----')
+          - (item.resources[0].data['client-crt'] | b64decode) is search('-----BEGIN CERTIFICATE-----')
+          - (item.resources[0].data['client-key'] | b64decode) is search('-----BEGIN .*PRIVATE KEY-----')
         fail_msg: >-
-          Secret missing CAPN identity-spec keys.
-          got keys = {{ _verify_secret_data.keys() | list }}.
+          Secret drift in namespace "{{ item.item }}":
+          live keys = {{ (item.resources[0].data | default({})).keys() | list }}.
+      loop: "{{ _verify_secret_fanout.results }}"
+      loop_control:
+        label: "{{ item.item }}"
 
-    - name: "Verify | bootstrap_capn_secret | assert Secret values match contract"
-      ansible.builtin.assert:
-        that:
-          - _verify_secret_data['server'] is search('^https://10\\.77\\..*:8443$')
-          - _verify_secret_data['project'] == _project
-          - _verify_secret_data['client-crt'] is search('-----BEGIN CERTIFICATE-----')
-          - _verify_secret_data['server-crt'] is search('-----BEGIN CERTIFICATE-----')
-          - _verify_secret_data['client-key'] is search('-----BEGIN .*PRIVATE KEY-----')
-        fail_msg: >-
-          Secret value drift. server={{ _verify_secret_data['server'] }},
-          project={{ _verify_secret_data['project'] }}.
-
-    # ---- Pivot label discipline (default k8s_lab_pivot_enabled=false) -------
-    - name: "Verify | bootstrap_capn_secret | assert no pivot label by default"
+    - name: "Verify | bootstrap_capn_secret | assert no pivot label by default per namespace"
+      # Default `k8s_lab_pivot_enabled=false` → no `clusterctl move`
+      # label on any of the fanout Secrets. An extended scenario that
+      # flips the global flag would need to invert this assertion.
       ansible.builtin.assert:
         that:
           - >-
             (
-              (_verify_secret_register.resources[0].metadata.labels | default({}))
+              (item.resources[0].metadata.labels | default({}))
               ['clusterctl.cluster.x-k8s.io/move'] | default('')
             ) | length == 0
         fail_msg: >-
-          Secret unexpectedly carries `clusterctl.cluster.x-k8s.io/move`
-          label while k8s_lab_pivot_enabled defaults to false.
+          Secret in namespace "{{ item.item }}" unexpectedly carries
+          `clusterctl.cluster.x-k8s.io/move` label while
+          `k8s_lab_pivot_enabled` defaults to false.
+      loop: "{{ _verify_secret_fanout.results }}"
+      loop_control:
+        label: "{{ item.item }}"
 
     # ---- TLS round-trip — server cert in Secret matches LXD's ------
     # Catches the foot-gun where someone ran `lxc remote ...` to
     # re-generate server.crt and the role's old slurp got stale.
+    # One probe is enough — the server cert is identical across every
+    # fanout Secret (same source slurp).
     - name: "Verify | bootstrap_capn_secret | read live LXD server cert"
       ansible.builtin.slurp:
         src: "/var/snap/lxd/common/lxd/server.crt"
       register: _verify_live_server_cert_register
 
-    - name: "Verify | bootstrap_capn_secret | assert server-crt in Secret matches live"
+    - name: "Verify | bootstrap_capn_secret | assert server-crt in first Secret matches live"
       ansible.builtin.assert:
         that:
-          - (_verify_live_server_cert_register.content | b64decode | trim) == (_verify_secret_data['server-crt'] | trim)
+          - >-
+            (_verify_live_server_cert_register.content | b64decode | trim)
+            == (_verify_secret_fanout.results[0].resources[0].data['server-crt'] | b64decode | trim)
         fail_msg: >-
-          server-crt key in the Secret does not match the live LXD
-          server cert at /var/snap/lxd/common/lxd/server.crt.
+          server-crt key in the Secret (namespace
+          "{{ _verify_secret_fanout.results[0].item }}") does not match
+          the live LXD server cert at
+          /var/snap/lxd/common/lxd/server.crt.
+      when: _verify_secret_fanout.results | length > 0

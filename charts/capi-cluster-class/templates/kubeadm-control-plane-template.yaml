@@ -43,16 +43,39 @@ spec:
               {{- toYaml . | nindent 14 }}
           {{- end }}
         {{- end }}
-        {{- with $cp.kubeletExtraArgs }}
+        # init / join nodeRegistration baseline.
+        #
+        # Substrate-required `kubeletExtraArgs` baseline ALWAYS emitted:
+        #   feature-gates=KubeletInUserNamespace=true
+        # CAPN provisions every workload node as an unprivileged LXC
+        # container; kubelet's `oomWatcher` constructor opens
+        # /dev/kmsg and refuses to start when the open is not
+        # permitted (which it isn't in unprivileged userns). The
+        # `KubeletInUserNamespace` feature gate tells kubelet to
+        # ignore the oomWatcher init failure and continue. Without
+        # it kubelet enters Restart=always crash loop and `kubeadm
+        # init` times out at `wait-control-plane`.
+        #
+        # Consumer extras from `.Values.controlPlane.kubeletExtraArgs`
+        # append after the baseline. CAPI v1beta2 CRD requires
+        # `[]{name,value}` list shape and `minItems: 1` — emitting
+        # the baseline always also satisfies that constraint.
         initConfiguration:
           nodeRegistration:
             kubeletExtraArgs:
+              - name: feature-gates
+                value: "KubeletInUserNamespace=true"
+              {{- with $cp.kubeletExtraArgs }}
               {{- toYaml . | nindent 14 }}
+              {{- end }}
         joinConfiguration:
           nodeRegistration:
             kubeletExtraArgs:
+              - name: feature-gates
+                value: "KubeletInUserNamespace=true"
+              {{- with $cp.kubeletExtraArgs }}
               {{- toYaml . | nindent 14 }}
-        {{- end }}
+              {{- end }}
         {{- with $cp.preKubeadmCommands }}
         preKubeadmCommands:
           {{- toYaml . | nindent 10 }}

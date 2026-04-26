@@ -8,6 +8,11 @@
 #   * `--disable=traefik` + `--disable=servicelb` — sourced from
 #     `_bootstrap_k3s_required_disable_components` in vars/main.yml
 #     (plan §2.9 / §5.5 deliver ingress + LoadBalancer via Terraform Helm).
+#   * `--cluster-cidr` / `--service-cidr` / `--cluster-dns` —
+#     dual-stack values sourced from `vars/main.yml` (plan §13.9 — pod
+#     CNI participates in dual-stack so CAPI controllers can reach
+#     IPv6-addressed workload-cluster LB endpoints CAPN derives).
+#   * `--flannel-ipv6-masq` — required for pod-originated IPv6 SNAT.
 # See the role README + vars/main.yml for the full rationale.
 
 [Unit]
@@ -28,22 +33,25 @@ TasksMax=infinity
 TimeoutStartSec=0
 Restart=always
 RestartSec=5s
-ExecStart={{ bootstrap_k3s_container_bin_path }} server \
+ExecStart={{ _bootstrap_k3s_required_launcher_path }} \
     --write-kubeconfig-mode={{ bootstrap_k3s_write_kubeconfig_mode }} \
     --disable-cloud-controller \
     --kubelet-arg=feature-gates={{ (['KubeletInUserNamespace=true'] + bootstrap_k3s_extra_kubelet_feature_gates) | join(',') }} \
+    --cluster-cidr={{ _bootstrap_k3s_required_cluster_cidr_v4 }},{{ _bootstrap_k3s_required_cluster_cidr_v6 }} \
+    --service-cidr={{ _bootstrap_k3s_required_service_cidr_v4 }},{{ _bootstrap_k3s_required_service_cidr_v6 }} \
+    --cluster-dns={{ _bootstrap_k3s_required_cluster_dns_v4 }},{{ _bootstrap_k3s_required_cluster_dns_v6 }} \
+{% if _bootstrap_k3s_required_flannel_ipv6_masq %}
+    --flannel-ipv6-masq \
+{% endif %}
+{% if _bootstrap_k3s_required_disable_network_policy %}
+    --disable-network-policy \
+{% endif %}
 {% for component in (_bootstrap_k3s_required_disable_components + bootstrap_k3s_extra_disable_components) %}
     --disable={{ component }} \
 {% endfor %}
 {% for san in bootstrap_k3s_tls_san %}
     --tls-san={{ san }} \
 {% endfor %}
-{% if bootstrap_k3s_cluster_cidr | length > 0 %}
-    --cluster-cidr={{ bootstrap_k3s_cluster_cidr }} \
-{% endif %}
-{% if bootstrap_k3s_service_cidr | length > 0 %}
-    --service-cidr={{ bootstrap_k3s_service_cidr }} \
-{% endif %}
 {% if bootstrap_k3s_token | length > 0 %}
     --token={{ bootstrap_k3s_token }} \
 {% endif %}

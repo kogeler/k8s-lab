@@ -53,7 +53,28 @@ _lxd_project_required_restrictions:
   restricted.containers.privilege:    "unprivileged"
   restricted.containers.lowlevel:     "allow"
   restricted.containers.interception: "allow"
-  restricted.devices.disk:            "managed"
+  # `restricted.devices.disk: allow` + `restricted.devices.disk.paths`
+  # is the only LXD project config that simultaneously permits pool-
+  # backed root disks AND specific path-based bind-mounts:
+  #   * `block` — forbids EVERY disk except the root one (path-based
+  #     `host-boot` mount, MetalLB-config volumes, future host-share
+  #     devices all rejected).
+  #   * `managed` — only pool-backed (`pool=...`); path-based disks
+  #     are silently forbidden, the `paths` whitelist is ignored.
+  #   * `allow` — every disk type is permitted; security is enforced
+  #     by `restricted.devices.disk.paths` listing the source-path
+  #     prefixes allowed for path-based disks (pool-backed disks have
+  #     no source key, so the whitelist does not gate them).
+  # Substrate-required path prefixes:
+  #   * `/boot` — for `host-boot` bind-mount on capi-controlplane /
+  #     capi-worker profiles (lxd_profiles §13.6); read-only mount
+  #     exposes /boot/config-<uname-r> to unprivileged-LXC nodes so
+  #     kubeadm SystemVerification preflight can read kernel build
+  #     config without `--ignore-preflight-errors` bypass.
+  # Future host-share devices add their prefix to this comma-separated
+  # list rather than loosening to `allow`-without-whitelist.
+  restricted.devices.disk:            "allow"
+  restricted.devices.disk.paths:      "/boot"
   restricted.devices.nic:             "allow"
   restricted.devices.unix-char:       "allow"
   restricted.devices.proxy:           "allow"

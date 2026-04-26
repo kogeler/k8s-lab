@@ -94,10 +94,12 @@ bootstrap_k3s_write_kubeconfig_mode: "0644"
 # when they plan multi-node bootstrap clusters.
 bootstrap_k3s_token: ""
 
-# Pod / Service CIDRs. Leave empty to accept k3s defaults
-# (10.42.0.0/16 for pods, 10.43.0.0/16 for services).
-bootstrap_k3s_cluster_cidr: ""
-bootstrap_k3s_service_cidr: ""
+# Dual-stack pod / service CIDRs and cluster DNS are substrate-required
+# (plan §13.9 — bootstrap k3s pod CNI participates in dual-stack so
+# CAPI controllers can reach IPv6-addressed workload-cluster LB
+# endpoints CAPN auto-derives). The required ranges live in
+# `vars/main.yml` under `_bootstrap_k3s_required_*` and are NOT
+# consumer-tunable. There is no public default for them on purpose.
 
 # *Additional* kubelet feature-gates, merged after the substrate-required
 # gates the template always emits (see k3s.service.j2 —
