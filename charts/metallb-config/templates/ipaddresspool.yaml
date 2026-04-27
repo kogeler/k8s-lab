@@ -1,0 +1,34 @@
+{{- include "metallb-config.requireValues" . -}}
+---
+# IPAddressPool — owned by this wrapper, NOT by the upstream metallb
+# subchart (which ships only the controller + speaker DS + CRDs and
+# leaves pool/advertisement CRs to the consumer).
+#
+# Substrate-required fields hardcoded here per memory rule
+# "Chart-required values are hardcoded":
+#
+#   * `addresses` is a single-entry IPv6 range — the lab substrate is
+#     IPv6-only at the external segment (§4.2 / §5.5). Dual-stack VIPs
+#     would require an IPv4 segment that doesn't exist on this
+#     substrate.
+#   * `autoAssign: true` — every LoadBalancer Service without an
+#     explicit `loadBalancerIP` allocates from this pool. There is
+#     exactly one pool, so manual selection is unnecessary.
+#   * `avoidBuggyIPs: false` — IPv6 has no /32 quirk equivalents to
+#     skip; default false keeps the full range available.
+#
+# Lives in `.Release.Namespace` — same namespace as the metallb
+# controller (subchart pins `metallb-system` via NOTES.txt convention,
+# but the controller actually watches its own namespace by default).
+apiVersion: metallb.io/v1beta1
+kind: IPAddressPool
+metadata:
+  name: {{ include "metallb-config.fullname" . }}-v6
+  namespace: {{ .Release.Namespace | quote }}
+  labels:
+    {{- include "metallb-config.labels" . | nindent 4 }}
+spec:
+  addresses:
+    - {{ .Values.pool.rangeV6 | quote }}
+  autoAssign: true
+  avoidBuggyIPs: false

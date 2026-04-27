@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://k8s-lab.io/schemas/metallb.values.schema.json",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["metallb"],
+  "properties": {
+    "metallb": {
+      "type": "object",
+      "description": "Subchart values for upstream metallb/metallb. Only the substrate-required toggles are pinned in values.yaml; the rest of the upstream surface stays open (overridable by consumer).",
+      "additionalProperties": true,
+      "properties": {
+        "crds": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "const": true,
+              "description": "MUST stay true. The IPAddressPool / L2Advertisement CRs shipped by `charts/metallb-config/` need the CRDs registered first."
+            }
+          }
+        },
+        "frrk8s": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "const": false,
+              "description": "MUST stay false. No BGP / frr-k8s infrastructure on this lab substrate (§5.5)."
+            }
+          }
+        },
+        "speaker": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "frr": {
+              "type": "object",
+              "additionalProperties": true,
+              "properties": {
+                "enabled": {
+                  "type": "boolean",
+                  "const": false,
+                  "description": "MUST stay false. L2 mode only — disabling FRR drops the frrouting sidecar from speaker Pods."
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

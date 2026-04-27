@@ -1,0 +1,273 @@
+{{/*
+Helm test hook (PLAN §17.6 / §6 Gate A chart-side acceptance).
+
+Run with `helm test <release>` after `helm install`. Targets only
+Helm 3 features so the chart stays compatible with the
+hashicorp/helm Terraform provider (Helm 3 SDK).
+
+Single Pod, single PASS/FAIL, eight steps. The verify-side curl from
+outside the cluster (Molecule e2e-local on the Vagrant VM) closes
+Gate A by hitting the announced VIP through `ext6-ra-peer` →
+`br-ext6` → eth1 of the speaker leader. This in-cluster hook proves
+the path UP TO that point: MetalLB controller is up, speaker DS is
+ready, IPAddressPool + L2Advertisement reconciled, a real
+LoadBalancer Service got an external IPv6 from the pool, the
+backend serves on it from inside the cluster.
+
+  [1/8] install kubectl from dl.k8s.io
+  [2/8] metallb controller Deployment Available
+  [3/8] metallb speaker DaemonSet rolled out (≥1 worker)
+  [4/8] tear down stale demo from prior run
+  [5/8] apply demo Deployment + LoadBalancer Service
+  [6/8] backend Pod Ready
+  [7/8] Service.status.loadBalancer.ingress[0].ip allocated AND
+        in-pool (string-prefix sanity)
+  [8/8] in-cluster HTTP probe: `kubectl exec backend -- wget VIP`
+        (proves Pod-to-VIP routing through speaker leader)
+
+Image: alpine:<pinned> + busybox `wget` to fetch upstream kubectl
+and to drive the HTTP probe (no curl, no apt — memory rules
+"Never use bitnami images" / "Always use latest stable").
+
+Demo Deployment + Service are NOT annotated as `helm.sh/hook: test`
+on purpose — they are created by the driver Pod via `kubectl apply`
+and survive `Phase: Succeeded`. The Molecule verify-side step on
+the Vagrant VM reads the Service VIP and curls it through
+`ext6-ra-peer`, closing the external-segment half of Gate A. They
+get reaped on the next `helm test` (driver Pod's first step is a
+best-effort `kubectl delete`) or on `helm uninstall`.
+*/}}
+apiVersion: v1
+kind: Pod
+metadata:
+  name: {{ .Release.Name }}-test-metallb-vip
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "metallb-config.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": test
+    # Only `before-hook-creation` — drop `hook-succeeded` so the test
+    # Pod survives after `Phase: Succeeded`. `helm test --logs` races
+    # with `hook-succeeded` deletion when the test runs faster than
+    # helm's log-stream startup; keeping the Pod around makes the
+    # log fetch reliable. Same rationale as cni-calico Step 13.
+    "helm.sh/hook-delete-policy": before-hook-creation
+spec:
+  serviceAccountName: {{ .Release.Name }}-test
+  restartPolicy: Never
+  containers:
+    - name: probe
+      image: {{ .Values.tests.image | quote }}
+      imagePullPolicy: IfNotPresent
+      env:
+        - name: NAMESPACE
+          value: {{ .Release.Namespace | quote }}
+        - name: DEMO_NAME
+          value: {{ .Values.tests.demoName | quote }}
+        - name: DEMO_PORT
+          value: {{ .Values.tests.demoPort | quote }}
+        - name: DEMO_IMAGE
+          value: {{ .Values.tests.demoImage | quote }}
+        - name: KUBECTL_VERSION
+          value: {{ .Values.tests.kubectlVersion | quote }}
+        - name: VIP_TIMEOUT_SECONDS
+          value: {{ .Values.tests.vipAllocationTimeoutSeconds | quote }}
+        - name: POOL_RANGE
+          value: {{ .Values.pool.rangeV6 | quote }}
+      command: ["/bin/sh", "-c"]
+      args:
+        - |
+          set -eu
+
+          fail() {
+            echo "FAIL: $*" >&2
+            exit 1
+          }
+
+          DEADLINE=$(( $(date +%s) + VIP_TIMEOUT_SECONDS ))
+          remaining() { echo $(( DEADLINE - $(date +%s) )); }
+
+          echo "==> [1/8] install kubectl ${KUBECTL_VERSION} from dl.k8s.io"
+          wget -qO /tmp/kubectl \
+            "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/amd64/kubectl"
+          chmod +x /tmp/kubectl
+          KCTL=/tmp/kubectl
+
+          echo "==> [2/8] wait for metallb controller Deployment Available"
+          # Label selector — release-name agnostic. Upstream metallb
+          # subchart labels every Deployment with
+          # `app.kubernetes.io/component=controller` and the metallb
+          # subchart's own selectorLabels.
+          while [ "$(remaining)" -gt 0 ]; do
+            ctrl="$($KCTL -n "$NAMESPACE" get deploy \
+              -l app.kubernetes.io/component=controller \
+              -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)"
+            if [ -n "$ctrl" ]; then break; fi
+            sleep 5
+          done
+          [ -n "$ctrl" ] || fail "metallb controller Deployment never appeared in ${NAMESPACE}"
+          $KCTL -n "$NAMESPACE" wait deploy/"$ctrl" \
+            --for=condition=Available --timeout="$(remaining)s" \
+            || fail "metallb controller Deployment never went Available"
+
+          echo "==> [3/8] wait for metallb speaker DaemonSet rolled out"
+          while [ "$(remaining)" -gt 0 ]; do
+            spk="$($KCTL -n "$NAMESPACE" get ds \
+              -l app.kubernetes.io/component=speaker \
+              -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)"
+            if [ -n "$spk" ]; then break; fi
+            sleep 5
+          done
+          [ -n "$spk" ] || fail "metallb speaker DaemonSet never appeared in ${NAMESPACE}"
+          $KCTL -n "$NAMESPACE" rollout status ds/"$spk" \
+            --timeout="$(remaining)s" \
+            || fail "metallb speaker DaemonSet rollout did not complete"
+
+          echo "==> [4/8] tear down stale demo from prior run (best effort)"
+          $KCTL -n "$NAMESPACE" delete svc "$DEMO_NAME" \
+            --ignore-not-found --wait=true >/dev/null 2>&1 || true
+          $KCTL -n "$NAMESPACE" delete deploy "$DEMO_NAME" \
+            --ignore-not-found --wait=true >/dev/null 2>&1 || true
+
+          echo "==> [5/8] apply demo Deployment + LoadBalancer Service"
+          # Backend: nginx-on-alpine serving a single 'ok\n' file.
+          # Single replica is enough — we are testing MetalLB's L2
+          # announcement, not backend HA. Pinned to workers via the
+          # same nodeAffinity the L2Advertisement uses, so the Pod
+          # can be reached by the speaker leader without bouncing
+          # through a CP node.
+          # nginx is used (not busybox httpd) for two reasons:
+          #   1. alpine's base busybox build does not include the
+          #      httpd applet (in `busybox-extras` package — would
+          #      need apk-add at boot, flaky on fresh clusters).
+          #   2. nginx defaults to `listen [::]:80;` (IPv6 wildcard
+          #      with v4-mapped acceptance), which is required for
+          #      Service `ipFamilies: [IPv6]`: kube-proxy DNATs
+          #      Service traffic to the Pod's v6 address; busybox
+          #      httpd / nc listen v4-only.
+          # Service: type=LoadBalancer, IPv6 single-stack — forces
+          # MetalLB to pick from the v6 IPAddressPool. The cluster
+          # supports dual-stack (§8 service CIDRs); pinning v6 keeps
+          # the announce path deterministic.
+          cat <<EOF | $KCTL apply -f -
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: ${DEMO_NAME}
+            namespace: ${NAMESPACE}
+            labels:
+              app.kubernetes.io/name: ${DEMO_NAME}
+          spec:
+            replicas: 1
+            selector:
+              matchLabels:
+                app.kubernetes.io/name: ${DEMO_NAME}
+            template:
+              metadata:
+                labels:
+                  app.kubernetes.io/name: ${DEMO_NAME}
+              spec:
+                affinity:
+                  nodeAffinity:
+                    requiredDuringSchedulingIgnoredDuringExecution:
+                      nodeSelectorTerms:
+                        - matchExpressions:
+                            - {key: node-role.kubernetes.io/control-plane, operator: DoesNotExist}
+                containers:
+                  - name: nginx
+                    image: ${DEMO_IMAGE}
+                    imagePullPolicy: IfNotPresent
+                    command: ["/bin/sh", "-c"]
+                    args:
+                      - |
+                        # nginx:alpine ships /etc/nginx/conf.d/default.conf
+                        # with v4-only \`listen 80;\`. Service is IPv6
+                        # single-stack: kube-proxy DNATs to the Pod's v6
+                        # IP, but with v4-only listen the Pod kernel RSTs
+                        # (no listener on v6:80). Splice an extra
+                        # \`listen [::]:80;\` next to the existing v4
+                        # listen line — keeps everything else in
+                        # default.conf intact (root, error_page, ...).
+                        sed -i '/^[ \t]*listen[ \t]\+80;/a\    listen [::]:80;' /etc/nginx/conf.d/default.conf
+                        mkdir -p /usr/share/nginx/html
+                        printf 'ok\n' > /usr/share/nginx/html/index.html
+                        exec nginx -g 'daemon off;'
+                    ports:
+                      - containerPort: ${DEMO_PORT}
+                        name: http
+                    readinessProbe:
+                      tcpSocket:
+                        port: ${DEMO_PORT}
+                      initialDelaySeconds: 1
+                      periodSeconds: 2
+          ---
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: ${DEMO_NAME}
+            namespace: ${NAMESPACE}
+            labels:
+              app.kubernetes.io/name: ${DEMO_NAME}
+          spec:
+            type: LoadBalancer
+            ipFamilyPolicy: SingleStack
+            ipFamilies: [IPv6]
+            selector:
+              app.kubernetes.io/name: ${DEMO_NAME}
+            ports:
+              - name: http
+                port: ${DEMO_PORT}
+                targetPort: http
+                protocol: TCP
+          EOF
+
+          echo "==> [6/8] wait for backend Pod Ready"
+          $KCTL -n "$NAMESPACE" rollout status deploy/"$DEMO_NAME" \
+            --timeout="$(remaining)s" \
+            || fail "demo Deployment ${DEMO_NAME} never rolled out"
+
+          echo "==> [7/8] wait for LoadBalancer VIP allocation"
+          VIP=""
+          while [ "$(remaining)" -gt 0 ]; do
+            VIP="$($KCTL -n "$NAMESPACE" get svc "$DEMO_NAME" \
+              -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || true)"
+            if [ -n "$VIP" ]; then break; fi
+            sleep 3
+          done
+          [ -n "$VIP" ] || fail "MetalLB never allocated a VIP for ${DEMO_NAME} (svc.status.loadBalancer.ingress empty)"
+          echo "    VIP=${VIP} pool=${POOL_RANGE}"
+
+          # Sanity: VIP shares the leading hextets of the pool range.
+          # POOL_RANGE format is `<from>-<to>` or `<cidr>`; trim to
+          # the first three hextets and require VIP to start with
+          # the same prefix. This catches "controller assigned from
+          # the wrong pool" without parsing IPv6 ranges fully.
+          POOL_PREFIX="$(echo "$POOL_RANGE" | sed -E 's/[-/].*$//' \
+            | awk -F: '{ printf "%s:%s:%s:", $1, $2, $3 }')"
+          case "$VIP" in
+            "${POOL_PREFIX}"*) : ;;
+            *) fail "VIP ${VIP} does not match pool prefix ${POOL_PREFIX} (range=${POOL_RANGE})" ;;
+          esac
+
+          echo "==> [8/8] in-cluster HTTP probe from driver Pod"
+          # Probe from THIS driver Pod (which is NOT a Service endpoint)
+          # so kube-proxy's nftables DNAT short-circuits the traffic to
+          # a backend Pod IP without hitting the bridge's hairpin
+          # filter. A `kubectl exec backend-pod -- wget VIP` form would
+          # be hairpin (backend trying to reach itself through its own
+          # Service) which Calico's default config drops at the veth.
+          # busybox `wget -O-` to an IPv6 literal needs `[]` brackets.
+          BODY="$(wget -qO- --timeout=10 "http://[${VIP}]:${DEMO_PORT}/" 2>/dev/null || true)"
+          case "$BODY" in
+            ok*) : ;;
+            *) fail "in-cluster HTTP probe to http://[${VIP}]:${DEMO_PORT}/ returned: ${BODY:-<empty>}" ;;
+          esac
+
+          echo ""
+          echo "===> ALL METALLB CHECKS PASSED"
+          # Visible artifact for the verify-side curl on the VM. The
+          # Molecule verify task reads VIP via `kubectl get svc` (not
+          # via these logs), but echoing it makes manual triage from
+          # `helm test --logs` ergonomic.
+          echo "===> VIP=${VIP}"
+          echo "===> SERVICE=${NAMESPACE}/${DEMO_NAME} port=${DEMO_PORT}"

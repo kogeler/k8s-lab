@@ -1,0 +1,47 @@
+---
+# L2Advertisement — same wrapper-owned scope as the IPAddressPool.
+#
+# Substrate-required fields hardcoded here per memory rule
+# "Chart-required values are hardcoded":
+#
+#   * `ipAddressPools: [<wrapper-pool>]` — single shipped pool; the
+#     advertisement is meaningless without it.
+#   * `interfaces: [<l2.interface>]` — speaker announces VIPs only on
+#     the external NIC. Without this selector MetalLB picks any
+#     speaker NIC; on this dual-NIC substrate (eth0 internal,
+#     eth1 external — §4.2) that would land VIPs on the wrong
+#     segment.
+#   * `nodeSelectors[*].matchExpressions[control-plane DoesNotExist]`
+#     — VIPs announced ONLY from worker nodes. Architecturally the
+#     control plane is isolated from user-facing traffic (§4); even
+#     though CP eth1 is configured (Step 11/12) and speakers run on
+#     CP via DaemonSet, leader election for VIP announcement must
+#     skip CP. MetalLB docs (§5.5) explicitly call out that the
+#     `interfaces` selector alone does not influence leader election
+#     — the nodeSelectors gate is required.
+#   * Optional consumer-supplied `extraNodeSelectors` are stacked as
+#     additional `matchLabels` entries on the SAME nodeSelector
+#     element (AND semantics inside one nodeSelector, OR across the
+#     list). The substrate-required CP-exclusion is repeated across
+#     each consumer entry so it cannot be vacated by an empty/short
+#     extra selector.
+apiVersion: metallb.io/v1beta1
+kind: L2Advertisement
+metadata:
+  name: {{ include "metallb-config.fullname" . }}-v6
+  namespace: {{ .Release.Namespace | quote }}
+  labels:
+    {{- include "metallb-config.labels" . | nindent 4 }}
+spec:
+  ipAddressPools:
+    - {{ include "metallb-config.fullname" . }}-v6
+  interfaces:
+    - {{ .Values.l2.interface | quote }}
+  nodeSelectors:
+    - matchExpressions:
+        - key: node-role.kubernetes.io/control-plane
+          operator: DoesNotExist
+      {{- with .Values.l2.extraNodeSelectors }}
+      matchLabels:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

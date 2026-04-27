@@ -1,0 +1,33 @@
+apiVersion: v2
+name: metallb-config
+description: |
+  k8s-lab MetalLB config wrapper. Owns the IPv6 IPAddressPool +
+  L2Advertisement CRs for the workload cluster and ships a
+  `helm.sh/hook: test` driver Pod that drives a real LoadBalancer
+  demo Service (alpine + busybox httpd backend) to prove VIP
+  allocation end-to-end. The verify-side curl from outside the
+  cluster (Molecule e2e-local) closes Gate A — external L2 reachable
+  to the announced VIP through eth1 of the speaker leader. PLAN §17.1
+  / §17.6 / §6 Gate A.
+
+  Installed as the SECOND Helm release in the MetalLB delivery pair —
+  the sibling `charts/metallb/` registers CRDs + controller + speaker
+  first, this wrapper then reconciles the CRs against an already-live
+  metallb.io API. See `charts/metallb/values.yaml` for the rationale
+  behind splitting the wrapper in two.
+
+type: application
+
+# Local wrapper version. Bump on every values/template change so the
+# chart-level traceability stays meaningful — same policy as
+# capi-cluster-class (§16.2) and cni-calico (§17.1).
+version: 0.1.3
+
+# appVersion tracks the upstream MetalLB API surface targeted by the
+# CRs in this chart (metallb.io/v1beta1). PLAN §8
+# k8s_lab_metallb_chart_version (verified 2026-04-26).
+appVersion: v0.15.3
+
+sources:
+  - https://github.com/metallb/metallb
+  - https://metallb.io/configuration/

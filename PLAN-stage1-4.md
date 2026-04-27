@@ -131,14 +131,33 @@ kubeconfig target-кластера (Phase 5.05 / §16.8).
   `k8s_lab_calico_chart_version`. Wrapper owns Installation CR +
   default IPPool'ы dual-stack (pod CIDR'ы из §8
   `k8s_lab_workload_pod_cidr_v4` / `k8s_lab_workload_pod_cidr_v6`);
-* **MetalLB** — два `helm_release`-а:
+* **MetalLB** (Step 14, 2026-04-27): два local wrapper chart'а как
+  два `helm_release`-а — split необходим потому что upstream metallb
+  0.15.3 ships CRDs as `templates/crds/` (regular templates), not the
+  Helm `crds/` folder. A single-release wrapper bundling subchart +
+  custom resources fails Helm 3 pre-apply validation with
+  `no matches for kind "IPAddressPool"`:
 
-  * upstream `metallb/metallb` ([27]), pinned версия из §8
-    `k8s_lab_metallb_chart_version`;
-  * локальный wrapper `charts/metallb-config/` (§8
-    `k8s_lab_metallb_wrapper_chart_path`) — IPAddressPool +
-    L2Advertisement CR-ы, bind'ят §8 `k8s_lab_metallb_vip_range_v6`
-    + `k8s_lab_metallb_interface` + `k8s_lab_metallb_node_selector_labels`.
+  * `charts/metallb/` — minimal subchart-wrapper над upstream
+    `metallb/metallb` 0.15.3 ([27]). Pin upstream version в Chart.yaml
+    `dependencies:` block (§8 `k8s_lab_metallb_chart_version`).
+    values.yaml хардкодит substrate-required toggles
+    (`crds.enabled: true`, `frrk8s.enabled: false`,
+    `speaker.frr.enabled: false`, `speaker.tolerateMaster: true`).
+    Wrapper-owned templates: none — the chart exists only to ship
+    upstream subchart with pinned values per memory rule
+    "Chart-required values are hardcoded";
+  * `charts/metallb-config/` (§8 `k8s_lab_metallb_wrapper_chart_path`)
+    — wrapper-owned IPAddressPool + L2Advertisement CRs + helm test
+    driver Pod (Gate A acceptance, §17.6). bind'ит §8
+    `k8s_lab_metallb_vip_range_v6` + `k8s_lab_metallb_interface` +
+    `k8s_lab_metallb_node_selector_labels`. No subchart deps. Installed
+    SECOND so CRDs are registered first.
+  * **HA pair contract §2.12 deviation specific to MetalLB**: upstream
+    chart 0.15.3 does NOT expose `controller.replicas` — controller
+    is single-replica by upstream design (allocates VIPs from the
+    pool, no state partitioning). HA delivered through speaker
+    DaemonSet (leader-elected per-VIP via memberlist).
 * **Probe chart'ы** (§17.3):
 
   * Gate B (CNI viability, §17.5) — Step 13 решение: реализован
@@ -148,8 +167,12 @@ kubeconfig target-кластера (Phase 5.05 / §16.8).
     при single shipped CNI implementation). Если придёт CNI-swap
     кандидат и появится потребность в CNI-agnostic probe'е,
     cni-probe вводится как chart-independent;
-  * `charts/metallb-probe/` — Gate A (external L2 viability, §17.6).
-    Не реализован в Step 13 (MetalLB-side scope).
+  * Gate A (external L2 viability, §17.6) — Step 14 решение:
+    реализован inline в `charts/metallb-config/templates/tests/`
+    (rbac.yaml + metallb-vip.yaml). Отдельный
+    `charts/metallb-probe/` НЕ shipped. Symmetric to cni-calico
+    decision: единственная shipped реализация L2-mode acceptance
+    живёт прямо у chart'а её владельца.
 
 Все upstream-chart'ы приходят через **локальные wrapper chart'ы** этого
 repo (dependencies в `Chart.yaml` → upstream), не напрямую через
@@ -483,10 +506,16 @@ deploy-workload-addons:
   `charts/metallb-config/` с IPAddressPool / L2Advertisement;
 * **HA replica contract (§2.12)** на workload-кластере: каждый
   multi-replica-capable Deployment / StatefulSet → `replicas: 2` с
-  antiaffinity по `kubernetes.io/hostname`. Calico `typha` и MetalLB
-  controller — с `replicas: 2`. DaemonSet-ы (MetalLB speaker, Calico
+  antiaffinity по `kubernetes.io/hostname`. Calico
+  `calico-kube-controllers` + `calico-apiserver` через
+  `Installation.spec.controlPlaneReplicas: 2` (operator gives them 2
+  + built-in podAntiAffinity). DaemonSet-ы (MetalLB speaker, Calico
   node) сами получают по одной реплике на worker — отдельный
-  override не нужен;
+  override не нужен. **MetalLB controller — explicit deviation
+  from §2.12** (Step 14): upstream `metallb` chart 0.15.3 NOT exposes
+  `controller.replicas` (controller is a singleton by upstream
+  design; HA delivered through speaker DS leader-election per VIP
+  via memberlist gossip);
 * `helm_release.wait = true` + `atomic = true` на всех release'ах;
   `depends_on`-цепочка внутри `cluster_addons_helm` module'а (§17.1):
   CNI → MetalLB → probe-chart'ы.
@@ -586,38 +615,124 @@ Vagrantfile`.
 
 ## 17.6. Phase 5.3 — MetalLB Helm test (covers external L2 acceptance)
 
-MetalLB release из §17.4 автоматически несёт `helm.sh/hook: test` Job
-из `charts/metallb-probe/` (§17.3 — MetalLB probe Job; chart ставится
-отдельным `helm_release`-ом с `depends_on = [helm_release.metallb]`).
-Phase 5.3 — это `helm test <metallb-release>` после `terraform apply`,
-который закрывает acceptance Gate A из §6 (external L2 viability)
-плюс smoke-тест MetalLB VIP allocation.
+**Статус (Step 14, 2026-04-27): chart-side end-to-end зелёный** через
+`tests/molecule/e2e-local/` Molecule сценарий — chart-side `helm test
+metallb-config` 8-фазный + verify-side external HTTP curl с VM,
+оба зелёные на свежем кластере. См. §17.6 Step 14 acceptance status
+block ниже за full evidence. Phase 5.3 = два artifact'а, оба shipped
+(§17.1 / §17.4): pair of helm releases + verify-side curl in
+Molecule. Полный end-to-end через Terraform fixture (§17.4) — следующий
+Step (требует TF module `cluster_addons_helm` + Phase 5.1 fixture, не
+реализованы в Step 14).
 
-Install MetalLB + prove:
+MetalLB delivery — два local wrapper chart'а как два helm release'а
+(§17.1):
 
-* `IPAddressPool` и `L2Advertisement` применены;
-* VIP allocation работает: LoadBalancer Service получает IPv6 VIP из
-  `k8s_lab_metallb_vip_range_v6`;
-* MetalLB probe Job завершается exit=0, что означает все четыре
-  acceptance criteria Gate A выполнены (multiple MAC, RA reception,
-  NDP, inbound from probe — §6);
-* **HA pair контракт для MetalLB на workload cluster (§2.12):**
-  `metallb-controller` Deployment имеет 2 ready replicas на разных
-  worker-нодах, ровно один из них держит leader-election lease;
-  `metallb-speaker` DaemonSet работает на обоих worker'ах. Failover-
-  smoke допустим, но не обязателен на этой phase: достаточно
-  доказать что обе реплики активно участвуют (один — active leader,
-  второй — hot standby с up-to-date config).
+1. `charts/metallb/` ставится первым (subchart wrapper над upstream
+   `metallb/metallb` 0.15.3; CRDs + controller + speaker DS;
+   substrate-required toggles `crds.enabled=true`,
+   `frrk8s.enabled=false`, `speaker.frr.enabled=false` в values.yaml);
+2. `charts/metallb-config/` ставится вторым (IPAddressPool +
+   L2Advertisement + helm test driver Pod; subchart-free).
+
+Two-release split rationale: upstream metallb 0.15.3 ships CRDs as
+regular `templates/crds/` (sub-dependency), not the Helm `crds/`
+folder mechanism. A single-release wrapper bundling CRDs + custom
+resources fails Helm 3 pre-apply manifest validation with
+`no matches for kind "IPAddressPool" in version "metallb.io/v1beta1"`.
+Splitting into two releases registers CRDs first, then reconciles
+CRs against an already-live `metallb.io` API.
+
+Phase 5.3 acceptance has two halves (Gate A criteria — §6):
+
+* **chart-side helm test hook** (driver Pod, 8 phases in-cluster) —
+  proves controller Available, speaker DS rolled out, IPAddressPool +
+  L2Advertisement reconciled, demo Service got VIP from pool, demo
+  backend reachable via VIP through kube-proxy nftables DNAT
+  (non-hairpin: probe runs from driver Pod, not from a backend Pod —
+  Calico's default veth filter drops backend-to-self-via-Service);
+* **verify-side external curl** (Molecule e2e-local Verify task on
+  the VM, NOT delegate_to runner) — reads VIP via
+  `kubernetes.core.k8s_info` against workload kubeconfig, then
+  `ansible.builtin.uri url=http://[<VIP>]:80/` from the VM. Packet
+  path: VM → `ext6-ra-peer` (`2001:db8:42:100::1/64`) → `br-ext6`
+  → eth1 speaker leader → kube-proxy DNAT → backend Pod → 200 OK
+  body `ok`. This closes Gate A by proving production-path L2
+  reachability from outside the cluster.
+
+**HA pair contract §2.12 — MetalLB-specific deviation:** upstream
+`metallb` chart 0.15.3 does NOT expose `controller.replicas`
+(controller is a singleton by upstream design — allocates VIPs from
+the pool and validates CRs, no state partitioning). HA on this chart
+is delivered through the **speaker DaemonSet** (one replica per
+worker, leader-elected per-VIP via memberlist gossip). This is
+sufficient for the failover guarantee §2.12 cares about: when a
+speaker leader fails, another speaker re-announces the VIP within
+seconds. Acceptance criteria for §17.6 therefore omits the
+`controller.replicas==2 + podAntiAffinity` clause from the workload
+cluster acceptance template (§17.4) — speaker DaemonSet rollout +
+`metallb-controller` Deployment Available is the §2.12 floor for
+MetalLB on this chart version.
+
+Demo backend image choice — `nginx:1.27-alpine` (Service
+`ipFamilies: [IPv6]` requires v6-listening backend; alpine's base
+busybox lacks `httpd` applet, and nginx default config has only
+`listen 80;` v4 — chart driver splices `listen [::]:80;` next to
+the v4 listen via inline `sed`, keeping the rest of nginx default
+intact). Memory rule "Never use bitnami images" — nginx Inc.
+official image, not bitnami.
 
 Acceptance:
 
-* LoadBalancer service gets IPv6 VIP;
-* VIP reachable на external segment model (в local harness — bridge
-  `br-ext6` внутри Vagrant VM после Step 9 pivot, см. §9.2;
-  equivalent в prod — provider external L2 segment); доказывается
-  ping'ом от external probe endpoint'а;
-* Gate A четырёхкритериевая acceptance (§6) зелёная;
-* HA pair контракт §2.12 для MetalLB выполнен.
+* both helm releases applied without errors;
+* Service `status.loadBalancer.ingress[0].ip` ∈ `pool.rangeV6`;
+* chart-side `helm test metallb-config` exits 0 (8/8 phases green);
+* verify-side `ansible.builtin.uri` returns HTTP 200 with body
+  matching `^ok` from the VM;
+* §2.12 HA contract satisfied via speaker DS (controller deviation
+  documented above).
+
+### Step 14 acceptance status (2026-04-27)
+
+End-to-end зелёный на свежем workload-кластере, провизионированном
+через ClusterClass 0.5.0 + workload-cluster 0.5.0 + cni-calico
+0.2.0 + metallb 0.1.0 + metallb-config 0.1.3. Прогон последовательностью
+`make -C tests/molecule e2e-local-vagrant-converge` →
+`make -C tests/molecule e2e-local-vagrant-verify`:
+
+* converge — `failed=0 ok=318 changed=7`. Цепочка задач: existing
+  substrate + bootstrap + ClusterClass + workload + Calico → новый
+  блок MetalLB delivery (read Chart.yaml → helm dep update + helm
+  package on runner → copy .tgz to VM → helm install on VM via
+  `kubernetes.core.helm`). Два helm install'а: upstream metallb
+  wrapper (`metallb-system` namespace, `create_namespace: true`),
+  затем metallb-config wrapper (`create_namespace: false` — namespace
+  уже создан upstream wrapper'ом).
+* verify — `failed=0 ok=20 changed=5`. Три helm test'а зелёные:
+  workload chart (10 фаз), cni-calico (6 фаз), metallb-config (8 фаз).
+  Compact-state debug строка:
+  `metallb VIP=2001:db8:42:100::200 external_status=200`. Полный
+  Gate A path: external curl от VM → `ext6-ra-peer` → bridge
+  `br-ext6` → eth1 speaker leader → kube-proxy → backend nginx Pod
+  → 200 OK body "ok\n".
+
+Memory rules применённые в Step 14:
+* `feedback_chart_required_values_hardcoded.md` — IPAddressPool /
+  L2Advertisement substrate-required fields в шаблонах
+  (interfaces=eth1, nodeSelectors excludes control-plane);
+* `feedback_no_bitnami_images.md` — alpine для driver Pod, nginx
+  для backend (нет bitnami);
+* `feedback_test_artifact_naming.md` — `k8s-lab-metallb-demo-*`
+  prefix для демо Deployment/Service;
+* `feedback_pause_before_role_test.md` — chart code сделан, тестирование
+  на live кластере выявило два separate fixes (nginx v4-only listen,
+  hairpin avoidance), оба применены в chart 0.1.x bumps;
+* `feedback_plan_is_fallible.md` — single-wrapper precedent
+  (cni-calico) пытался apply здесь, но архитектура metallb subchart
+  CRDs (templates/crds/, не Helm crds/) требует two-release split.
+  PLAN §17.1 был прав в исходном дизайне, повторно подтверждено
+  через runtime evidence (Helm 3 pre-apply validation fails on
+  bundled CRDs+CRs).
 
 [1]: https://capn.linuxcontainers.org/?utm_source=chatgpt.com "Introduction - The cluster-api-provider-incus book"
 [2]: https://documentation.ubuntu.com/lxd/latest/reference/network_bridge/?utm_source=chatgpt.com "Bridge network - LXD documentation"

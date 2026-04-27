@@ -1,0 +1,77 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://k8s-lab.io/schemas/metallb-config.values.schema.json",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["pool", "l2", "tests"],
+  "properties": {
+    "pool": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["rangeV6"],
+      "properties": {
+        "rangeV6": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[0-9a-fA-F:]+(-[0-9a-fA-F:]+|/[0-9]+)?$",
+          "description": "IPv6 VIP range for the IPAddressPool. Format `<from>-<to>` or `<cidr>`. Bound from §8 k8s_lab_metallb_vip_range_v6. Pattern accepts only hex+colon characters (with optional `-<from>-<to>` range or `/<prefix>` CIDR suffix); a stray IPv4-looking value (contains `.`) is rejected at template stage. The substrate is IPv6-only at the external segment per §4.2 / §5.5; an IPv4 range here would silently mis-train MetalLB to allocate v4 VIPs out of a field named `rangeV6`."
+        }
+      }
+    },
+    "l2": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["interface", "extraNodeSelectors"],
+      "properties": {
+        "interface": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Speaker interface for L2 announcements. Bound from §8 k8s_lab_metallb_interface."
+        },
+        "extraNodeSelectors": {
+          "type": "object",
+          "additionalProperties": { "type": "string" },
+          "description": "Optional matchLabels stacked ON TOP of the substrate-required CP-exclusion nodeSelector. Empty map = any worker eligible."
+        }
+      }
+    },
+    "tests": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["image", "demoImage", "demoName", "demoPort", "kubectlVersion", "vipAllocationTimeoutSeconds"],
+      "properties": {
+        "image": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Base image for the test driver Pod (kubectl driver). alpine + busybox wget. Memory rule bans bitnami."
+        },
+        "demoImage": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Image for the backend Pod behind the LoadBalancer demo Service. Must listen on IPv6 (default nginx config does — `[::]:80`)."
+        },
+        "demoName": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
+          "description": "Backend Service / Deployment basename. Lowercase RFC 1123."
+        },
+        "demoPort": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535
+        },
+        "kubectlVersion": {
+          "type": "string",
+          "pattern": "^v\\d+\\.\\d+\\.\\d+(\\+.+)?$",
+          "description": "kubectl version fetched from dl.k8s.io inside the test driver Pod."
+        },
+        "vipAllocationTimeoutSeconds": {
+          "type": "integer",
+          "minimum": 60,
+          "maximum": 3600
+        }
+      }
+    }
+  }
+}

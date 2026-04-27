@@ -17,6 +17,14 @@
     # not runner-reachable (capi-int IPv6 endpoint).
     _vm_helm_binary: "/opt/capi-lab/bin/helm"
     _vm_workload_kubeconfig: "/opt/capi-lab/etc/{{ _workload_cluster_name }}.kubeconfig"
+    # MetalLB release lives on the workload cluster (metallb-system
+    # namespace). The chart-side helm test deploys a demo Deployment +
+    # LoadBalancer Service named after `tests.demoName` in values.yaml;
+    # we read that Service's allocated VIP and drive an external curl
+    # against it from the VM through `ext6-ra-peer` to close Gate A.
+    _metallb_namespace: "metallb-system"
+    _metallb_demo_service: "k8s-lab-metallb-demo"
+    _metallb_demo_port: 80
     _capi_kinds:
       - { api_version: "cluster.x-k8s.io/v1beta2", kind: "Cluster" }
       - { api_version: "controlplane.cluster.x-k8s.io/v1beta2", kind: "KubeadmControlPlane" }
@@ -68,6 +76,86 @@
       # /opt/capi-lab/etc/<cluster>.kubeconfig is mode 0600 root-owned
       # (materialised by converge); helm needs to read it.
       become: true
+
+    # ---- MetalLB chart-side acceptance ------------------------------
+    # In-cluster proof: controller Available, speaker DS rolled out,
+    # demo LoadBalancer Service got a VIP from the v6 pool, backend
+    # serves on it from inside the cluster (driver Pod's kubectl exec
+    # probe). The verify-side curl below closes Gate A by hitting the
+    # same VIP from outside the cluster (VM `ext6-ra-peer`).
+    - name: "Verify | e2e-local | run metallb-config helm test"
+      ansible.builtin.command:
+        argv:
+          - "{{ _vm_helm_binary }}"
+          - test
+          - metallb-config
+          - --namespace
+          - "{{ _metallb_namespace }}"
+          - --kubeconfig
+          - "{{ _vm_workload_kubeconfig }}"
+          - --logs
+          - --timeout
+          - 15m
+      register: _metallb_helm_test
+      become: true
+
+    # ---- Gate A external-segment closure ----------------------------
+    # The chart-side hook left the demo Deployment + Service running
+    # (`hook-delete-policy: before-hook-creation` only). Read the VIP
+    # from the workload cluster and drive an HTTP GET against it from
+    # the VM. The curl runs on the VM (no `delegate_to: localhost`)
+    # so the packet egresses through `ext6-ra-peer` (2001:db8:42:100::1)
+    # → veth → `br-ext6` → eth1 of the speaker leader → kube-proxy →
+    # backend Pod. Round-trip 200 + body "ok\n" == Gate A green.
+    - name: "Verify | e2e-local | read MetalLB demo Service VIP"
+      kubernetes.core.k8s_info:
+        kubeconfig: "{{ _vm_workload_kubeconfig }}"
+        api_version: v1
+        kind: Service
+        namespace: "{{ _metallb_namespace }}"
+        name: "{{ _metallb_demo_service }}"
+      register: _metallb_demo_svc
+      become: true
+
+    - name: "Verify | e2e-local | assert MetalLB allocated a VIP"
+      ansible.builtin.assert:
+        that:
+          - (_metallb_demo_svc.resources | length) == 1
+          - (_metallb_demo_svc.resources[0].status.loadBalancer.ingress | default([])) | length > 0
+          - "':' in (_metallb_demo_svc.resources[0].status.loadBalancer.ingress[0].ip | default(''))"
+        fail_msg: >-
+          MetalLB demo Service did not surface a VIP in
+          `status.loadBalancer.ingress[0].ip` (status: {{ (_metallb_demo_svc.resources | first | default({})).status | default('<no-svc>') }}).
+
+    - name: "Verify | e2e-local | bind MetalLB demo VIP fact"
+      ansible.builtin.set_fact:
+        _metallb_demo_vip: "{{ _metallb_demo_svc.resources[0].status.loadBalancer.ingress[0].ip }}"
+
+    # IPv6 literal HTTP URL — RFC 3986 brackets. ansible.builtin.uri
+    # honours [..]. busybox-side wget on the VM is also available as a
+    # fallback if uri's urllib3 stack ever balks at IPv6, but uri stays
+    # native and produces structured output.
+    - name: "Verify | e2e-local | external HTTP GET to MetalLB VIP from VM"
+      ansible.builtin.uri:
+        url: "http://[{{ _metallb_demo_vip }}]:{{ _metallb_demo_port }}/"
+        method: GET
+        return_content: true
+        status_code: 200
+        timeout: 15
+      register: _metallb_external_curl
+      retries: 6
+      delay: 5
+      until: _metallb_external_curl.status == 200
+      become: false
+
+    - name: "Verify | e2e-local | assert external GET body is 'ok'"
+      ansible.builtin.assert:
+        that:
+          - (_metallb_external_curl.content | default('')) is search('^ok')
+        fail_msg: >-
+          External HTTP GET to http://[{{ _metallb_demo_vip }}]:{{ _metallb_demo_port }}/
+          succeeded but returned unexpected body:
+          {{ _metallb_external_curl.content | default('<none>') }}
 
     - name: "Verify | e2e-local | snapshot bootstrap-side CAPI objects"
       kubernetes.core.k8s_info:
@@ -230,6 +318,8 @@
         msg:
           - "{{ _helm_test.stdout_lines | default([]) }}"
           - "{{ _cni_helm_test.stdout_lines | default([]) }}"
+          - "{{ _metallb_helm_test.stdout_lines | default([]) }}"
+          - "metallb VIP={{ _metallb_demo_vip | default('<unread>') }} external_status={{ _metallb_external_curl.status | default('<none>') }}"
           - >-
             {{ _capi_snapshot.results
                | map(attribute='resources')

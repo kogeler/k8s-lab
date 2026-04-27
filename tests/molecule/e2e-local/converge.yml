@@ -10,6 +10,9 @@
     _cluster_class_chart: "{{ _repo_root }}/charts/capi-cluster-class"
     _workload_chart: "{{ _repo_root }}/charts/capi-workload-cluster"
     _cni_calico_chart: "{{ _repo_root }}/charts/cni-calico"
+    _metallb_chart: "{{ _repo_root }}/charts/metallb"
+    _metallb_config_chart: "{{ _repo_root }}/charts/metallb-config"
+    _metallb_namespace: "metallb-system"
     _workload_namespace: "capi-clusters"
     _cluster_class_namespace: "capi-system"
     _workload_cluster_name: "{{ k8s_lab_workload_cluster_name }}"
@@ -179,5 +182,133 @@
               cidrBlocks:
                 - "{{ k8s_lab_workload_pod_cidr_v4 }}"
                 - "{{ k8s_lab_workload_pod_cidr_v6 }}"
+          tests:
+            kubectlVersion: "{{ _kubernetes_version }}"
+
+    # ---- MetalLB delivery (two-release pair) ------------------------
+    # Same packaging pattern as cni-calico above: the in-cluster helm
+    # binary cannot do `helm dependency update` without network egress
+    # to metallb.github.io, so each wrapper is packaged on the runner,
+    # the .tgz is copied to the VM, and helm install runs on the VM
+    # against the workload kubeconfig. The workload API endpoint is
+    # on the LXD-bridge IPv6 (capi-int) and is runner-unreachable.
+    #
+    # Two-release pair (PLAN §17.1):
+    #   1) charts/metallb/         — upstream subchart wrapper
+    #      (CRDs + controller + speaker). Installed first so the
+    #      metallb.io/v1beta1 API is registered by the time the
+    #      sibling chart's CRs are validated by Helm.
+    #   2) charts/metallb-config/  — IPAddressPool + L2Advertisement
+    #      + helm test driver Pod (Gate A acceptance).
+    # Splitting them avoids Helm 3's pre-apply manifest validation
+    # failing on `no matches for kind IPAddressPool` when CRDs and
+    # CRs ship in the same release (the upstream subchart puts CRDs
+    # in `templates/crds/` rather than the Helm `crds/` folder).
+
+    - name: "Converge | e2e-local | read metallb Chart.yaml on runner"
+      ansible.builtin.slurp:
+        src: "{{ _metallb_chart }}/Chart.yaml"
+      register: _metallb_chart_yaml
+      delegate_to: localhost
+      become: false
+
+    - name: "Converge | e2e-local | derive metallb chart version"
+      ansible.builtin.set_fact:
+        _metallb_chart_version: >-
+          {{ (_metallb_chart_yaml.content | b64decode | from_yaml).version }}
+
+    - name: "Converge | e2e-local | helm dependency update on runner (metallb)"
+      ansible.builtin.command:
+        argv:
+          - helm
+          - dependency
+          - update
+          - "{{ _metallb_chart }}"
+      delegate_to: localhost
+      become: false
+      changed_when: true
+
+    - name: "Converge | e2e-local | helm package metallb on runner"
+      ansible.builtin.command:
+        argv:
+          - helm
+          - package
+          - "{{ _metallb_chart }}"
+          - --destination
+          - "{{ _artifacts_root }}"
+      delegate_to: localhost
+      become: false
+      changed_when: true
+
+    - name: "Converge | e2e-local | copy metallb chart tarball to VM"
+      ansible.builtin.copy:
+        src: "{{ _artifacts_root }}/metallb-{{ _metallb_chart_version }}.tgz"
+        dest: "/opt/capi-lab/etc/metallb-{{ _metallb_chart_version }}.tgz"
+        mode: "0644"
+        owner: root
+        group: root
+
+    - name: "Converge | e2e-local | install upstream MetalLB on workload cluster"
+      kubernetes.core.helm:
+        binary_path: "{{ _vm_helm_binary }}"
+        kubeconfig: "{{ _vm_workload_kubeconfig }}"
+        name: metallb
+        chart_ref: "/opt/capi-lab/etc/metallb-{{ _metallb_chart_version }}.tgz"
+        release_namespace: "{{ _metallb_namespace }}"
+        create_namespace: true
+        wait: true
+        wait_timeout: 10m
+
+    - name: "Converge | e2e-local | read metallb-config Chart.yaml on runner"
+      ansible.builtin.slurp:
+        src: "{{ _metallb_config_chart }}/Chart.yaml"
+      register: _metallb_config_chart_yaml
+      delegate_to: localhost
+      become: false
+
+    - name: "Converge | e2e-local | derive metallb-config chart version"
+      ansible.builtin.set_fact:
+        _metallb_config_chart_version: >-
+          {{ (_metallb_config_chart_yaml.content | b64decode | from_yaml).version }}
+
+    # `helm package` on a chart with no deps does not need a prior
+    # `helm dependency update`. metallb-config has no Chart.yaml
+    # `dependencies:` block — the upstream subchart lives in the
+    # sibling `charts/metallb/` wrapper.
+    - name: "Converge | e2e-local | helm package metallb-config on runner"
+      ansible.builtin.command:
+        argv:
+          - helm
+          - package
+          - "{{ _metallb_config_chart }}"
+          - --destination
+          - "{{ _artifacts_root }}"
+      delegate_to: localhost
+      become: false
+      changed_when: true
+
+    - name: "Converge | e2e-local | copy metallb-config chart tarball to VM"
+      ansible.builtin.copy:
+        src: "{{ _artifacts_root }}/metallb-config-{{ _metallb_config_chart_version }}.tgz"
+        dest: "/opt/capi-lab/etc/metallb-config-{{ _metallb_config_chart_version }}.tgz"
+        mode: "0644"
+        owner: root
+        group: root
+
+    - name: "Converge | e2e-local | install MetalLB config on workload cluster"
+      kubernetes.core.helm:
+        binary_path: "{{ _vm_helm_binary }}"
+        kubeconfig: "{{ _vm_workload_kubeconfig }}"
+        name: metallb-config
+        chart_ref: "/opt/capi-lab/etc/metallb-config-{{ _metallb_config_chart_version }}.tgz"
+        release_namespace: "{{ _metallb_namespace }}"
+        create_namespace: false
+        wait: true
+        wait_timeout: 10m
+        values:
+          pool:
+            rangeV6: "{{ k8s_lab_metallb_vip_range_v6 }}"
+          l2:
+            interface: "{{ k8s_lab_metallb_interface | default('eth1') }}"
           tests:
             kubectlVersion: "{{ _kubernetes_version }}"

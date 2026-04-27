@@ -1,0 +1,66 @@
+{{/*
+Test ServiceAccount + ClusterRole + ClusterRoleBinding (PLAN §17.3).
+
+Scope: enough for templates/tests/metallb-vip.yaml to:
+  * read Pods cluster-wide (metallb-system speaker/controller probe);
+  * read Nodes (sanity check at least one worker is Ready);
+  * read Namespaces (existence gate);
+  * read Deployments / DaemonSets in apps (rollout-status / wait
+    gating on metallb controller + speaker);
+  * create / get / delete Deployment + Service for the demo backend
+    in `.Release.Namespace`;
+  * create / get / delete the demo backend Pods + `kubectl exec` into
+    them (in-cluster sanity probe before the verify-side curl).
+
+These RBAC objects are **regular release resources** (no
+`helm.sh/hook: test` annotation), installed at `helm install` time
+and torn down only on `helm uninstall`. Same rationale as
+charts/cni-calico/templates/tests/rbac.yaml (Step 13): annotating
+non-Pod resources as test hooks makes `helm test --logs` exit
+non-zero with `unable to get pod logs for ...`, breaking CI gating.
+*/}}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ .Release.Name }}-test
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "metallb-config.labels" . | nindent 4 }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ .Release.Name }}-test
+  labels:
+    {{- include "metallb-config.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["nodes", "namespaces"]
+    verbs: ["get", "list"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "create", "delete"]
+  - apiGroups: [""]
+    resources: ["pods/exec"]
+    verbs: ["create"]
+  - apiGroups: [""]
+    resources: ["services"]
+    verbs: ["get", "list", "create", "delete"]
+  - apiGroups: ["apps"]
+    resources: ["deployments", "daemonsets"]
+    verbs: ["get", "list", "watch", "create", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ .Release.Name }}-test
+  labels:
+    {{- include "metallb-config.labels" . | nindent 4 }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ .Release.Name }}-test
+    namespace: {{ .Release.Namespace }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ .Release.Name }}-test

@@ -1,0 +1,45 @@
+# Local upstream-MetalLB wrapper for k8s-lab workload clusters
+# (PLAN §17.1). The wrapper exists ONLY to pin substrate-required
+# subchart toggles per memory rule "Chart-required values are
+# hardcoded" — there are no wrapper-owned templates.
+#
+# Two-release split rationale: the metallb subchart's CRDs live in
+# `templates/crds/` rather than the Helm `crds/` folder. They are
+# applied as part of the regular kind-sorted apply transaction, but
+# Helm 3 builds the manifest list (and validates kinds against the
+# API server) BEFORE that apply. That makes a single-release wrapper
+# carrying both the subchart and a wrapper-owned IPAddressPool fail
+# at first install with `no matches for kind "IPAddressPool" in
+# version "metallb.io/v1beta1"`. The fix is two distinct Helm
+# releases — this one (subchart only, registers CRDs + controller +
+# speaker) and the sibling `charts/metallb-config/` (custom resources
+# + Gate A test) installed second.
+
+# Subchart values for upstream metallb/metallb. Only the toggles
+# that constitute substrate contract are pinned here; the rest of
+# the upstream surface stays open (overridable by consumer).
+#
+#   * `crds.enabled: true` — the IPAddressPool / L2Advertisement CRs
+#     shipped by `charts/metallb-config/` need the CRDs registered.
+#     This is the upstream subchart's own switch for whether to ship
+#     the CRD sub-dependency; flipping it off would break the
+#     two-release contract.
+#   * `frrk8s.enabled: false` — no BGP / frr-k8s infrastructure on
+#     this lab substrate (§5.5).
+#   * `speaker.frr.enabled: false` — L2 mode only. Disabling FRR
+#     drops the frrouting sidecar from speaker Pods; speakers stay
+#     lean.
+#   * `speaker.tolerateMaster: true` — speaker DS still lands on
+#     control-plane nodes; the L2Advertisement nodeSelector in the
+#     sibling chart restricts *VIP announcement* to workers, but
+#     speakers across the fleet are fine and simplify memberlist
+#     convergence.
+metallb:
+  crds:
+    enabled: true
+  frrk8s:
+    enabled: false
+  speaker:
+    tolerateMaster: true
+    frr:
+      enabled: false

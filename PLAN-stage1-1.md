@@ -25,7 +25,7 @@ PLAN-stage1-7.md ................. §20..§22 (Stage 1 meta: out-of-scope, self-
 
 Этот раздел охватывает Ansible-роли Stage 1, которые уже реализованы и
 прогнаны end-to-end в локальном Vagrant/libvirt-контуре по состоянию на
-Step 13 (2026-04-26):
+Step 14 (2026-04-27):
 
 * §13.1 `base_system` (Step 1 + Step 5 required-values refactor);
 * §13.2 `lxd_host` (Step 2);
@@ -528,6 +528,109 @@ declarative path: kube-proxy ConfigMap rendering на workload
 которые были при попытке live patch'а на degraded Step-12 кластере
 — см. PLAN-1 Test evidence Step 13 follow-up resource bump
 паунgrаф выше).
+
+**Step 14 (2026-04-27) — MetalLB delivery + Gate A acceptance.**
+Доставлены два local wrapper chart'а (§17.1 / §17.6):
+
+* `charts/metallb/` (новый, version 0.1.0) — minimal subchart-wrapper
+  над upstream `metallb/metallb` 0.15.3. Без своих templates; values.yaml
+  пинит substrate-required toggles (`crds.enabled=true`,
+  `frrk8s.enabled=false`, `speaker.frr.enabled=false`,
+  `speaker.tolerateMaster=true`); values.schema.json валидирует их как
+  `const` поверх subchart values surface;
+* `charts/metallb-config/` (новый, version 0.1.3) — wrapper-owned
+  IPAddressPool (v6 single-stack pool, autoAssign=true) +
+  L2Advertisement (interfaces=[$.l2.interface], substrate-required
+  hardcoded nodeSelector с `node-role.kubernetes.io/control-plane:
+  DoesNotExist` — VIPs announced ONLY from worker nodes; consumer
+  `extraNodeSelectors` стекаются поверх). Helm test hook
+  `templates/tests/metallb-vip.yaml` — chart-side acceptance драйвер
+  (alpine + busybox wget + dl.k8s.io kubectl, 8-фазный): controller
+  Available → speaker DS rolled out → demo Deployment + Service
+  type=LoadBalancer (`ipFamilies: [IPv6]`) applied → backend Pod
+  Ready → VIP allocated AND in-pool (string-prefix sanity) →
+  in-cluster HTTP probe от driver Pod (non-hairpin: driver не
+  endpoint Service'а; kube-proxy nftables DNAT short-circuits через
+  `mark-for-masquerade`+DNAT в `endpoint-...` chain). Memory rules:
+  `feedback_no_bitnami_images.md` (alpine + busybox для driver,
+  nginx-on-alpine для backend — busybox base lacks httpd applet),
+  `feedback_test_artifact_naming.md` (`k8s-lab-metallb-demo` prefix
+  для demo stack).
+
+**Two-release split rationale (architectural).** Initially attempted
+single-wrapper design (mirror cni-calico Step 13 precedent) failed
+runtime: upstream metallb 0.15.3 ships CRDs as sub-dependency
+`templates/crds/`, NOT the Helm `crds/`-folder mechanism. Helm 3
+pre-apply manifest validation rejected `kind IPAddressPool` because
+metallb.io/v1beta1 was not yet served at validation time. PLAN §17.1
+two-release design was correct from the start, validated again by
+runtime evidence — split into `charts/metallb/` (subchart only,
+registers CRDs + workloads) followed by `charts/metallb-config/`
+(custom resources + helm test hook). Memory rule
+`feedback_plan_is_fallible.md` cuts both ways: the precedent test
+flagged single-wrapper as the right shape, the runtime test
+overruled.
+
+**HA pair contract §2.12 deviation (MetalLB-specific).** Upstream
+`metallb` chart 0.15.3 does NOT expose `controller.replicas` —
+controller is a singleton by upstream design (allocates VIPs from
+the pool and validates CRs, no state partitioning). HA on this chart
+is delivered through the **speaker DaemonSet** (one replica per
+worker, leader-elected per-VIP via memberlist gossip). When a
+speaker leader fails, another speaker re-announces the VIP within
+seconds. Documented inline в `charts/metallb/values.yaml` +
+`charts/metallb-config/values.yaml` + §17.6.
+
+**Backend image follow-up (Step 14 in-flight fix).** Service is IPv6
+single-stack (`ipFamilies: [IPv6]`) — kube-proxy DNATs to the Pod's
+v6 IP. Initial backend was alpine + busybox httpd, but alpine's base
+busybox lacks the httpd applet. Switched to nginx-on-alpine
+(`nginx:1.27-alpine`); however nginx default config has only
+`listen 80;` (v4). Driver Pod's apply step now splices an extra
+`listen [::]:80;` next to the existing v4 listen via inline `sed`,
+keeping the rest of nginx default.conf intact. Memory rule
+"Never use bitnami images" — nginx Inc. official image, not bitnami.
+
+**`tests/molecule/e2e-local/` extended to MetalLB chain.** converge.yml
+adds packaging+install for both MetalLB wrappers after CNI install
+(same pattern as cni-calico: read Chart.yaml on runner → helm dep
+update + helm package on runner → copy .tgz to VM → install via
+`kubernetes.core.helm` on VM with workload kubeconfig). verify.yml
+adds three new tasks after existing helm test'ов:
+1. `helm test metallb-config` on VM (chart-side 8-phase driver Pod);
+2. `kubernetes.core.k8s_info` reading `Service.status.loadBalancer.
+   ingress[0].ip` against workload kubeconfig (Gate A external VIP);
+3. `ansible.builtin.uri url=http://[<VIP>]:80/` from the VM (NOT
+   `delegate_to: localhost`) — packet path: VM →
+   `ext6-ra-peer 2001:db8:42:100::1` → veth → `br-ext6` → eth1
+   speaker leader → kube-proxy nftables DNAT → backend nginx Pod →
+   200 OK body matches `^ok`. This closes Gate A.
+
+**`k8s_lab_external_probe_address` removed from §8.** The original
+plan reserved this var for an outbound-probe Gate A design (worker
+hostNetwork Pod ping6'ит external probe endpoint). Step 14 redesign
+of Gate A uses an inbound-probe shape (external curl from VM to
+MetalLB-allocated VIP through production-path L2) — semantically
+stronger because it tests the full external→Service→Pod chain, not
+just outbound L2 reachability. The variable is no longer wired
+anywhere in shipped code.
+
+End-to-end результат:
+`make -C tests/molecule e2e-local-vagrant-converge` → `failed=0
+ok=318 changed=7` →
+`make -C tests/molecule e2e-local-vagrant-verify` → `failed=0
+ok=20 changed=5`. Compact-state debug:
+* workload chart `helm test` (10-фазный): `cluster=lab-default
+  classRef=capn-default-0-5-0 AVAILABLE=True cp=3/3 worker=2/2
+  ALL TOPOLOGY CHECKS PASSED`;
+* cni-calico `helm test` (6-фазный): `Phase: Succeeded` (см. Step 13
+  evidence above);
+* metallb-config `helm test` (8-фазный): `Phase: Succeeded` —
+  `===> ALL METALLB CHECKS PASSED`, `===> VIP=2001:db8:42:100::200`;
+* verify-side curl: `metallb VIP=2001:db8:42:100::200
+  external_status=200`. End-to-end Gate A зелёный: production-path
+  external L2 reaches the announced VIP through speaker leader and
+  kube-proxy DNAT to the backend Pod.
 
 ## 13.1. `base_system`
 

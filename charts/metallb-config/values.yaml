@@ -1,0 +1,81 @@
+# Local MetalLB config wrapper for k8s-lab workload clusters
+# (PLAN §17.1). Ships custom resources only — IPAddressPool +
+# L2Advertisement + helm test driver Pod. The sibling chart
+# `charts/metallb/` is responsible for installing the upstream
+# subchart (CRDs + controller + speaker) and MUST be deployed as a
+# separate Helm release before this one. Two-release rationale:
+# the upstream subchart's CRDs live in `templates/crds/` rather
+# than the Helm `crds/` folder, so a single-release wrapper trying
+# to bundle them with custom resources fails Helm 3's pre-apply
+# manifest validation with "no matches for kind IPAddressPool".
+#
+# Substrate-required CR fields — `interfaces: [<l2.interface>]`,
+# L2Advertisement nodeSelectors excluding control-plane, IPAddressPool
+# protocol=L2, IPv6 single-stack — live in templates/ and are NOT
+# exposed here. Per memory rule "Chart-required values are hardcoded"
+# / PLAN §17.1 substrate contract: VIP announcement only from worker
+# nodes (CP isolated from user traffic per §4); L2 mode is the only
+# supported MetalLB protocol on this lab substrate (no BGP infra).
+#
+# §2.12 HA pair contract — deviation specific to MetalLB: upstream
+# `metallb` chart 0.15.3 does not expose `controller.replicas`
+# (single-replica by upstream design — controller is a singleton that
+# allocates VIPs from the pool and validates CRs, no state
+# partitioning). HA is delivered through the speaker DaemonSet (one
+# replica per worker, leader-elected per-VIP via memberlist) — that
+# satisfies the failover guarantee §2.12 actually cares about.
+
+pool:
+  # IPv6 VIP range MetalLB allocates from. Bound by the consumer to
+  # §8 k8s_lab_metallb_vip_range_v6. No safe default — every consumer
+  # must declare its external segment range. Format: `<from>-<to>`
+  # (single-IP pools are also valid: `<ip>/128`).
+  rangeV6: ""
+
+l2:
+  # Interface the speaker announces VIPs on. Bound by the consumer
+  # to §8 k8s_lab_metallb_interface (default eth1 = external NIC per
+  # §4.2). MetalLB docs warn that `interfaces` selector alone does NOT
+  # influence leader election — must be combined with a nodeSelector
+  # (§5.5). The substrate-required worker-only nodeSelector is
+  # hardcoded in templates/l2advertisement.yaml; `extraNodeSelectors`
+  # below stacks ON TOP of it.
+  interface: "eth1"
+  # Optional consumer-supplied label matchers added to the L2
+  # Advertisement nodeSelectors. Substrate-required CP exclusion is
+  # always enforced regardless of this value — empty map = "any
+  # worker eligible".
+  extraNodeSelectors: {}
+
+tests:
+  # Driver Pod image: alpine + busybox `wget` to fetch kubectl from
+  # dl.k8s.io and to drive `kubectl apply` / `kubectl exec`. The
+  # backend Pod uses a different image (see demoImage below) because
+  # alpine's base busybox build does not include the `httpd` applet
+  # (it lives in the `busybox-extras` package, which would require
+  # apk-add at boot — flaky on fresh clusters with slow egress).
+  # Memory rule "Never use bitnami images" / "Always use latest stable".
+  image: "alpine:3.21"
+  # Backend Pod image: nginx-on-alpine. nginx by default listens on
+  # `[::]:80` (IPv6 wildcard accepting v4-mapped traffic), which is
+  # required for the demo Service's `ipFamilies: [IPv6]`: kube-proxy
+  # DNATs Service traffic to the Pod's v6 address (Calico dual-stack
+  # gives every Pod both v4 and v6 IPs), and busybox httpd / nc
+  # listen v4-only. nginx Inc. official image, not bitnami.
+  demoImage: "nginx:1.27-alpine"
+  # Backend Service / Deployment basename. The chart appends
+  # `.Release.Name`-prefixed labels; the bare service is named
+  # `<demoName>` for predictable verify-side lookup. Memory rule
+  # "Use project-relevant names for test artifacts" → `k8s-lab-*`.
+  demoName: "k8s-lab-metallb-demo"
+  # Port the demo backend listens on (nginx) and the demo Service
+  # exposes. 80 keeps `curl http://[<VIP>]/` ergonomic.
+  demoPort: 80
+  # `helm test` Pod fetches kubectl from dl.k8s.io at runtime; pinned
+  # to the same kubernetes minor as the workload cluster.
+  kubectlVersion: "v1.35.0"
+  # Speaker DS rollout + controller Available + VIP allocation by the
+  # controller after IPAddressPool/L2Advertisement reconcile + cold
+  # alpine image pull on backend Pod. Generous to absorb a cold
+  # Vagrant cache.
+  vipAllocationTimeoutSeconds: 600

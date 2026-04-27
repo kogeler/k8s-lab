@@ -1,0 +1,34 @@
+apiVersion: v2
+name: metallb
+description: |
+  k8s-lab MetalLB upstream wrapper. Pulls upstream metallb/metallb as a
+  subchart dependency and pins substrate-required toggles
+  (crds.enabled=true, frrk8s.enabled=false, speaker.frr.enabled=false)
+  via values.yaml. Owns no templates of its own — the IPAddressPool /
+  L2Advertisement CRs and the Gate A acceptance hook live in the
+  sibling chart `charts/metallb-config/`, installed as a separate Helm
+  release after this one (CRDs registered first → CR build at apply
+  time succeeds). PLAN §17.1.
+
+type: application
+
+# Local wrapper version. Bump on every values change so the
+# chart-level traceability stays meaningful — same policy as
+# charts/cni-calico (§17.1) and charts/metallb-config.
+version: 0.1.0
+
+# appVersion tracks the upstream MetalLB release pinned via the
+# subchart dependency below. PLAN §8 k8s_lab_metallb_chart_version
+# (verified 2026-04-26).
+appVersion: v0.15.3
+
+dependencies:
+  - name: metallb
+    # Pinned to the same version we ship — bump in lockstep with the
+    # wrapper chart version above.
+    version: 0.15.3
+    repository: https://metallb.github.io/metallb
+
+sources:
+  - https://github.com/metallb/metallb
+  - https://metallb.io/installation/
