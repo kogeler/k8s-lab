@@ -91,20 +91,43 @@ end-to-end (`make -C tests/molecule cleanup-bootstrap-delegated-test`,
 
 ## 19.2. Phase 8 — Destroy
 
-Must support:
+Чёткая reverse-ordered цепочка:
 
-* destroy local workload clusters created by test fixtures
-* destroy local mgmt cluster if applicable
-* destroy Helm-managed add-ons before destroying the underlying clusters
-* remove local bootstrap publication
-* remove local bootstrap LXC
-* cleanup `capi-lab` project assets inside test VM if requested
-* keep shared external bridge unless explicitly owned by test harness
-* return Vagrant/libvirt harness to clean state
+1. **`make destroy-workload`** — `terraform destroy` на §16.5
+   fixture (`tests/fixtures/terraform/workload-clusters/lab-default/`).
+   TF разворачивает helm_release цепочку §16.4 module'а в обратном
+   порядке: metallb-config → metallb → cni-calico → workload Cluster
+   CR (CAPI/CAPN delete LXC instances + workload kubeconfig Secret)
+   → per-workload ClusterClass. На этом этапе Helm-managed add-ons
+   автоматически удаляются перед underlying cluster'ом — TF
+   dependency graph гарантирует порядок;
+2. **Per-workload artefacts cleanup** — `.artifacts/clusters/<name>.kubeconfig`
+   удаляется TF (`local_file` resource lifecycle) на destroy;
+3. **`pivot_clusterctl_move` reverse** (если был pivot, §18.1) —
+   опционально, scope Stage 2;
+4. **`cleanup_bootstrap` Ansible role** (§19.1) — снимает bootstrap
+   publication (LXD proxy device), удаляет bootstrap LXC instance,
+   очищает `capi-lab` project assets;
+5. **Vagrant/libvirt cleanup** — `make clean-local` (включает
+   `vagrant destroy`) возвращает harness в чистое состояние.
+
+Контракт:
+
+* shared external bridge не трогаем, если его не создавал harness
+  (production-mirror — bridge обычно живёт за пределами repo);
+* operator вызывает шаги через Makefile-target'ы
+  (`feedback_makefile_only.md`): `make destroy-workload` для (1)-(2),
+  `make clean-local` для (4)-(5). Direct `terraform destroy` /
+  `vagrant destroy` не invoке'ятся.
 
 Acceptance:
 
-* clean local redeploy from scratch possible
+* clean local redeploy from scratch возможен после `make
+  clean-local` без manual вмешательства;
+* `terraform destroy` идемпотентен — повторный destroy на
+  пустом state'е no-op'ит;
+* `cleanup_bootstrap` Molecule scenario зелёный (§19.1 уже
+  shipped в Step 9).
 
 [1]: https://capn.linuxcontainers.org/?utm_source=chatgpt.com "Introduction - The cluster-api-provider-incus book"
 [2]: https://documentation.ubuntu.com/lxd/latest/reference/network_bridge/?utm_source=chatgpt.com "Bridge network - LXD documentation"

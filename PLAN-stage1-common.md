@@ -97,25 +97,21 @@ PLAN-stage1-7.md ................. §20..§22 (Stage 1 meta: out-of-scope, self-
 
 ### PLAN-stage1-3.md — §16 (Phases 5 + 5.05 CAPI topology via Helm)
 
-- §16. Phases 5 + 5.05 — CAPI topology via Helm + kubeconfig export
-  - §16.1. Ownership и delivery model
+- §16. Phase 5 — workload cluster delivery via single Terraform module
+  - §16.1. Ownership и delivery model (single module, helm test inside apply)
   - §16.2. Chart: `charts/capi-cluster-class/`
   - §16.3. Chart: `charts/capi-workload-cluster/`
-  - §16.4. Module: `terraform/modules/capi_cluster_class/`
-  - §16.5. Module: `terraform/modules/capi_workload_cluster/`
-  - §16.6. Test fixture: `tests/fixtures/terraform/workload-clusters/lab-default/capi`
-  - §16.7. Phase 5 — Apply CAPI topology
-  - §16.8. Phase 5.05 — Export target kubeconfig на runner
+  - §16.4. Module: `terraform/modules/workload_cluster/` (CAPI + add-ons + acceptance в одном apply)
+  - §16.5. Test fixture: `tests/fixtures/terraform/workload-clusters/lab-default/`
+  - §16.6. Phase 5 — Apply workload cluster (`make deploy-workload`)
+  - §16.7. Workload kubeconfig export (internal step §16.4 module'а)
 
-### PLAN-stage1-4.md — §17 (Phases 5.1 + 5.2 + 5.3 Helm add-ons + in-cluster tests)
+### PLAN-stage1-4.md — §17 (Helm test acceptance contracts — Gate A + Gate B chart-side specs)
 
-- §17. Phases 5.1 + 5.2 + 5.3 — Helm add-ons + in-cluster validation
-  - §17.1. Module: `cluster_addons_helm` (Calico CNI, MetalLB; CNI swap через `cni_chart_path` input)
-  - §17.2. Test fixture: `tests/fixtures/terraform/workload-clusters/lab-default/addons`
-  - §17.3. Helm test hooks contract (CNI + external L2 validation)
-  - §17.4. Phase 5.1 — Helm add-ons apply (`make deploy-workload-addons`)
-  - §17.5. Phase 5.2 — CNI Helm test (Gate B)
-  - §17.6. Phase 5.3 — MetalLB Helm test (Gate A)
+- §17. Helm test acceptance contracts — Gate A + Gate B chart-side specs
+  - §17.1. Helm test invocation contract (null_resource shape внутри §16.4 module)
+  - §17.2. Gate B — CNI viability acceptance (chart-side spec + Step 13 status)
+  - §17.3. Gate A — External L2 viability acceptance (chart-side spec + Step 14 status)
 
 ### PLAN-stage1-5.md — §18 (Phases 6 + 7 pivot + workload clusters)
 
@@ -478,9 +474,11 @@ management / workload кластерах, доставляются **как Helm
   `charts/metallb-config/`) через `Chart.yaml` dependencies:
 
   * workload CNI: `projectcalico/tigera-operator` ([26]) — shipped
-    реализация; swap на другую CNI — через `cni_chart_path` input
-    §17.1, не toggle;
-  * MetalLB: `metallb/metallb` ([27]);
+    реализация в `charts/cni-calico/`; swap на другую CNI =
+    написать новый `charts/cni-<other>/` wrapper и поменять
+    `cni_chart_*` input в §16.4 module;
+  * MetalLB: `metallb/metallb` ([27]) — shipped через
+    `charts/metallb/` subchart wrapper.
 * CR-ы, которых нет в upstream chart'ах, доставляются через **локальные
   wrapper / owned charts** этого repo в директории `charts/`. Это
   покрывает два класса объектов:
@@ -488,8 +486,8 @@ management / workload кластерах, доставляются **как Helm
   * **CAPI topology** (ClusterClass, Kubeadm/CP/Config templates,
     LXC*Template'ы, Cluster CR-ы) — §16.2 / §16.3;
   * **Add-ons configuration + validation** (MetalLB IPAddressPool /
-    L2Advertisement, CNI + external L2 probe Job'ы через
-    `helm.sh/hook: test`) — §17.1 / §17.3.
+    L2Advertisement, CNI + external L2 probe Pod'ы через
+    `helm.sh/hook: test`) — §17.2 / §17.3 chart-side specs.
 
 ### CAPI CR immutability и revision pattern
 
@@ -526,8 +524,10 @@ immutable`.
 * `helm_release.cluster_class` — создаёт ClusterClass + *Template'ы;
 * `helm_release.workload_cluster` (`depends_on = [cluster_class]`) —
   создаёт Cluster CR, который ссылается на ClusterClass;
-* `helm_release.<cni>` / `helm_release.metallb` / probe charts — на
-  target-кластере, отдельный Phase 5.1 apply через свой kubeconfig.
+* `helm_release.cni_calico` / `helm_release.metallb` /
+  `helm_release.metallb_config` — те же 5 release'ов внутри одного
+  §16.4 module'а, но через workload-aliased helm provider (см. §16
+  module internals).
 
 `helm_release.wait = true` (default в `hashicorp/helm` 3.x) +
 `atomic = true` обязательны на всех release'ах CR-данных: без
@@ -542,24 +542,26 @@ reconciliation.
 
 ### Test fixtures и orchestration
 
-* `tests/fixtures/terraform/workload-clusters/lab-default/capi` —
-  Phase 5 fixture, provider = bootstrap kubeconfig, ставит CAPI
-  topology chart'ы (§16);
-* `tests/fixtures/terraform/workload-clusters/lab-default/addons` —
-  Phase 5.1+ fixture, provider = workload kubeconfig, ставит CNI +
-  MetalLB + probe charts (§17);
+* `tests/fixtures/terraform/workload-clusters/lab-default/` —
+  единственный TF root этого репо (§16.5), invokes §16.4 module
+  `workload_cluster` который ставит весь stack за один apply
+  (CAPI topology + CNI + MetalLB + chart-side helm tests);
 * chart versions pinned в §8 variable contract и обновляются
   осознанно (каждый bump — запись в §8a verified version log);
 * in-cluster validation (CNI viability, external L2 viability) —
-  часть этой же delivery policy, реализована как `helm.sh/hook: test`
-  Job'ы в probe chart'ах (§17.3), запускается тем же `terraform
-  apply`. Failed hook фейлит `helm_release` → фейлит `terraform
-  apply`. Валидация не вне policy, а внутри неё. Отдельных Ansible-
-  ролей для сетевой валидации нет;
+  часть этой же delivery policy, реализована как `helm.sh/hook:
+  test` Pod'ы внутри `charts/cni-calico/` и `charts/metallb-config/`
+  (§17.2 / §17.3), invokе'ятся §16.4 module через `null_resource` +
+  `local-exec helm test` как часть `terraform apply` (§17.1).
+  Failed test → null_resource non-zero → TF apply фейлится.
+  Валидация не вне policy, а внутри неё. Отдельных Ansible-ролей
+  для сетевой валидации нет;
 * Terraform предполагается уже установленным на runner'е; Ansible
-  его не ставит. Оператор / агент вызывает Phase 5+ через Makefile-
-  target вручную (`make deploy-workload-capi`, `make deploy-workload-addons`
-  — §16.7 / §17.4).
+  его не ставит. Helm CLI тоже обязателен на runner'е — §16.4
+  module использует его через `null_resource` + `local-exec` для
+  acceptance helm test'ов внутри apply. Оператор / агент вызывает
+  Phase 5 через Makefile-target вручную (`make deploy-workload` —
+  §16.6).
 
 ## 2.10. Политика по образам нод
 
@@ -594,11 +596,12 @@ reconciliation.
 * для любого нового или изменённого `Makefile`-target — target
   реально исполняется против того же harness;
 * для любого нового или изменённого Helm chart'а (upstream values
-  override, local wrapper chart, probe chart) — chart ставится
-  Terraform'ом в интеграционный scenario (`cluster-addons-helm`)
-  против real target cluster в локальном harness, `helm test
-  <release>` должен вернуть exit=0. Probe chart'ы (§17.3) тоже
-  подпадают — Gate A/Gate B acceptance доказывается live прогоном,
+  override, local wrapper chart, embedded test hook) — chart
+  ставится через §16.4 TF module в локальном harness `make
+  deploy-workload` (или эквивалентный Molecule e2e-local флоу),
+  `helm test <release>` должен вернуть exit=0. Gate A/Gate B
+  acceptance hooks (§17.2 / §17.3) тоже подпадают — acceptance
+  доказывается live прогоном,
   не static review;
 * для любого plan-deviation, добавляющего новое проверяемое поведение
   (например, btrfs pool contract из stage 1) — verify должен **реально
@@ -721,55 +724,59 @@ variable). Общие политики / contract / architecture — в
 ## 2.12. Политика HA для workload cluster add-ons
 
 `k8s_lab_workload_controlplane_count` и `k8s_lab_workload_worker_count`
-по умолчанию = `2` именно для того, чтобы workload cluster был
-полноценной HA-площадкой, а не «1+1 расширенным single-node». Из
-этого следует обязательный контракт для всего, что Phase 5.1
-(§17.4) ставит в workload cluster через Terraform Helm pass:
+по умолчанию обеспечивают полноценную HA-площадку (default workload
+= 3 CP + 2 worker, см. §8). Из этого следует обязательный контракт
+для всего, что §16.4 module ставит в workload cluster через Helm
+pass:
 
 * **Replica contract.** Любой компонент, чья архитектура допускает
   multi-replica active/active либо leader-elected active/standby
   (т.е. `Deployment` / `StatefulSet` controllers), разворачивается с
   `replicas: 2` по умолчанию. Это касается, в частности:
-  * MetalLB controller (`metallb-controller` Deployment) — leader-
-    elected, два replicas корректны;
-  * Calico Typha (`calico-typha` Deployment) — официально supported
-    multi-replica с автоконфигом via Typha discovery service;
+  * Calico — `calico-kube-controllers` + `calico-apiserver` через
+    `Installation.spec.controlPlaneReplicas: 2` (operator сам даёт
+    им 2 реплики + built-in podAntiAffinity);
   * MetalLB speaker (`metallb-speaker`) и Calico node агент
     (`calico-node`) — это `DaemonSet`'ы; их replicas «авто-2»
     приходит из факта `k8s_lab_workload_worker_count = 2`, отдельный
     override не нужен;
   * любой ingress-controller / cert-manager / external-dns /
-    metrics-server / etc., если будет добавлен в этот pass — `replicas: 2`
-    по умолчанию + `topologySpreadConstraints` или
+    metrics-server / etc., если будет добавлен в этот pass —
+    `replicas: 2` по умолчанию + `topologySpreadConstraints` или
     `podAntiAffinity` на `kubernetes.io/hostname`, чтобы реплики
     реально оказывались на двух разных worker-нодах.
+* **MetalLB controller — explicit deviation от §2.12** (Step 14):
+  upstream `metallb` chart 0.15.3 НЕ выставляет
+  `controller.replicas` (controller singleton by upstream design;
+  HA delivered through speaker DaemonSet leader-election per VIP
+  via memberlist). Acceptance criteria для §16 module не требуют
+  `replicas==2 + podAntiAffinity` для MetalLB controller —
+  speaker DS rollout + `metallb-controller` Available это §2.12
+  floor для этого chart'а. Документировано inline в
+  `charts/metallb/values.yaml` + §17.3.
 * **Когда HA НЕ применяется.** Если у компонента архитектурно
-  единственный singleton (например, какой-нибудь stateful operator
-  без leader-election) — допускается `replicas: 1` с явным
-  inline-комментарием в Terraform `helm_release` values, объясняющим
-  почему. Это исключение, а не норма.
-* **Test contract — обе реплики работают в тандеме.** §17.4
+  единственный singleton (как MetalLB controller выше) —
+  допускается `replicas: 1` с явным inline-комментарием в chart
+  values, объясняющим почему. Это explicit deviation, не норма.
+* **Test contract — обе реплики работают в тандеме.** §16.4
   acceptance НЕ ограничивается `kubectl wait deployment <X>
   --for=condition=Available`: condition=Available разрешает
   `availableReplicas >= maxUnavailable`, что для `replicas: 2 +
-  maxUnavailable: 1` даёт зелёный сигнал даже когда работает только
-  одна. Тесты Phase 5.1 должны явно ассертить:
+  maxUnavailable: 1` даёт зелёный сигнал даже когда работает
+  только одна. Acceptance tests должны явно ассертить:
   * `status.readyReplicas == 2` и `status.availableReplicas == 2`
-    на каждом таком Deployment / StatefulSet;
+    на каждом таком Deployment / StatefulSet (где applicable);
   * пара Pod'ов реплик действительно на разных нодах
     (`spec.nodeName` уникален по списку Pod'ов компонента);
-  * leader-elected компоненты имеют ровно одного активного leader'а
-    и второй pod в standby (для MetalLB controller — через лог
-    `acquired lease`; для cert-manager — `kube-system` lease object;
-    каждый компонент проверяется по тому identity-механизму, который
-    у него документирован).
+  * leader-elected компоненты имеют ровно одного активного
+    leader'а и второй pod в standby.
 * **Распространение на mgmt cluster.** Mgmt cluster в default-
   топологии — `1+1`, поэтому HA-контракт там НЕ применяется
   автоматически. Если оператор поднимает mgmt с
   `k8s_lab_management_worker_count >= 2`, тот же replica-contract
   активируется через Terraform-условие на `var.worker_count >= 2`.
 
-Этот контракт документируется и enforce'ится в §17.4 acceptance, и
+Этот контракт документируется и enforce'ится в §16.6 acceptance, и
 зеркалится конкретными assertion'ами в §9.4 Integration / Full E2E
 test scope.
 
@@ -977,24 +984,27 @@ MetalLB docs отдельно предупреждают, что `interfaces` se
 # 6. Validation gates — in-cluster через Helm test hooks
 
 Validation gates (CNI viability, external L2 viability) реализуются
-как **Helm test hooks** на тех Helm release'ах, которые в steady-state
-path и так ставят соответствующий компонент: CNI-chart (shipped —
-`charts/cni-calico/`, swap через §17.1 `cni_chart_path`) в Phase 5.1,
-MetalLB-chart в Phase 5.3. Валидация встроена в `helm_release`
-lifecycle и запускается одним `terraform apply`; провалившийся test
-Job фейлит Terraform apply и останавливает пайплайн.
+как **chart-side `helm.sh/hook: test` Pod'ы** в тех Helm chart'ах,
+которые в steady-state path и так ставят соответствующий компонент:
+Gate B в `charts/cni-calico/` (Step 13), Gate A в
+`charts/metallb-config/` (Step 14). Invocation — через
+`null_resource` + `local-exec helm test` внутри единого §16.4 TF
+module'а как часть `terraform apply` (см. §17.1 contract +
+§17.2/§17.3 chart specs). Провалившийся helm test фейлит TF apply
+и останавливает пайплайн.
 
 Доктрина:
 
 * **Production-path mirror.** Worker-ноды создаются CAPN'ом через
   manifest change → CAPN controller → LXD API → cloud-init внутри
-  контейнера. Валидация идёт через тот же механизм — Helm test Job
-  запускается как Pod на real worker-нод'е, использует production
-  LXD profile и cloud-init-сконфигурированный eth1.
-* **One-tool pipeline.** Phase 5.x управляется через Terraform
-  (`helm_release` provider). Helm нативно поддерживает test hooks
-  (`helm.sh/hook: test` annotation на Job), Terraform запускает их
-  как часть release lifecycle без переключения инструмента.
+  контейнера. Валидация идёт через тот же механизм — Helm test Pod
+  запускается на real worker-нод'е, использует production LXD
+  profile и cloud-init-сконфигурированный eth1.
+* **One-tool pipeline.** Phase 5 управляется через единый Terraform
+  module §16.4. Helm нативно поддерживает test hooks
+  (`helm.sh/hook: test` annotation на Pod), TF module инвокирует
+  их через `null_resource` сразу после соответствующего
+  `helm_release`.
 * **Real data plane.** Helm test Job с `hostNetwork: true` и
   anti-affinity по worker-нодам использует те же самые eth1 /
   br-ext6 / LXD profiles, что и production workload. RA/NDP/
@@ -1002,8 +1012,8 @@ Job фейлит Terraform apply и останавливает пайплайн.
 
 ## Gate A — External L2 viability
 
-Реализация: пара test'ов вокруг `metallb-config` release'а (§17.6
-Phase 5.3). Acceptance разделяется на **chart-side helm test hook**
+Реализация: пара test'ов вокруг `metallb-config` release'а (§17.3).
+Acceptance разделяется на **chart-side helm test hook**
 (в-cluster proof) и **verify-side external curl** (out-of-cluster
 proof). MetalLB — единственный consumer внешней L2 capability (NDP
 для IPv6 VIP announcement), поэтому acceptance стоит у того release'а
@@ -1050,7 +1060,7 @@ hook-succeeded reaping. Demo Deployment + Service are NOT
 hook-annotated; live under release until next `helm test` cycle or
 `helm uninstall`.
 
-Если chart-side hook проваливается — Phase 5.3 не проходит,
+Если chart-side hook проваливается — Phase 5 apply не проходит,
 дальнейшая реализация останавливается (MetalLB без рабочего L2
 бесполезен). Fallback ветка (routed / proxy-NDP) — consumer'ская
 decision point, не часть Stage 1 scope.
@@ -1066,9 +1076,9 @@ verify-side curl запускается с действительно-внешн
 ## Gate B — CNI compatibility
 
 Реализация: Helm test hook на CNI release'е (shipped — Calico через
-`charts/cni-calico/`), §17.5 Phase 5.2. Это первый Helm release
-после Terraform CAPI pass, и без рабочего CNI остальные add-ons
-даже не поедут — поэтому валидация именно здесь.
+`charts/cni-calico/`), §17.2. Это первый Helm release после CAPI
+topology в §16.4 module chain'е, и без рабочего CNI остальные
+add-ons даже не поедут — поэтому валидация именно здесь.
 
 Acceptance criteria:
 
@@ -1084,7 +1094,7 @@ Acceptance criteria:
   фейлит с понятным сообщением;
 * **MetalLB preparation** — iptables/ipvs chains выглядят так, как
   ожидает MetalLB (не проверяется напрямую здесь, валидация в
-  Phase 5.3 Gate A покрывает).
+  Gate A — §17.3 — покрывает).
 
 ### Принятое решение (CNI-baseline, не зависит от test-механизма)
 
@@ -1093,10 +1103,11 @@ Acceptance criteria:
   (`charts/cni-calico/`). Обеспечивает NetworkPolicy, dual-stack IPAM
   и eBPF-option, которые нужны целевой архитектуре §4/§5.
 * **нет alternative-path bundle'а в repo** и **нет toggle-переменной**
-  для автоматического переключения CNI на другую реализацию. §17.1
-  module принимает `cni_chart_path` как input; swap на другой CNI —
-  явное дизайн-решение (новый wrapper chart в `charts/cni-<whatever>/`
-  + правка fixture), не runtime-flag.
+  для автоматического переключения CNI на другую реализацию. §16.4
+  module принимает `cni_calico_chart_version` как input для shipped
+  Calico-обёртки; swap на другой CNI — явное дизайн-решение (новый
+  wrapper chart `charts/cni-<whatever>/` + соответствующий новый
+  input в module), не runtime-flag.
 * **privileged LXC запрещён как workaround для CNI-проблем**
 
 Почему так:
@@ -1104,7 +1115,7 @@ Acceptance criteria:
 * целевая архитектура §4/§5 — dual-stack IPv4+IPv6 с NetworkPolicy-
   enforcement'ом. Calico закрывает оба требования одной реализацией;
 * Calico documentation для стандартной Kubernetes installation
-  описывает некоторые capabilities, поэтому Gate B (§17.5) на
+  описывает некоторые capabilities, поэтому Gate B (§17.2) на
   нашем unprivileged LXC substrate'е обязателен — acceptance live
   probe, не static review ([26]);
 * если Gate B фейлит — это сигнал, что выбранная CNI-реализация
@@ -1121,9 +1132,9 @@ Acceptance criteria:
 
 ## Substrate предусловие — `capi-worker` / `capi-controlplane` cloud-init
 
-Для того чтобы gate Helm test'ы в Phase 5.2/5.3 вообще имели работающий
-eth1 на worker-нод'ах — external nic должен быть сконфигурирован
-**до первого Helm install'а**. В production-path этим владеет CAPN
+Для того чтобы Gate A/B helm test'ы в §16.4 module вообще имели
+работающий eth1 на worker-нод'ах — external nic должен быть
+сконфигурирован **до первого Helm install'а** в module chain'е. В production-path этим владеет CAPN
 cloud-init; в рамках этого repo substrate-baseline задаётся на уровне
 LXD-профилей:
 
@@ -1184,15 +1195,13 @@ repo/
   charts/
     capi-cluster-class/    # §16.2 ClusterClass + Kubeadm*/LXC* templates
     capi-workload-cluster/ # §16.3 Cluster CR instance
-    cni-calico/            # §17.1 wrapper over projectcalico/tigera-operator (shipped CNI) + Gate B inline
-    metallb/               # §17.1 minimal subchart-wrapper над upstream metallb (CRDs + controller + speaker)
-    metallb-config/        # §17.1 IPAddressPool + L2Advertisement + Gate A inline (helm test hook)
+    cni-calico/            # §17.2 wrapper над projectcalico/tigera-operator (shipped CNI) + Gate B inline
+    metallb/               # §17.3 minimal subchart-wrapper над upstream metallb (CRDs + controller + speaker)
+    metallb-config/        # §17.3 IPAddressPool + L2Advertisement + Gate A inline (helm test hook)
 
   terraform/
     modules/
-      capi_cluster_class/
-      capi_workload_cluster/
-      cluster_addons_helm/
+      workload_cluster/    # §16.4 единственный TF module — CAPI topology + CNI + MetalLB + helm tests за один apply
 
   tests/
     molecule/
@@ -1225,17 +1234,11 @@ repo/
     fixtures/
       terraform/
         workload-clusters/
-          lab-default/
-            capi/
-              main.tf
-              variables.tf
-              providers.tf
-              outputs.tf
-            addons/
-              main.tf
-              variables.tf
-              providers.tf
-              outputs.tf
+          lab-default/   # §16.5 единственный TF root, invokes workload_cluster module
+            main.tf
+            variables.tf
+            providers.tf
+            outputs.tf
     vagrant/
       debian13/
         Vagrantfile
@@ -1272,11 +1275,11 @@ repo/
 * **Makefile — единственный entry point** для всех orchestration-
   операций (правило `feedback_makefile_only.md`). Phase 0..4
   тестируются через Molecule-сценарии (`make -C tests/molecule
-  <scenario>-delegated-test`), Phase 5+ проигрываются через TF-
-  target'ы корневого Makefile'а (`make deploy-workload-capi`,
-  `make deploy-workload-addons`, §16.7 / §17.4). Terraform предполагается
-  уже установленным на runner'е; Ansible его не ставит. `vagrant` /
-  `virsh` / `molecule` / `terraform` напрямую не вызываются;
+  <scenario>-delegated-test`), Phase 5 проигрывается через
+  единственный TF-target корневого Makefile'а (`make deploy-workload`,
+  §16.6). Terraform + Helm CLI предполагаются уже установленными на
+  runner'е; Ansible их не ставит. `vagrant` / `virsh` / `molecule`
+  / `terraform` напрямую не вызываются;
 * боевые consumer repos должны сами собирать inventories/playbooks/root modules вокруг этих roles/modules.
 
 Ansible roles — стандартная reusable единица для orchestration; Terraform modules — standard reusable composition unit; Molecule delegated driver позволяет самим управлять lifecycle VM через Vagrant/libvirt. ([ansible.readthedocs.io][14])
@@ -1405,21 +1408,22 @@ k8s_lab_patch_delivery_strategy: {type: string, default: "cabpk-files-plus-patch
 
 # ---- cni ----
 # Default workload CNI = Calico. Shipped в repo единственной
-# wrapper-реализацией (`charts/cni-calico/`), потребляется §17.1
-# module'ем через явный `cni_chart_path` input в fixture. Swap на
-# другую CNI-реализацию (Cilium, kube-router, etc.) — добавить новый
-# wrapper chart в `charts/cni-<whatever>/`, поменять `cni_chart_path`
-# в fixture'е (§17.1 Extensibility); toggle-переменной в §8 нет по
-# дизайну — однократный дизайн-решение, а не runtime-flag.
+# wrapper-реализацией (`charts/cni-calico/`), потребляется §16.4
+# module'ем напрямую через `cni_calico_chart_version` input. Swap
+# на другую CNI-реализацию (Cilium, kube-router, etc.) — добавить
+# новый wrapper chart в `charts/cni-<whatever>/` + добавить
+# соответствующий input в §16.4 module. Toggle-переменной в §8 нет
+# по дизайну — однократное дизайн-решение, а не runtime-flag.
 # Privileged LXC как workaround CNI-проблем запрещён (§2.8).
 
 # ---- addons ----
 # Defaults track current upstream stable per plan §2.11. Verification
 # dates inline — §8a below compiles a single table. Только shipped
-# upstream-зависимости перечислены; CNI wrapper chart path — §17.1
-# input без §8 селектора, pin upstream-версии внутри chart'а
-# `charts/cni-calico/Chart.yaml` (k8s_lab_calico_chart_version — pin
-# зависимости в `Chart.yaml` wrapper'а).
+# upstream-зависимости перечислены; CNI / MetalLB wrapper chart paths
+# имплицитны в §16.4 module — pin upstream-версий внутри chart'ов
+# `charts/cni-calico/Chart.yaml` + `charts/metallb/Chart.yaml`
+# (k8s_lab_calico_chart_version + k8s_lab_metallb_chart_version —
+# pin'ы зависимостей в `Chart.yaml` wrapper'ов).
 k8s_lab_helm_provider_version: {type: string, default: "3.1.1"}                                           # verified 2026-04-21
 k8s_lab_calico_chart_repository: {type: string, default: "https://docs.tigera.io/calico/charts"}
 k8s_lab_calico_chart_name: {type: string, default: "tigera-operator"}
@@ -1826,9 +1830,10 @@ Vagrant VM, не libvirt-сеть):
 ### Integration-level
 
 * `bootstrap_cluster`
-* `cluster_addons_helm` — помимо проверки факта установки Helm
-  releases, отвечает за прогон **Helm test hooks** (§6, §17.3),
-  реализующих Gate A (§17.6, external L2) и Gate B (§17.5, CNI
+* `workload_cluster` (TF module + Molecule e2e-local) — помимо
+  проверки факта установки Helm releases, отвечает за прогон
+  **chart-side helm test hook'ов** (§6, §17.1 invocation contract),
+  реализующих Gate A (§17.3, external L2) и Gate B (§17.2, CNI
   viability). Также ассертит **HA pair contract §2.12** для каждого
   workload-cluster компонента с `replicas >= 2`:
   * `kubectl get deploy <X> -o jsonpath='{.status.readyReplicas}'`
@@ -1863,17 +1868,20 @@ Vagrant VM, не libvirt-сеть):
   in-cluster jump-pod единственный путь. Единственный shell
   fallback — `helm test` (нет нативного эквивалента в
   `kubernetes.core`). **Step 13 (2026-04-26) расширил сценарий
-  до Phase 5.1 CNI** (см. §17.1 / §17.5 Step 13 acceptance):
-  converge ставит helm CLI на VM, пакетирует `charts/cni-calico/`
-  на runner'е (`helm dep update` + `helm package`), copy .tgz
-  на VM, polling и материализация workload kubeconfig в
+  до CNI** (см. §17.2 Step 13 acceptance): converge ставит helm CLI
+  на VM, пакетирует `charts/cni-calico/` на runner'е (`helm dep
+  update` + `helm package`), copy .tgz на VM, polling и
+  материализация workload kubeconfig в
   `/opt/capi-lab/etc/<cluster>.kubeconfig`, install Calico через
   `kubernetes.core.helm` на VM (workload API runner-нереachable,
   helm обязан запускаться на VM); verify добавляет `helm test
-  cni-calico` (6-фазный chart-level acceptance — Calico Pods
-  Ready, workload Nodes Ready=True, dual-stack `podCIDRs`,
-  pod-to-pod ICMP4/ICMP6). Расширения на MetalLB (Phase 5.1
-  external L2) + pivot + HA pair assertions §2.12 — последующие
+  cni-calico` (6-фазный chart-level acceptance). **Step 14
+  (2026-04-27) расширил до MetalLB + Gate A** (§17.3): converge
+  ставит metallb wrapper + metallb-config wrapper тем же
+  pattern'ом; verify добавляет `helm test metallb-config`
+  (8-фазный chart-level acceptance) + verify-side curl от VM на
+  MetalLB-allocated VIP через `ext6-ra-peer` (closes Gate A
+  external L2 path). HA pair assertions §2.12 + pivot — последующие
   Step'ы.
 
 ### Molecule harness style contract
@@ -1916,14 +1924,15 @@ Vagrant VM, не libvirt-сеть):
 3. LXD substrate (включая расширенный `lxd_profiles` cloud-init
    baseline для worker/controlplane профилей — §13.6)
 4. bootstrap cluster
-5. apply first Terraform CAPI fixture
-6. export target kubeconfig
-7. apply first Terraform Helm add-ons fixture (CNI chart + MetalLB
-   chart, каждый со своим Helm test hook'ом — §17.5 / §17.6 покрывают
-   CNI и external L2 acceptance)
-8. optional pivot / post-pivot workload create + kubeconfig export + add-ons apply
-9. verify
-10. destroy
+5. `make deploy-workload` — единственный TF apply поднимает
+   workload-кластер целиком через §16.4 module: CAPI topology +
+   workload kubeconfig wait + CNI chart + MetalLB pair + chart-side
+   helm test hooks (Gate A + Gate B — §17.2 / §17.3) внутри того
+   же apply
+6. optional pivot / post-pivot — `make deploy-workload` повторно с
+   `mgmt_kubeconfig_path=.artifacts/mgmt.kubeconfig` (§18.3)
+7. verify
+8. destroy
 
 ## 9.5. Shared inventory architecture
 
@@ -2052,16 +2061,19 @@ make test-local-e2e
 
 1. `vagrant up --provider=libvirt`
 2. Molecule delegated create/prepare
-3. host/bootstrap/substrate phases through local VM
-4. apply the selected Terraform CAPI fixture path
-5. export target kubeconfig artifact
-6. apply the selected Terraform Helm add-ons fixture path — Helm
-   test hooks на CNI и MetalLB chart'ах отрабатывают as part of
-   `helm_release` lifecycle и закрывают CNI + external L2
-   acceptance (§6, §17.5, §17.6)
-7. optional pivot / post-pivot workload create + kubeconfig export
-   + add-ons apply (если `k8s_lab_pivot_enabled=true`)
-8. destroy
+3. host/bootstrap/substrate phases through local VM (Phases 0..4)
+4. `make deploy-workload` — `terraform apply` на §16.5 fixture,
+   единственный TF apply поднимает workload-кластер целиком: CAPI
+   topology + CNI + MetalLB; chart-side helm test hook'и (Gate B
+   + Gate A) запускаются в том же apply через `null_resource` +
+   `local-exec helm test` (§17.1) и закрывают acceptance из §6
+5. workload kubeconfig пишется module'ем в
+   `.artifacts/clusters/<cluster>.kubeconfig` (через
+   `var.workload_kubeconfig_path`)
+6. optional pivot / post-pivot — `make deploy-workload` повторно с
+   tfvar override `mgmt_kubeconfig_path=.artifacts/mgmt.kubeconfig`
+   (если `k8s_lab_pivot_enabled=true`, §18.3)
+7. destroy
 
 ## 10.3. Local cleanup
 
@@ -2159,26 +2171,28 @@ Backend strategy для реальных окружений определяет
 
 Mitigation:
 
-* Phase 5.3 external L2 Helm test hook (§6 Gate A → §17.6)
-  валит `terraform apply` до того, как MetalLB pretends to serve VIPs
-  на нерабочем L2 сегменте; CAPN workers всё равно уже созданы но
-  кластерный data plane не выпускается в production-like state до
-  прохождения теста.
+* Gate A external L2 helm test hook (§6 → §17.3) валит
+  `terraform apply` через `null_resource` до того, как MetalLB
+  pretends to serve VIPs на нерабочем L2 сегменте; CAPN workers
+  всё равно уже созданы но кластерный data plane не выпускается
+  в production-like state до прохождения теста.
 
 ## 12.2. Unprivileged LXC node path may fail on userns/runtime/CNI edges
 
 Mitigation:
 
 * pin CAPN-tested unprivileged kubeadm image path (`v1.32.4+`)
-* Phase 5.2 CNI Helm test hook (§6 Gate B → §17.5) на первом
-  Terraform-created cluster после Helm add-ons pass валит
-  `terraform apply` если CNI bring-up сломался
+* Gate B CNI helm test hook (§6 → §17.2) на первом Terraform-
+  created cluster после CNI release валит `terraform apply` если
+  CNI bring-up сломался
 * keep unprivileged substrate fixed and vary CNI inside that constraint
 * shipped CNI = Calico (`charts/cni-calico/`). Swap на другую
   реализацию при Gate B фейле — отдельный design-step (новый
-  wrapper chart + правка `cni_chart_path` в fixture), не runtime-
-  toggle. §17.1 module не содержит branch-логики по выбору CNI —
-  extensibility через single `cni_chart_path` input
+  wrapper chart + правка соответствующего chart-version input в
+  §16.4 module), не runtime-toggle. §16.4 module не содержит
+  branch-логики по выбору CNI — extensibility через replacing
+  `cni_calico_*` inputs семейство на новые input'ы в module
+  signature
 * never switch to privileged LXC as silent fallback
 
 ## 12.3. Default route may land on external NIC

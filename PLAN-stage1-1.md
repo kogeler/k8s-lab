@@ -129,7 +129,7 @@ substrate-required `kubeletExtraArgs: [feature-gates=KubeletInUserNamespace=true
 на первом apply. Helm test (CAPN-driven full provisioning из 3 CP +
 2 workers) **остаётся не зелёным** на dual-stack apiserver bind +
 admin.conf endpoint family mismatch — open issue, scope Step 12+
-(см. §16.7 Acceptance status note).
+(см. §16.6 Acceptance status note).
 
 **Step 12 (2026-04-26) — закрытие dual-stack acceptance gap'а из Step
 11 + e2e_local Molecule driver.** Оба чарта подняты до 0.4.2.
@@ -221,8 +221,8 @@ TOPOLOGY CHECKS PASSED`. Ноды видны через workload kubeconfig,
 lxc:///<node>`, dual-stack `podCIDR`'ы (`10.244.x.x/24` +
 `fd42:77:2:x::/64`); workload allocator выдаёт dual-stack
 ClusterIP (`10.96.x.x` + `fd42:77:3:x::`). Ноды остаются
-`NotReady` — CNI ставит Phase 5.1 (§17.4) отдельным Helm
-release'ом, это ожидаемо.
+`NotReady` — CNI ставит §16.4 module отдельным `helm_release`-ом
+ниже по chain, это ожидаемо.
 
 В процессе работы chart-level test обнаружил и закрыл серию
 substrate-required deviation'ов:
@@ -348,7 +348,7 @@ Vagrant VM):
   family mismatch. **Закрыто Step 12** (apiserver
   `--bind-address=::` + dual-bind v4/v6 HAProxy template +
   patches пробрасывают service/pod CIDR'ы из Cluster CR'а в
-  kubeadm; см. §16.7 Step 12 Acceptance status).
+  kubeadm; см. §16.6 Step 12 Acceptance status).
 
 Test evidence Step 12 (chart-level acceptance + Full E2E Molecule
 сценарий на той же VM):
@@ -363,7 +363,7 @@ Test evidence Step 12 (chart-level acceptance + Full E2E Molecule
 
 **Step 13 (2026-04-26) — CNI delivery + native nftables migration на
 workload-кластере.** Доставлен chart `charts/cni-calico/` (новый,
-§17.1) — local wrapper над upstream `projectcalico/tigera-operator`
+§17.2) — local wrapper над upstream `projectcalico/tigera-operator`
 v3.31.5 с substrate-required hardcoded'ами в `Installation` CR
 (`cni.type: Calico`, `bgp: Disabled`, `linuxDataplane: Nftables`,
 dual-stack VXLAN ipPools, `controlPlaneReplicas: 2` как HA pair §2.12
@@ -480,7 +480,7 @@ converge ставит ClusterClass + workload-cluster + Calico, verify
   (`calicoNetwork.ipPools.cidr`) — гарантия совпадения с
   workload Cluster CR's `spec.clusterNetwork`.
 
-`charts/cni-calico/` доработан — поднят 0.1.0 → 0.2.0 (см. §17.1
+`charts/cni-calico/` доработан — поднят 0.1.0 → 0.2.0 (см. §17.2
 Step 13 status block; bump необходим для `kubernetes.core.helm`
 upgrade-detection: модуль молча skip'ает upgrade при идентичных
 chart name+version+digest, manual `helm upgrade` всегда работает
@@ -530,7 +530,7 @@ declarative path: kube-proxy ConfigMap rendering на workload
 паунgrаф выше).
 
 **Step 14 (2026-04-27) — MetalLB delivery + Gate A acceptance.**
-Доставлены два local wrapper chart'а (§17.1 / §17.6):
+Доставлены два local wrapper chart'а (§17.3):
 
 * `charts/metallb/` (новый, version 0.1.0) — minimal subchart-wrapper
   над upstream `metallb/metallb` 0.15.3. Без своих templates; values.yaml
@@ -562,7 +562,7 @@ single-wrapper design (mirror cni-calico Step 13 precedent) failed
 runtime: upstream metallb 0.15.3 ships CRDs as sub-dependency
 `templates/crds/`, NOT the Helm `crds/`-folder mechanism. Helm 3
 pre-apply manifest validation rejected `kind IPAddressPool` because
-metallb.io/v1beta1 was not yet served at validation time. PLAN §17.1
+metallb.io/v1beta1 was not yet served at validation time. PLAN §17.3
 two-release design was correct from the start, validated again by
 runtime evidence — split into `charts/metallb/` (subchart only,
 registers CRDs + workloads) followed by `charts/metallb-config/`
@@ -579,7 +579,7 @@ is delivered through the **speaker DaemonSet** (one replica per
 worker, leader-elected per-VIP via memberlist gossip). When a
 speaker leader fails, another speaker re-announces the VIP within
 seconds. Documented inline в `charts/metallb/values.yaml` +
-`charts/metallb-config/values.yaml` + §17.6.
+`charts/metallb-config/values.yaml` + §17.3.
 
 **Backend image follow-up (Step 14 in-flight fix).** Service is IPv6
 single-stack (`ipFamilies: [IPv6]`) — kube-proxy DNATs to the Pod's
@@ -1331,7 +1331,7 @@ Verify в `tests/molecule/lxd-profiles`:
 Acceptance: любой контейнер, стартованный с этими профилями на
 cloud-init-capable образе, имеет global IPv6 на eth1 в пределах
 `k8s_lab_external_ipv6_prefix` после завершения cloud-init
-(проверяется в Phase 5.3 Helm test §17.6).
+(проверяется в Gate A acceptance §17.3).
 
 [lxd-options]: https://documentation.ubuntu.com/lxd/latest/reference/instance_options/
 
@@ -1654,8 +1654,8 @@ CNI (`--cluster-cidr`/`--service-cidr`/`--cluster-dns` v4+v6,
     `k3s.io/node-args` annotation). Bootstrap k3s — single-node mgmt
     cluster для CAPI/CAPN controllers; NetworkPolicy enforcement —
     multi-tenant concern, который тут не применяется. Workload
-    cluster'ы получают собственный CNI + policy через Phase 5.1
-    (Calico/MetalLB) — отдельная сетевая плоскость.
+    cluster'ы получают собственный CNI + policy через §16.4 module
+    (Calico + MetalLB add-ons) — отдельная сетевая плоскость.
   * **`--node-ip` через wrapper-launcher на ExecStart.** kubelet
     auto-detects ровно ОДИН адрес из default route (IPv4); под dual-
     stack k3s этого мало и network-policy controller валится с
@@ -1992,8 +1992,10 @@ dev-машины возвращает Ready control-plane node.**
   и `k8s_lab_bootstrap_api_server_url`. API URL derived из shipped
   kubeconfig'а (второй LXD REST probe не нужен).
 * **`.artifacts/clusters/`** — пустой subdir, зарезервирован для
-  Phase 5.05 per-cluster kubeconfig'ов (§16.8); создаётся здесь чтобы
-  downstream phases имели куда писать без bootstrap'а структуры.
+  per-workload kubeconfig'ов которые Phase 5 module (§16.4) пишет
+  через `local_file` (когда задан `var.workload_kubeconfig_path`);
+  создаётся здесь чтобы downstream phases имели куда писать без
+  bootstrap'а структуры.
 
 ### Implementation notes (Step 8)
 
@@ -2096,10 +2098,10 @@ dev-машины возвращает Ready control-plane node.**
   новая `tasks/mgmt_kubeconfig.yml` по тому же паттерну (slurp с
   host, copy delegate_to localhost), без breaking change для Phase 4
   callers.
-* **`.artifacts/clusters/<cluster>.kubeconfig`** — Phase 5.05
-  deliverable (§16.8; workload cluster kubeconfig экспортится после
-  создания через Terraform CAPI). Subdir уже создаётся, задел
-  готов.
+* **`.artifacts/clusters/<cluster>.kubeconfig`** — workload kubeconfig
+  написанный Phase 5 module'ем (§16.4) через `local_file` resource
+  когда consumer задаёт `var.workload_kubeconfig_path`. Subdir уже
+  создаётся, задел готов.
 
 ---
 

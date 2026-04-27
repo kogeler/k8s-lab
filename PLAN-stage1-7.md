@@ -111,19 +111,20 @@ Libvirt network XML officially supports IPv6 virtual networks, DHCPv6 ranges and
 3. затем сделать **host bootstrap** и **LXD substrate** (включая
    `lxd_profiles` cloud-init baseline для worker/controlplane
    профилей — §13.6);
-4. собрать **bootstrap cluster**, применить **Terraform CAPI fixture**,
-   экспортировать kubeconfig target cluster и только затем применить
-   **Terraform Helm add-ons fixture** (CNI chart + MetalLB chart, со
-   встроенными Helm test hook'ами которые закрывают CNI и external L2
-   acceptance в `helm_release` lifecycle — §17.5, §17.6);
-5. только потом идти в optional pivot / post-pivot workload path;
+4. собрать **bootstrap cluster**, применить **`make deploy-workload`**
+   (единственный TF apply на §16.5 fixture — поднимает workload-кластер
+   целиком: CAPI topology + CNI + MetalLB + chart-side helm test
+   hooks Gate A/B внутри того же apply, §17.2 / §17.3);
+5. только потом идти в optional pivot / post-pivot workload path
+   (§18.3 — повторный `make deploy-workload` с
+   `mgmt_kubeconfig_path=.artifacts/mgmt.kubeconfig`);
 6. MVP считать готовым, когда:
 
    * bootstrap cluster живёт в LXC;
-   * workload cluster создаётся Terraform CAPI fixture’ом;
-   * cluster add-ons ставятся отдельным Terraform Helm pass;
+   * workload cluster создаётся одним `make deploy-workload` (CAPI +
+     add-ons + acceptance в одном apply);
    * two-NIC contract соблюдается;
-   * MetalLB VIP reachable externally;
+   * MetalLB VIP reachable externally (Gate A зелёный);
    * `make clean-local` возвращает local harness в чистое состояние.
 
 Это уже **полный рабочий план**, а не патч и не намерение.

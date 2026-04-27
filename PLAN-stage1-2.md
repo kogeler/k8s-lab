@@ -218,7 +218,10 @@ Stage 1 MVP-скоуп (Step 8):
 * `.artifacts/mgmt.kubeconfig` — зависит от target self-hosted
   management cluster'а (Phase 6+ / §18); роль расширяется новой
   `tasks/mgmt_kubeconfig.yml` без breaking change для Phase 4 caller'ов.
-* `.artifacts/clusters/<cluster>.kubeconfig` — Phase 5.05 / §16.8.
+* `.artifacts/clusters/<cluster>.kubeconfig` — workload kubeconfig
+  пишется Phase 5 TF module'ем (§16.4) через `local_file` resource
+  когда consumer задаёт `var.workload_kubeconfig_path`. Subdir
+  предсоздаётся `export_artifacts` для предсказуемости пути.
 
 ## 15.7. Phase 3.5 — binary_fetch (отложен из Phase 1)
 

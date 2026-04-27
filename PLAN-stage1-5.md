@@ -49,17 +49,20 @@ Acceptance:
 * providers alive in target mgmt
 * bootstrap deleted
 
-## 18.3. Phase 7 — Workload clusters
+## 18.3. Phase 7 — Workload clusters from self-hosted mgmt
 
-If pivot enabled:
-
-* Terraform CAPI pass now uses `.artifacts/mgmt.kubeconfig`
-* workload cluster add-ons pass now uses `.artifacts/clusters/<workload-cluster>.kubeconfig`
+После Phase 6 (pivot) — повторный вызов `make deploy-workload`
+(§16.6) с tfvar override `mgmt_kubeconfig_path =
+.artifacts/mgmt.kubeconfig` поднимает workload-кластер от
+self-hosted mgmt тем же §16.4 module'ом. Отдельных artefacts (новых
+Makefile targets, новых TF root'ов, новых module'ей) Phase 7 не
+вводит — это просто другой input для уже существующего пайплайна.
 
 Acceptance:
 
-* workload cluster creation works from self-hosted mgmt cluster
-* workload add-ons install works through Helm pass
+* `terraform apply` зелёный против self-hosted mgmt kubeconfig'а;
+* chart-side helm test'ы (Gate A + Gate B) внутри module'а зелёные
+  (см. §17.1 invocation contract).
 
 [1]: https://capn.linuxcontainers.org/?utm_source=chatgpt.com "Introduction - The cluster-api-provider-incus book"
 [2]: https://documentation.ubuntu.com/lxd/latest/reference/network_bridge/?utm_source=chatgpt.com "Bridge network - LXD documentation"

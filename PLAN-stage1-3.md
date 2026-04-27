@@ -1,54 +1,106 @@
-Этот файл владеет §16: Phases 5 + 5.05 — CAPI topology delivery через
-Helm charts из монорепы + export target kubeconfig'а на runner.
-Нумерация §N сквозная по всем plan-файлам; перекрёстные ссылки вида
-`§<номер>` валидны без указания имени файла — см.
+Этот файл владеет §16: Phase 5 — единый workload cluster delivery
+module. Нумерация §N сквозная по всем plan-файлам; перекрёстные
+ссылки вида `§<номер>` валидны без указания имени файла — см.
 `PLAN-stage1-common.md` header для полного file lineup. Атомарный
-scope этого шарда — Helm-чарты `charts/capi-cluster-class/` и
-`charts/capi-workload-cluster/`, их Terraform-обёртки, Makefile-
-wrapper для `terraform apply`, и export kubeconfig'а первого
-CAPI-created cluster'а на runner.
+scope этого шарда — два уже shipped Helm-чарта
+(`charts/capi-cluster-class/` + `charts/capi-workload-cluster/`),
+один Terraform module `workload_cluster/` который ставит весь
+functional workload-кластер от ClusterClass до cluster add-ons +
+acceptance helm test'ов одним `terraform apply`, один test fixture
+root и Makefile target.
 
 ```
 PLAN-stage1-common.md ............ §1..§12  (project contract, architecture, test harness, risk catalog)
 PLAN-stage1-1.md ................. §13..§14 (completed roles + phases)
 PLAN-stage1-2.md ................. §15      (Phases 3.5 + 4 bootstrap management cluster)
-PLAN-stage1-3.md ................. §16      (Phases 5 + 5.05 CAPI topology via Helm) <-- этот файл
-PLAN-stage1-4.md ................. §17      (Phases 5.1 + 5.2 + 5.3 Helm add-ons + in-cluster tests)
-PLAN-stage1-5.md ................. §18      (Phases 6 + 7 pivot + workload clusters)
+PLAN-stage1-3.md ................. §16      (Phase 5 — workload_cluster TF module: CAPI topology + add-ons + acceptance) <-- этот файл
+PLAN-stage1-4.md ................. §17      (Helm test contracts — Gate A + Gate B chart-side specs)
+PLAN-stage1-5.md ................. §18      (Phase 6 + 7 — optional pivot)
 PLAN-stage1-6.md ................. §19      (Phase 8 destroy)
 PLAN-stage1-7.md ................. §20..§22 (Stage 1 meta: out-of-scope, self-review, recommendation)
 ```
 
 ---
 
-# 16. Phases 5 + 5.05 — CAPI topology via Helm + kubeconfig export
+# 16. Phase 5 — workload cluster delivery via single Terraform module
 
 ## 16.1. Ownership и delivery model
 
-Всё, что связано с CAPI topology первого workload-кластера (ClusterClass,
-Kubeadm/CP/Config templates, LXC infrastructure templates, Cluster CR
-instance, sidecar ConfigMap/Secret'ы для cluster-specific config),
-доставляется **как Helm-чарты из монорепы** (`charts/capi-cluster-class/`
-+ `charts/capi-workload-cluster/`), устанавливаемые Terraform-ом через
-`hashicorp/helm` provider против bootstrap kubeconfig'а.
+Один TF module `terraform/modules/workload_cluster/` ставит **весь
+functional workload-кластер за один `terraform apply`**: ClusterClass
++ Cluster CR + CNI + MetalLB + acceptance helm test'ы. Module
+self-contained — каждый module invocation создаёт свой независимый
+ClusterClass (per-workload), что позволяет параллельно держать
+несколько workloads с разными Kubernetes versions / configs / tunings
+на одном management cluster без cross-coupling.
 
-Разделение ответственности:
+Внутри module — **chain из 5 helm_release'ов** + **acceptance
+null_resource'ы**, провайдеры разрешаются runtime-style:
+
+1. `helm_release.capi_cluster_class` — chart `charts/capi-cluster-class/`
+   (§16.2), provider = `helm` aliased на mgmt kubeconfig (input
+   `var.mgmt_kubeconfig`). Per-workload ClusterClass, имя выводится
+   из `var.cluster_name + chart-version` (slug-формула чарта).
+2. `helm_release.capi_workload_cluster` — chart
+   `charts/capi-workload-cluster/` (§16.3), provider = mgmt.
+   `depends_on` на (1). Создаёт Cluster CR в namespace
+   `capi-clusters/<cluster_name>`.
+3. **Wait + read workload kubeconfig** — `kubernetes_resources` data
+   source (provider = mgmt) polling до появления Secret
+   `<cluster_name>-kubeconfig` в `capi-clusters`. `data.value` (b64)
+   декодируется в local + (опционально) write в `local_file` resource
+   для consumer-side артефакта.
+4. `helm_release.cni_calico` — chart `charts/cni-calico/`, provider =
+   `helm` aliased на workload kubeconfig (получен из шага 3).
+   `depends_on` на (2) + workload kubeconfig data.
+5. `null_resource.helm_test_cni_calico` — `local-exec` вызывает
+   `helm test cni-calico --kubeconfig <workload>` (см. §17.2 Gate B).
+   `depends_on` на (4). Failure валит TF apply.
+6. `helm_release.metallb` — chart `charts/metallb/` (subchart
+   wrapper), provider = workload. `depends_on` на (5) — CNI должен
+   быть зелёным до того как MetalLB controller / speaker DS
+   запустится (Pod networking требуется для memberlist gossip).
+7. `helm_release.metallb_config` — chart `charts/metallb-config/`,
+   provider = workload. `depends_on` на (6) — CRDs зарегистрированы
+   первой metallb-release-ой; разделение из-за CRDs-via-templates
+   pattern upstream metallb chart'а (§17.3 split rationale).
+8. `null_resource.helm_test_metallb_config` — `local-exec` вызывает
+   `helm test metallb-config --kubeconfig <workload>` (см. §17.3
+   Gate A). `depends_on` на (7). Failure валит TF apply.
+
+**Acceptance gate как часть apply**: TF apply не возвращается
+успешно пока обе helm test'а не зелёные. Это превращает Helm test
+hook'и (Gate A + Gate B) из «ручного шага после deploy'а» в
+**обязательную часть deploy'а**. Failure любого helm test'а →
+`null_resource` returns non-zero → TF apply фейлится → state помечен
+tainted, повторный apply пере-провайдеры тот же helm test (idempotent
+re-run).
+
+Ownership разделение:
 
 * **Controllers** (CAPI core + CABPK + KubeadmControlPlane + CAPN
-  infrastructure + cert-manager) — принесены `bootstrap_clusterctl`
-  через `clusterctl init --infrastructure incus` (§13.10). Phase 4
-  закрыта; Phase 5 controllers не трогает и сама их не переустанавливает.
+  infrastructure + cert-manager на mgmt cluster) — принесены
+  `bootstrap_clusterctl` через `clusterctl init --infrastructure
+  incus` (§13.10). Phase 4 закрыта; Phase 5 controllers не трогает и
+  сама их не переустанавливает.
 * **CRDs** (ClusterClass, Cluster, KubeadmControlPlaneTemplate,
-  KubeadmConfigTemplate, LXCClusterTemplate, LXCMachineTemplate, etc.) —
-  тоже принесены `clusterctl init`. Helm-чарты из §16.2..§16.3 **не
-  содержат CRDs**, только CR-инстансы. Helm 3 игнорирует `crds/`-папку
-  на upgrade, мы её и не создаём.
-* **CR-данные** (всё выше) — single-owner: Helm-чарты этого репо. Нет
-  `kubernetes_manifest`, нет `kubectl apply -f`, нет Ansible post-apply
-  на CAPI-CR'ы.
+  KubeadmConfigTemplate, LXCClusterTemplate, LXCMachineTemplate) —
+  тоже принесены `clusterctl init`. Чарты §16.2/§16.3 **не содержат
+  CRDs**, только CR-инстансы. CRDs для add-ons (calico, metallb)
+  приходят через subchart-pattern (см. чарт-status'ы и §17.3
+  metallb split note).
+* **Cluster-side resources** (CAPI Cluster CR + ClusterClass +
+  Templates + CNI Installation CR + MetalLB IPAddressPool /
+  L2Advertisement) — single-owner: Helm-чарты этого репо.
+* **Helm test acceptance** (Gate A external L2 + Gate B CNI) —
+  single-owner: chart-side hooks (см. §17.1 invocation contract +
+  §17.2 Gate B + §17.3 Gate A specs), invoke'ятся TF module через
+  `null_resource` в том же apply.
 
-`kubernetes` Terraform provider допустим только на read-side (data
-lookups, status polling). Любой create/update/apply CR идёт через
+Никаких `kubernetes_manifest`, `kubectl apply -f`, Ansible
+post-apply на CAPI/CNI/MetalLB CR'ы. `kubernetes` TF provider
+допустим только на read-side (data lookups, status polling — например
+шаг 3 wait для kubeconfig Secret). Любой create/update CR идёт через
 `helm_release`.
 
 ## 16.2. Chart: `charts/capi-cluster-class/`
@@ -66,7 +118,7 @@ Verified `loadBalancer.lxc` shape против live CAPN v0.8.5 CRD —
 charts чистый, ClusterClass+5 *Template'ов в `capi-system`,
 `RefVersionsUpToDate=True`, `VariablesReady=True`, `Paused=False`.
 **Step 12 (2026-04-26) — bumped to 0.4.2** под dual-stack
-acceptance close-out (open issue из §16.7 Step 11 Acceptance
+acceptance close-out (open issue из §16.6 Step 11 Acceptance
 status): KCPT хардкодит `apiServer.bind-address: "::"` +
 `controllerManager.allocate-node-cidrs: "true"`; обе kubeadm-
 template'ы хардкодят `kubeletExtraArgs.provider-id: lxc:///{{
@@ -81,9 +133,9 @@ substrate-required dual-bind v4+v6 frontend (CAPN default haproxy.cfg
 guards отбивают consumer-override на substrate-managed args
 (`bind-address`, `service-cluster-ip-range`, `allocate-node-cidrs`,
 `cluster-cidr`, `feature-gates`, `node-ip`, `provider-id`). Полная
-acceptance evidence — §16.7 Step 12 Acceptance status.**
+acceptance evidence — §16.6 Step 12 Acceptance status.**
 **Step 13 (2026-04-26) — bumped to 0.5.0** под native-nftables
-migration пары с charts/cni-calico (§17.1 Calico
+migration пары с charts/cni-calico (§17.2 Calico
 `linuxDataplane: Nftables`): `KubeadmControlPlaneTemplate.
 preKubeadmCommands` appendит KubeProxyConfiguration документ к
 `/run/kubeadm/kubeadm.yaml` до `kubeadm init`. Substrate-required
@@ -185,10 +237,10 @@ role-суффикс (`-infra`, `-cp`, `-md0`, `-kcp`, `-md0-bootstrap`)
 
 `capi-workload-cluster` чарт (§16.3) собирает имя ClusterClass'а в
 `spec.topology.classRef.name` по той же `replace "." "-"` формуле
-из общего values-блока (`clusterClass.chartVersion`). Terraform
-обёртка (§16.4) экспортирует rendered name через
-`cluster_class_name` output, и §16.5 модуль его пробрасывает в
-workload чарт напрямую — фикстура не пересчитывает формулу.
+из общего values-блока (`clusterClass.chartVersion`). Terraform module
+(§16.4) экспортирует rendered name через `cluster_class_name` output
+и пробрасывает его в workload chart внутри той же helm_release chain
+напрямую — фикстура (§16.5) не пересчитывает формулу.
 
 Отдельной §8-переменной для revision'а не заводим — единственный
 источник истины `Chart.yaml.version`, через `.Chart.Version` он
@@ -366,10 +418,10 @@ verified CRD schemas CAPI v1.12.5 / CAPN v0.8.5):**
   `Chart.Version | replace "." "-"` зафиксирована явно в name-versioning
   pattern; `spec.topology.class` → `spec.topology.classRef.name` per
   v1beta2.
-* `§16.3` / `§16.4` / `§16.5` / `§16.6` / `§16.7` — input-контракты и
-  примеры main.tf обновлены под новый public interface чарта (без
-  `project`, без `install_kubeadm`, profiles/devices с `_extra`
-  суффиксом, `spec.topology.classRef.name` в Acceptance block'е §16.7).
+* `§16.3` / `§16.4` / `§16.5` / `§16.6` — input-контракты module +
+  fixture обновлены под новый public interface чарта (без `project`,
+  без `install_kubeadm`, profiles/devices с `_extra` суффиксом,
+  `spec.topology.classRef.name` в Acceptance block'е §16.6).
 * Memory rule `feedback_chart_required_values_hardcoded.md` — новая
   Helm-симметрия Ansible rule `feedback_required_values_hardcoded`;
   policy, которая обязывает substrate-required CR-поля запекать в
@@ -407,7 +459,7 @@ verified CRD schemas CAPI v1.12.5 / CAPN v0.8.5):**
   `.artifacts/bootstrap.kubeconfig` +
   `.artifacts/bootstrap.auto.tfvars.json` материализованы на runner'е.
 * Workload-side E2E (реальный Cluster CR + LXC-ноды на substrate'е)
-  остаётся scope §16.3 + §16.4 + §16.5 + §16.6 + §16.7 — в Step 10
+  остаётся scope §16.3 + §16.4 + §16.5 + §16.6 — в Step 10
   не прогонялся.
 
 ## 16.3. Chart: `charts/capi-workload-cluster/`
@@ -646,8 +698,9 @@ PASS/FAIL); 10 step'ов на проверку:
     подтверждает, что kube-controller-manager раздаёт service-CIDR
     из обоих family'ов; cleanup через `trap EXIT` на `kubectl
     delete service`;
-  * **`Node.Ready=True` НЕ требуется** — CNI ставит Phase 5.1
-    отдельным Helm release'ом; workers будут NotReady до тех пор.
+  * **`Node.Ready=True` НЕ требуется** — CNI ставит §16.4 module
+    отдельным `helm_release`-ом ниже по chain; workers будут
+    NotReady до тех пор.
     «Came up» == «registered with API server» (kubeadm join
     completed) — это authoritative signal от API server'а, что
     нода реально вошла в кластер.
@@ -676,7 +729,7 @@ runtime check этого не видно.
 * per-Node `providerID = lxc:///<node>` — substrate invariant
   чарта (§16.2 хардкод); регрессия в `kubeletExtraArgs`-merge
   логике в KCPT/KCT поломает пустым providerID'ом будущие
-  CCM-style features в Phase 5.1+;
+  CCM-style features (последующие add-ons release'ы внутри §16.4);
 * per-Node dual-stack `InternalIP` + `podCIDR` — доказательство
   end-to-end чейна: kubelet `--node-ip=v4,v6`
   (substrate `preKubeadmCommands` patch'ит kubeadm config'у),
@@ -716,98 +769,200 @@ gate. CAPN/Kubeadm gates **избыточны** в этом чарте: Cluster 
 ClusterClass отсутствует или её *Templates кривые — CAPI webhook
 отбивает Cluster admission с внятной ошибкой.
 
-## 16.4. Module: `terraform/modules/capi_cluster_class/`
+## 16.4. Module: `terraform/modules/workload_cluster/`
 
-Тонкая обёртка над `helm_release` для §16.2 чарта. Inputs mirror
-public interface чарта 1:1 — substrate-required CR-поля в чарт не
-принимаются (они hardcoded), сюда приходят только tunables:
+Единственный TF module проекта. Один `terraform apply` поднимает
+полнофункциональный workload-кластер: ClusterClass + Cluster CR +
+CNI + MetalLB + acceptance helm test'ы. Module self-contained —
+каждый invocation ставит свой независимый ClusterClass (per-workload),
+несколько workloads с разными configs/versions могут сосуществовать
+на одном mgmt cluster'е без cross-coupling.
 
-* `chart_path` (default `${path.module}/../../../charts/capi-cluster-class`);
-* `chart_version` — прокидывается как `helm_release.version`;
-* `namespace = capi-system` (override допустим — module не
-  привязывается к конкретной namespace, но reference deployment
-  ставит в capi-system, см. §16.3);
-* `class_prefix` — bind на `clusterClass.name` в чарте (default
-  `capn-default`);
-* `kubernetes_version` — §8 `k8s_lab_kubernetes_version`;
-* `infrastructure_secret_name` — §8
-  `k8s_lab_infrastructure_secret_name`;
-* `image_controlplane_ref` + `image_controlplane_fingerprint`;
-* `image_worker_ref` + `image_worker_fingerprint`;
-* `load_balancer` (map — прокидывается как
-  `loadBalancer` values блок; consumer может выбрать один из
-  CAPN режимов, по умолчанию `{lxc = {}}`);
-* `controlplane_profiles_extra` / `worker_profiles_extra` — list of
-  strings, добавляются к substrate baseline (required-baseline
-  hardcoded в чарте);
-* `controlplane_devices_extra` / `worker_devices_extra` — list of
-  strings в CAPN CSV формате (`"eth1,type=nic,network=..."`);
-* `control_plane_tuning` / `worker_tuning` — объекты с
-  `feature_gates`, `api_server_extra_args`,
-  `controller_manager_extra_args`, `scheduler_extra_args`,
-  `kubelet_extra_args`, `pre_kubeadm_commands`,
-  `post_kubeadm_commands` (v1beta2 `[{name,value}]` list формат для
-  `*_extra_args`);
-* `kube_proxy_node_port_addresses` (list of strings).
+Module имеет **два provider scope'а** — mgmt (CAPI controllers
+кластер) и workload (только что созданный workload cluster). Helm
+provider'ы конфигурируются как aliased instances; vasallage shape
+из §16.1.
 
-Outputs:
+### Inputs
 
-* `cluster_class_name` — rendered `"{class_prefix}-{slug}"` по той же
-  `replace "." "-"` slug-формуле, что хелпер чарта (нужен §16.5
-  модулю для `clusterClass.name`-binding'а);
-* `class_namespace` — echo `helm_release.namespace` (нужен §16.5 для
-  cross-ns `clusterClass.namespace`-binding'а);
-* `release_id` — для downstream `depends_on`.
+Module не принимает substrate-required CR-поля (они hardcoded в
+чартах §16.2 / §16.3 / §17 charts). Сюда приходят только tunables:
 
-Cluster-class chart version НЕ возвращается output'ом: §16.3
-workload-cluster chart pin'ит её через `Chart.yaml.annotations`
-(не через values), поэтому §16.5 модулю эта версия не нужна.
-Bump cluster-class chart'а требует парного bump'а workload-cluster
-chart'а с обновлённой annotation — coupling объявлен в Chart.yaml,
-не в TF state.
+* **Mgmt-side connection**:
+  * `mgmt_kubeconfig_path` (string, required) — path до kubeconfig'а
+    mgmt cluster'а. Pre-pivot = `.artifacts/bootstrap.kubeconfig`,
+    post-pivot = `.artifacts/mgmt.kubeconfig`. Module не выбирает
+    между ними — это decision callsite (см. §16.5 fixture, §18
+    Phase 7);
 
-`helm_release.wait = true` (default в `hashicorp/helm` 3.x) — ждёт
-admission controller'ы + CAPI controller reconcile до ready. Без
-этого гонка на первом apply: Cluster CR из §16.5 долетает до
-ClusterClass-webhook'а до того, как тот полностью загружен.
+* **Cluster identity + sizing**:
+  * `cluster_name` (string, required) — bind на §8
+    `k8s_lab_workload_cluster_name`;
+  * `cluster_namespace` (string, default `capi-clusters`) — должен
+    присутствовать как одно из значений §8
+    `k8s_lab_capn_identity_namespaces` (CAPN читает identity Secret
+    из Cluster CR namespace'а, §13.11);
+  * `kubernetes_version` (string, required) — §8
+    `k8s_lab_kubernetes_version`. Pinned to CAPN simplestreams set
+    (§8a Constraint Step 11);
+  * `controlplane_count`, `worker_count` (int) — §8
+    `k8s_lab_workload_controlplane_count` / `_worker_count`;
 
-`helm_release.atomic = true` — при partial fail откатывает release.
-`force_update = false` (default) — не ломает SSA ownership CAPI
-controller'а.
+* **Per-workload ClusterClass identity**:
+  * `cluster_class_chart_version` — `helm_release.version` для
+    `charts/capi-cluster-class/`. Tracks §8
+    `k8s_lab_capi_cluster_class_chart_version`;
+  * `cluster_class_namespace` (string, default `capi-clusters`) —
+    same-namespace c Cluster CR; per-workload ClusterClass live'ит
+    рядом с Cluster CR, не в shared `capi-system`. Это позволяет
+    несколько concurrent workloads с разными configs;
+  * `class_prefix` (string, default `capn-default`) — bind на
+    `clusterClass.name` values чарта; module ложит финальное имя
+    как `"{class_prefix}-{cluster_name}-{slug-of-version}"`,
+    гарантируя per-workload uniqueness;
 
-## 16.5. Module: `terraform/modules/capi_workload_cluster/`
+* **CAPI cluster networking** (consumed by §16.2 + §16.3 charts):
+  * `pod_cidrs` (list(string), 2 элемента) — §8
+    `k8s_lab_workload_pod_cidr_v4` + `_v6`;
+  * `service_cidrs` (list(string), 2 элемента) — §8
+    `k8s_lab_workload_service_cidr_v4` + `_v6`;
 
-Тонкая обёртка над `helm_release` для §16.3 чарта. Inputs:
+* **Substrate template extras** (passthrough на §16.2 chart):
+  * `infrastructure_secret_name` — §8;
+  * `image_controlplane_ref` + `image_controlplane_fingerprint`,
+    `image_worker_ref` + `image_worker_fingerprint`;
+  * `load_balancer` (map; default `{lxc = {}}`);
+  * `controlplane_profiles_extra` / `worker_profiles_extra`;
+  * `controlplane_devices_extra` / `worker_devices_extra`;
+  * `control_plane_tuning` / `worker_tuning` (объекты с
+    `feature_gates`, `*_extra_args`, `pre_kubeadm_commands`,
+    `post_kubeadm_commands`);
+  * `kube_proxy_node_port_addresses`;
 
-* `chart_path` (default `${path.module}/../../../charts/capi-workload-cluster`);
-* `chart_version` — `helm_release.version`. Bump'ится в паре с
-  cluster-class chart version'ом (chart Chart.yaml annotation pin —
-  см. §16.3);
-* `cluster_name`, `cluster_namespace`;
-* `kubernetes_version`;
-* `cluster_class_name` — обязательный вход, принимается из output'а
-  §16.4 модуля;
-* `cluster_class_namespace` — обязательный вход, принимается из
-  output'а §16.4 модуля. Передаётся в `clusterClass.namespace`
-  values; cross-ns reference активен когда
-  `cluster_class_namespace != cluster_namespace`;
-* `controlplane_count`, `worker_count`;
-* `pod_cidrs` (list, 2 элемента для dual-stack), `service_cidrs`
-  (list, 2 элемента);
-* `helm_release.create_namespace = true` (модуль) — namespace
-  workload Cluster CR'а создаётся TF, чарт сам namespace не везёт
-  (см. §16.3 namespace ownership).
+* **Add-ons chart versions**:
+  * `cni_calico_chart_version` — `helm_release.version` для
+    `charts/cni-calico/`. Tracks chart Chart.yaml version;
+  * `metallb_chart_version` — `helm_release.version` для
+    `charts/metallb/` (subchart wrapper). Tracks chart Chart.yaml
+    version (separate от §8 `k8s_lab_metallb_chart_version` который
+    pin'ит upstream subchart внутри Chart.yaml dependency);
+  * `metallb_config_chart_version` — `helm_release.version` для
+    `charts/metallb-config/`;
 
-`depends_on = [helm_release.cluster_class]` на уровне module wiring
-или через явный input `cluster_class_release_id`. `wait = true`,
-`atomic = true`, `force_update = false`.
+* **MetalLB pool / advertisement** (consumed by §17.3 metallb-config
+  chart):
+  * `metallb_vip_range_v6` — §8 `k8s_lab_metallb_vip_range_v6`;
+  * `metallb_interface` (string, default `eth1`) — §8
+    `k8s_lab_metallb_interface`;
+  * `metallb_extra_node_selectors` (map(string), default `{}`) —
+    stacked поверх substrate-required CP-exclusion (§17.3 chart).
 
-## 16.6. Test fixture: `tests/fixtures/terraform/workload-clusters/lab-default/capi`
+* **Workload kubeconfig output**:
+  * `workload_kubeconfig_path` (string, optional) — если задан,
+    module пишет workload kubeconfig в этот path через
+    `local_file` resource (mode 0600, owner = TF runner). Default
+    empty = нет файла; consumer reads kubeconfig via TF output.
 
-Единственный MVP test root для Phase 5. Shape:
+### Internals (helm_release chain)
+
+Все 5 release'ов используют `wait = true`, `atomic = true`,
+`force_update = false`:
+
+1. `helm_release.capi_cluster_class` — provider mgmt. Ставит
+   `charts/capi-cluster-class/` в `var.cluster_class_namespace`;
+   chart рендерит ClusterClass + 5 Templates с per-workload именами
+   (см. `class_prefix` rendering выше);
+2. `helm_release.capi_workload_cluster` — provider mgmt. Ставит
+   `charts/capi-workload-cluster/` в `var.cluster_namespace`.
+   `depends_on = [helm_release.capi_cluster_class]`;
+3. **Wait for workload kubeconfig Secret**: `kubernetes_resources`
+   data source (provider = `kubernetes` aliased на mgmt) polling до
+   появления Secret `<cluster_name>-kubeconfig` в
+   `<cluster_namespace>`. Module использует `data.kubernetes_resource`
+   (singular) с `field_manager`-aware retry внутри `null_resource` +
+   `local-exec sh -c 'kubectl get secret ... -w --timeout=20m'` —
+   `kubernetes_resource` data source сам по себе не имеет
+   poll-until-exists semantic'ов, hence the `null_resource`-shim;
+4. **Decode kubeconfig**: `data.kubernetes_resource` (после wait)
+   читает Secret, `local.workload_kubeconfig = base64decode(...)`;
+5. (Опционально) `local_file.workload_kubeconfig` — если задан
+   `workload_kubeconfig_path` input, материализует kubeconfig в
+   файл (mode 0600);
+6. `provider "helm"` aliased на workload — конфигурируется через
+   `kubernetes { config = local.workload_kubeconfig }` (inline
+   string, не path). Это keeps module hermetic: kubeconfig никогда
+   не trittenет файловую систему если consumer не запросил;
+7. `helm_release.cni_calico` — provider workload. Ставит
+   `charts/cni-calico/` в namespace `tigera-operator` (chart owns
+   namespace). `depends_on` на (4);
+8. `null_resource.helm_test_cni_calico` — `local-exec` вызывает
+   `helm test cni-calico --kubeconfig <tmpfile> --namespace
+   tigera-operator --timeout 15m --logs`. Failure → TF apply fails
+   с понятным выводом (`triggers` includes chart version + release
+   ID, поэтому повторный apply re-runs тест на upgrade);
+9. `helm_release.metallb` — provider workload. Ставит
+   `charts/metallb/` (subchart wrapper над upstream) в
+   `metallb-system`. `depends_on = [null_resource.helm_test_cni_calico]`
+   — CNI зелёный → MetalLB можно ставить;
+10. `helm_release.metallb_config` — provider workload. Ставит
+    `charts/metallb-config/` в `metallb-system`. `depends_on =
+    [helm_release.metallb]` — split rationale §17.1 (CRDs first,
+    CRs second);
+11. `null_resource.helm_test_metallb_config` — `local-exec` вызывает
+    `helm test metallb-config --kubeconfig <tmpfile> --namespace
+    metallb-system --timeout 15m --logs`. Failure → TF apply fails.
+
+`null_resource` для helm test'ов использует `triggers` мап с
+`{chart_version, release_id, kubeconfig_hash}` — re-runs test'а на
+chart bump или kubeconfig rotation. Внутри `local-exec`
+скрипт пишет workload kubeconfig в `mktemp` файл, выполняет helm
+test, очищает temp файл в любом исходе (trap EXIT). Это keeps
+in-cluster apply hermetic relative to runner FS state.
+
+### Outputs
+
+* `cluster_name`, `cluster_namespace` — echo input'ов для downstream
+  consumers (e.g. cleanup orchestration);
+* `cluster_class_name` — rendered final ClusterClass name (для
+  introspection / debug);
+* `kubeconfig` (sensitive) — workload kubeconfig content (string).
+  Consumer может писать это сам через `output` block или TF data
+  pass через `terraform output -raw kubeconfig > path`;
+* `metallb_vip_range_v6` — echo input'а; consumer'у может быть
+  полезно для downstream services;
+* `helm_releases` (map(object)) — `{ capi_cluster_class, capi_workload_cluster,
+  cni_calico, metallb, metallb_config }`, каждый с `id`, `name`,
+  `namespace`, `chart_version`. Используется fixtures'ами для
+  `terraform output | jq` smoke checks.
+
+### Multi-workload usage
+
+Несколько workloads = несколько module invocation'ов с разными
+`cluster_name`. ClusterClass per-workload изолирован (одно из
+проявлений: bump KubeadmControlPlaneTemplate в одном workload не
+требует bump'а в другом). `cluster_class_namespace = cluster_namespace`
+default keeps each workload self-contained.
+
+### CAPI invariants module enforces
+
+* `controlplane_count` validation: должен быть нечётным (CAPI KCP
+  webhook отбивает чётные replicas под stacked etcd). Module
+  валидирует через `validation` block: `controlplane_count % 2 == 1`;
+* `pod_cidrs` / `service_cidrs` length: ровно 2 элемента (dual-stack
+  invariant §8). Validation block;
+* `kubernetes_version` ∈ supported set (CAPN simplestreams); pinned
+  default §8 actual; module не валидирует этот set runtime — это
+  responsibility consumer'а через §8 default.
+
+## 16.5. Test fixture: `tests/fixtures/terraform/workload-clusters/lab-default/`
+
+Единственный TF root этого репо. Invokes module `workload_cluster/`
+с дефолтными §8 значениями для local Vagrant/libvirt контура.
+
+Shape:
 
 ```
-tests/fixtures/terraform/workload-clusters/lab-default/capi/
+tests/fixtures/terraform/workload-clusters/lab-default/
   providers.tf
   variables.tf
   main.tf
@@ -828,105 +983,107 @@ terraform {
       source  = "hashicorp/kubernetes"
       version = "~> 2.30"
     }
+    local = {
+      source  = "hashicorp/local"
+      version = "~> 2.5"
+    }
+    null = {
+      source  = "hashicorp/null"
+      version = "~> 3.2"
+    }
   }
-}
-
-provider "helm" {
-  kubernetes {
-    config_path = var.k8s_lab_bootstrap_kubeconfig_path
-  }
-}
-
-provider "kubernetes" {
-  config_path = var.k8s_lab_bootstrap_kubeconfig_path
 }
 ```
+
+Сами provider configurations module определяет внутри (mgmt + workload
+aliases), fixture их не переопределяет.
 
 ### variables.tf
 
 Принимает `k8s_lab_*` ключи из §8. `.artifacts/bootstrap.auto.tfvars.json`
 (emitted `export_artifacts` §13.12) auto-load'ится Terraform-ом и
-заполняет их без ручного tfvars. Две переменные, которые fixture
-**добавляет поверх**:
+заполняет их без ручного tfvars. Поверх §8 fixture добавляет:
 
-* `capi_cluster_class_chart_version` (default tracks §8
-  `k8s_lab_capi_cluster_class_chart_version` = `charts/capi-cluster-class/Chart.yaml`
-  version) — `helm_release.version` для §16.4 модуля;
-* `capi_workload_cluster_chart_version` (default tracks §8
-  `k8s_lab_capi_workload_cluster_chart_version` =
-  `charts/capi-workload-cluster/Chart.yaml` version) —
-  `helm_release.version` для §16.5 модуля. Бамп этой переменной
-  обязан совпадать с тем, что workload-cluster Chart.yaml
-  `annotations["k8s-lab.io/capi-cluster-class-chart-version"]` уже
-  pin'ит — coupling check'ается внутри chart'а через
-  `Chart.Annotations`-helper.
+* `mgmt_kubeconfig_path` (default `${path.module}/../../../../../.artifacts/bootstrap.kubeconfig`)
+  — pre-pivot path к bootstrap k3s kubeconfig'у. Post-pivot (см.
+  §18.3) consumer переключает на `.artifacts/mgmt.kubeconfig`
+  через tfvar override;
+* `workload_kubeconfig_path` (default
+  `${path.module}/../../../../../.artifacts/clusters/<cluster_name>.kubeconfig`)
+  — где module пишет workload kubeconfig (через `local_file` resource
+  внутри module, §16.4 outputs);
+* `cluster_class_chart_version` (default tracks §8
+  `k8s_lab_capi_cluster_class_chart_version`);
+* `cluster_workload_chart_version` (default tracks §8
+  `k8s_lab_capi_workload_cluster_chart_version`). Bump этой переменной
+  должен совпадать с `capi-workload-cluster/Chart.yaml`
+  `annotations["k8s-lab.io/capi-cluster-class-chart-version"]` —
+  coupling check внутри chart'а через `Chart.Annotations`-helper;
+* `cni_calico_chart_version` (default = `charts/cni-calico/Chart.yaml`
+  version);
+* `metallb_chart_version` (default = `charts/metallb/Chart.yaml`
+  version);
+* `metallb_config_chart_version` (default = `charts/metallb-config/Chart.yaml`
+  version).
 
 ### main.tf
 
 ```hcl
-module "cluster_class" {
-  source = "../../../../../terraform/modules/capi_cluster_class"
+module "workload_cluster" {
+  source = "../../../../../terraform/modules/workload_cluster"
 
-  chart_path    = "${path.module}/../../../../../charts/capi-cluster-class"
-  chart_version = var.capi_cluster_class_chart_version
-  namespace     = "capi-system"
+  mgmt_kubeconfig_path     = var.mgmt_kubeconfig_path
+  workload_kubeconfig_path = var.workload_kubeconfig_path
 
-  kubernetes_version             = var.k8s_lab_kubernetes_version
+  cluster_name        = var.k8s_lab_workload_cluster_name
+  cluster_namespace   = "capi-clusters"
+  kubernetes_version  = var.k8s_lab_kubernetes_version
+  controlplane_count  = var.k8s_lab_workload_controlplane_count
+  worker_count        = var.k8s_lab_workload_worker_count
+
+  cluster_class_chart_version  = var.cluster_class_chart_version
+  cluster_workload_chart_version = var.cluster_workload_chart_version
+  cni_calico_chart_version     = var.cni_calico_chart_version
+  metallb_chart_version        = var.metallb_chart_version
+  metallb_config_chart_version = var.metallb_config_chart_version
+
+  pod_cidrs     = [var.k8s_lab_workload_pod_cidr_v4,
+                   var.k8s_lab_workload_pod_cidr_v6]
+  service_cidrs = [var.k8s_lab_workload_service_cidr_v4,
+                   var.k8s_lab_workload_service_cidr_v6]
+
   infrastructure_secret_name     = var.k8s_lab_infrastructure_secret_name
   image_controlplane_ref         = var.k8s_lab_images_controlplane
   image_controlplane_fingerprint = var.k8s_lab_images_controlplane_fingerprint
   image_worker_ref               = var.k8s_lab_images_worker
   image_worker_fingerprint       = var.k8s_lab_images_worker_fingerprint
-  load_balancer                  = { lxc = {} }
   controlplane_profiles_extra    = var.k8s_lab_controlplane_profiles_extra
   worker_profiles_extra          = var.k8s_lab_worker_profiles_extra
   controlplane_devices_extra     = var.k8s_lab_controlplane_devices_extra
   worker_devices_extra           = var.k8s_lab_worker_devices_extra
   kube_proxy_node_port_addresses = var.k8s_lab_kube_proxy_nodeport_addresses
-}
 
-module "workload_cluster" {
-  source = "../../../../../terraform/modules/capi_workload_cluster"
-
-  chart_path    = "${path.module}/../../../../../charts/capi-workload-cluster"
-  chart_version = var.capi_workload_cluster_chart_version
-
-  # `capi-clusters` должна присутствовать как одно из значений
-  # §8 k8s_lab_capn_identity_namespaces — иначе CAPN не найдёт
-  # identity Secret в Cluster CR namespace'е (§13.11 / §16.3).
-  cluster_namespace       = "capi-clusters"
-  cluster_name            = var.k8s_lab_workload_cluster_name
-  kubernetes_version      = var.k8s_lab_kubernetes_version
-  cluster_class_name      = module.cluster_class.cluster_class_name
-  cluster_class_namespace = module.cluster_class.class_namespace
-  controlplane_count      = var.k8s_lab_workload_controlplane_count
-  worker_count            = var.k8s_lab_workload_worker_count
-  pod_cidrs               = [var.k8s_lab_workload_pod_cidr_v4,
-                             var.k8s_lab_workload_pod_cidr_v6]
-  service_cidrs           = [var.k8s_lab_workload_service_cidr_v4,
-                             var.k8s_lab_workload_service_cidr_v6]
-
-  depends_on = [module.cluster_class]
+  metallb_vip_range_v6 = var.k8s_lab_metallb_vip_range_v6
+  metallb_interface    = var.k8s_lab_metallb_interface
 }
 ```
 
 ### outputs.tf
 
-* `cluster_name`, `cluster_namespace` — для Phase 5.05 kubeconfig
-  discovery (`<cluster_name>-kubeconfig` Secret в
-  `<cluster_namespace>`);
-* `kubeconfig_secret_name = "${var.k8s_lab_workload_cluster_name}-kubeconfig"`
-  — CAPI kubeadm-CP контроллер автоматически создаёт этот Secret
-  после того, как CP стал reachable.
+* `cluster_name`, `cluster_namespace` — passthrough (для cleanup
+  orchestration §19.2);
+* `cluster_class_name` — passthrough;
+* `workload_kubeconfig_path` — echo input'а если materialized;
+* `helm_releases` — passthrough (smoke-check fixture).
 
-## 16.7. Phase 5 — Apply CAPI topology
+## 16.6. Phase 5 — Apply workload cluster
 
-Orchestration — `make deploy-workload-capi` (target в корневом
+Orchestration — `make deploy-workload` (target в корневом
 `Makefile`):
 
 ```makefile
-deploy-workload-capi:
-	cd tests/fixtures/terraform/workload-clusters/lab-default/capi \
+deploy-workload:
+	cd tests/fixtures/terraform/workload-clusters/lab-default \
 	  && terraform init -upgrade \
 	  && terraform apply -auto-approve
 ```
@@ -936,28 +1093,56 @@ deploy-workload-capi:
 * `terraform` предполагается **уже установленным** на runner'е (dev
   машина или CI-агент); Ansible/Phase 4 его не ставят;
 * оператор / агент вызывает target вручную после того, как Phase 4
-  зелёная и `.artifacts/bootstrap.kubeconfig` + `.artifacts/bootstrap.auto.tfvars.json`
-  материализованы;
-* целевой kubeconfig — bootstrap; CAPI controllers + CAPN живут там,
-  они принимают ClusterClass + Cluster CR-ы и поднимают LXC-ноды
-  workload-кластера в том же LXD substrate'е, что и bootstrap (project
-  `capi-lab`).
+  зелёная и `.artifacts/bootstrap.kubeconfig` +
+  `.artifacts/bootstrap.auto.tfvars.json` материализованы;
+* `helm` CLI — нужен на runner'е для helm test'ов внутри module
+  (`null_resource` + `local-exec`); версия pinned chart-providers
+  совместимая (Helm 3.20+);
+* первый apply поднимает workload-кластер с нуля (CAPI provisioning
+  + LXC instances + kubeadm init/join + CNI + MetalLB +
+  helm test'ы); типично 8-12 минут на cold cache;
+* повторный apply — no-op (idempotent helm_release'ы; helm test'ы
+  re-run потому что `null_resource.triggers` включает chart version,
+  но они быстры если cluster уже зелёный).
 
 Acceptance:
 
-1. `helm_release.cluster_class` успешно применён: ClusterClass +
-   все *Template'ы existуют в `capi-system` с именами
-   `{prefix}-{chart-version}`; webhook их провалидировал.
-2. `helm_release.workload_cluster` успешно применён: Cluster CR
-   в `capi-clusters/<cluster-name>` с `spec.topology.classRef.name`
-   указывающий на правильный ClusterClass-имя.
-3. CAPI kubeadm-CP и CAPN infrastructure controllers подхватили
-   Cluster CR, создали LXCCluster/LXCMachine'ы, CP-LXC-ноды запустились,
-   kubeadm init на первой CP-ноде прошёл.
-4. Через CAPN observer видно Ready=True на Cluster CR (Terraform
-   wait through `kubernetes_resource` data block или `time_sleep` +
-   `data.kubernetes_resources` polling — точный mechanism зафиксировать
-   в impl-step'е).
+1. `helm_release.capi_cluster_class` применён: ClusterClass +
+   все 5 *Template'ов existуют в `<cluster_namespace>` с именами
+   `{class_prefix}-{cluster_name}-{chart-version-slug}`; webhook
+   провалидировал.
+2. `helm_release.capi_workload_cluster` применён: Cluster CR в
+   `capi-clusters/<cluster_name>` с `spec.topology.classRef.name`
+   указывающий на правильный per-workload ClusterClass.
+3. CAPI kubeadm-CP + CAPN controllers подхватили Cluster CR,
+   создали LXCCluster + LXCMachine'ы, kubeadm init/join прошли,
+   workload kubeconfig Secret `<cluster_name>-kubeconfig` появился
+   в `<cluster_namespace>`.
+4. `helm_release.cni_calico` применён: tigera-operator + calico-node
+   DaemonSet rolled out, все workload Nodes Ready.
+5. **Gate B зелёный** (`null_resource.helm_test_cni_calico`) —
+   chart-side acceptance (см. §17.2): tigera-operator Available,
+   calico-system Pods Ready, dual-stack `podCIDRs` per-Node, ICMP4/
+   ICMP6 pod-to-pod через kubectl exec.
+6. `helm_release.metallb` + `helm_release.metallb_config` применены:
+   metallb controller + speaker DS rolled out, IPAddressPool +
+   L2Advertisement reconciled.
+7. **Gate A зелёный** (`null_resource.helm_test_metallb_config`) —
+   chart-side acceptance (см. §17.3): demo Service получил VIP из
+   pool, in-cluster HTTP probe от driver Pod к VIP returns 200.
+8. `terraform output -raw kubeconfig` возвращает рабочий
+   workload kubeconfig (строкой). Если `workload_kubeconfig_path`
+   задан — тот же kubeconfig материализован файлом mode 0600.
+
+Failure любого acceptance criterion → TF apply фейлится; state
+помечен tainted; повторный apply re-runs только failed resource'ы
+(helm_release upgrade-no-op для зелёных).
+
+Acceptance status history split — Step 11/12 относятся к исходным
+acceptance criteria (1)-(4) которые вырастали в (1)-(8) в Step 13/14
+по мере добавления CNI и MetalLB chart'ов. Step 13/14 evidence —
+chart-side зелёный через Molecule e2e-local; TF module wrapper ещё
+не реализован, реализация — Step 15+.
 
 ### Acceptance status (Step 11, 2026-04-26)
 
@@ -1069,54 +1254,38 @@ mount — `kubeadm join` preflight `SystemVerification` валится
 capi-controlplane (`/proc/config.gz` физически не существует на
 Debian 13 kernel — `CONFIG_IKCONFIG=n`).
 
-## 16.8. Phase 5.05 — Export target kubeconfig на runner
+## 16.7. Workload kubeconfig export
 
-Продолжение Ansible-роли `export_artifacts` (§13.12) через новую
-task-file `tasks/mgmt_kubeconfig.yml` плюс public toggle
-`export_artifacts_target_kubeconfigs_enabled` (default `false`; Phase
-5.05 включает).
+Workload kubeconfig export — **internal step §16.4 module'а**, не
+отдельная Phase. Module:
 
-Когда включено:
+1. ждёт Secret `<cluster_name>-kubeconfig` в `<cluster_namespace>`
+   через `null_resource` + `kubectl get secret -w --timeout=20m`
+   (mgmt kubeconfig);
+2. читает Secret через `data.kubernetes_resource` (server-side,
+   нативный TF), декодирует `data.value` (base64) в local;
+3. конфигурирует workload-aliased helm provider inline через
+   `kubernetes { config = local.workload_kubeconfig }` — kubeconfig
+   живёт только в TF state, не trittenет файловую систему;
+4. опционально пишет kubeconfig в файл через `local_file` resource
+   если задан `var.workload_kubeconfig_path` (mode 0600,
+   sensitive=true).
 
-* читает из bootstrap API список Secret'ов вида
-  `<cluster>-kubeconfig` в namespace `capi-clusters` через
-  `kubernetes.core.k8s_info` (server-side, нативный, без `kubectl`);
-* для каждого кластера извлекает `data.value` (base64-encoded
-  kubeconfig), декодирует, materialize'ит в
-  `.artifacts/clusters/<cluster>.kubeconfig` с mode 0600 через
-  `ansible.builtin.copy` + `delegate_to: localhost, become: false,
-  run_once: true` (тот же pattern, что §13.12 уже использует для
-  bootstrap kubeconfig'а);
-* server URL в kubeconfig'е CAPI kubeadm-CP контроллер кладёт под
-  control-plane endpoint, который в MVP = internal bridge-IPv4 CP-ноды
-  (reachable изнутри VM / bootstrap LXC, но не с dev-машины);
-* opt-in rewrite `clusters[].cluster.server` на runner-reachable URL
-  через `export_artifacts_target_api_server_url` (один URL; multi-cluster
-  case откладывается до Stage 2). Публикация API workload CP наружу —
-  через LXD proxy device на CP-LXC, аналогично §15.5 для bootstrap;
-  proxy-device wiring владеется §16.2 chart'ом через
-  `LXCMachineTemplate.spec.instance.devices`, чтобы публикация была
-  declarative-свойством ClusterClass'а, а не side-effect-ом Ansible.
+Consumer'у видим kubeconfig двумя путями:
 
-Substrate-required значения (filenames, directory layout, file mode)
-остаются в `export_artifacts` `vars/main.yml` под
-`_export_artifacts_required_*` prefix (§13.12 контракт). Public defaults
-расширяются двумя toggle'ами: `export_artifacts_target_kubeconfigs_enabled`
-и `export_artifacts_target_api_server_url`.
+* `terraform output -raw kubeconfig > path.kubeconfig` — на любом
+  apply, явный pull;
+* `var.workload_kubeconfig_path = ".artifacts/clusters/<name>.kubeconfig"`
+  — module пишет файл сам, путь предсказуем.
 
-Acceptance:
-
-* `.artifacts/clusters/<workload-cluster>.kubeconfig` present на
-  runner'е, mode 0600;
-* `kubernetes.core.k8s_info kind=Node` через этот kubeconfig (с
-  `delegate_to: localhost` внутри verify) возвращает все CP + worker
-  ноды workload-кластера Ready (доказательство, что Phase 5.1 helm
-  add-ons pass поедет);
-* путь зафиксирован для §17 (Helm add-ons): fixture
-  `tests/fixtures/terraform/workload-clusters/lab-default/addons`
-  читает его через `k8s_lab_target_kubeconfig_path` tfvar (эмиттится
-  `export_artifacts` в `.artifacts/bootstrap.auto.tfvars.json` на том
-  же прогоне).
+Server URL внутри kubeconfig'а — controlPlane endpoint (CAPN
+auto-derived из LXCCluster status; на local Vagrant substrate это
+internal bridge IPv6 — reachable изнутри VM, не с dev-машины).
+Runner-side доступ к workload API — через kubectl с VM или через LXD
+proxy device на workload CP (декларация делается через
+`LXCMachineTemplate.spec.instance.devices` в `charts/capi-cluster-class/`
+если consumer запрашивает; substrate-required wiring живёт в чарте,
+не в module).
 
 [1]: https://capn.linuxcontainers.org/?utm_source=chatgpt.com "Introduction - The cluster-api-provider-incus book"
 [2]: https://documentation.ubuntu.com/lxd/latest/reference/network_bridge/?utm_source=chatgpt.com "Bridge network - LXD documentation"
