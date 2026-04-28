@@ -1,0 +1,190 @@
+{{/*
+Helm post-install/post-upgrade hook Job: attach an LXD `proxy` device
+to the CAPN-managed haproxy LB instance so the workload kube-apiserver
+becomes reachable from outside the LXD host.
+
+WHY THIS LIVES IN A HOOK JOB
+============================
+CAPN v1alpha2 declares LXCCluster.spec.template.spec.loadBalancer
+.lxc.instanceSpec as a closed schema (only profiles/image/flavor/
+target — no devices field). A JSON patch through the ClusterClass
+topology API to add a `devices` block on the LB instance fails at
+admission with `field not declared in schema`. The proxy device must
+therefore be attached post-CAPI on the live LB instance.
+
+By shipping the attach as a Helm hook in this chart (rather than as
+an inline `lxc config device add` in Molecule / TF code), every
+consumer — Molecule e2e, Terraform module, manual `helm install` —
+gets runner-reachability automatically as part of `helm install`.
+
+WHY ALPINE + curl + jq AGAINST LXD REST API
+===========================================
+LXD exposes a complete HTTPS REST API at :8443. The CAPN identity
+Secret (charts/capi-workload-cluster + role bootstrap_capn_secret)
+already carries the mTLS material LXD requires (`client-crt`,
+`client-key`, `server-crt`) plus the daemon URL (`server`) and the
+target project (`project`). curl can drive the API directly — no
+`incus`/`lxc` CLI image needed (would be ~50 MB+ and a chained
+external dependency for upstream binaries). Plain alpine + apk
+(curl, jq, tini) is ~10 MB and audit-friendly.
+
+LXD API endpoints used:
+  * GET  /1.0/instances?project=<p>           — list URLs
+  * GET  /1.0/instances/<lb>?project=<p>      — read existing devices
+  * PATCH /1.0/instances/<lb>?project=<p>     — merge in our device
+
+LXD PATCH semantics merge top-level fields, so passing
+`{"devices":{"api-proxy":{...}}}` adds our device and leaves any
+other devices on the instance untouched.
+
+IDEMPOTENCY
+===========
+On re-install / re-upgrade Helm sets `before-hook-creation` so a
+prior attempt's Job is deleted before this one runs. Inside the
+script: a GET on the instance's existing devices.api-proxy block
+short-circuits with success if the device is already attached and
+matches the desired listen port, so the Job is safe to re-run on
+helm upgrade with no API churn.
+
+LIFECYCLE
+=========
+post-install + post-upgrade. helm waits for hook Jobs by default,
+so the converge / TF apply that calls `helm install <workload>`
+returns only after the LB instance is provisioned by CAPN AND the
+proxy device is wired — no race window where downstream chart
+installs see a half-ready cluster.
+*/}}
+{{- $port := include "capi-workload-cluster.apiProxyPort" . | int -}}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ printf "%s-api-proxy-hook" .Release.Name | trunc 63 | trimSuffix "-" }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "capi-workload-cluster.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade,pre-delete
+    helm.sh/hook-weight: "-10"
+    helm.sh/hook-delete-policy: before-hook-creation
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ printf "%s-api-proxy-attach" .Values.cluster.name | trunc 63 | trimSuffix "-" }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "capi-workload-cluster.labels" . | nindent 4 }}
+  annotations:
+    # Runs after the Cluster CR is applied. CAPN starts provisioning
+    # asynchronously; the script's wait-loop polls the LXD API for
+    # the LB instance to appear before patching it.
+    helm.sh/hook: post-install,post-upgrade
+    helm.sh/hook-weight: "10"
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: 6
+  ttlSecondsAfterFinished: 600
+  template:
+    metadata:
+      labels:
+        {{- include "capi-workload-cluster.labels" . | nindent 8 }}
+        app.kubernetes.io/component: api-proxy-attach
+    spec:
+      restartPolicy: OnFailure
+      serviceAccountName: {{ printf "%s-api-proxy-hook" .Release.Name | trunc 63 | trimSuffix "-" }}
+      containers:
+        - name: attach
+          image: {{ .Values.apiProxy.image | quote }}
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: CLUSTER_NAME
+              value: {{ .Values.cluster.name | quote }}
+            - name: API_PROXY_PORT
+              value: {{ $port | quote }}
+            - name: WAIT_TIMEOUT_SECONDS
+              value: {{ .Values.apiProxy.lbWaitTimeoutSeconds | quote }}
+            - name: SECRET_DIR
+              value: "/etc/incus-identity"
+          command: ["/bin/sh", "-eu", "-c"]
+          args:
+            - |
+              echo "==> install curl + jq"
+              apk add --no-cache curl jq >/dev/null
+
+              SERVER=$(cat "$SECRET_DIR/server")
+              PROJECT=$(cat "$SECRET_DIR/project")
+
+              # `-k` skips server-cert SAN validation by design.
+              # LXD authorisation is mutual-TLS keyed on the client
+              # cert's fingerprint trusted into LXD's store by role
+              # bootstrap_capn_secret (lxd_trust task), so confidentiality
+              # + authenticity are anchored on the client side.
+              # Using `--cacert server-crt` would fail because the LXD
+              # daemon's self-signed server cert is not issued for the
+              # capi-int gateway IP we connect to (no SAN coverage); LXD
+              # convention is to pin the cert by fingerprint, not by SAN
+              # — which curl does not support natively.
+              CURL="curl -sS --fail-with-body -k \
+                --cert $SECRET_DIR/client-crt \
+                --key  $SECRET_DIR/client-key"
+
+              # CAPN names the haproxy LB instance
+              # `<cluster>-<rand>-<image-flavor>-lb` (e.g.
+              # `lab-default-7bfkj-deb12-lb`). Match by prefix +
+              # `-lb` suffix rather than a positional regex so any
+              # hyphenated middle part (image flavor slug) doesn't
+              # break the wait loop.
+              LB_PREFIX="${CLUSTER_NAME}-"
+              LB_SUFFIX="-lb"
+
+              echo "==> waiting up to ${WAIT_TIMEOUT_SECONDS}s for LB instance ${LB_PREFIX}*${LB_SUFFIX} in project ${PROJECT}"
+              DEADLINE=$(( $(date +%s) + WAIT_TIMEOUT_SECONDS ))
+              LB_NAME=""
+              while [ "$(date +%s)" -lt "$DEADLINE" ]; do
+                LB_NAME=$( $CURL "$SERVER/1.0/instances?project=${PROJECT}" \
+                  | jq -r --arg p "$LB_PREFIX" --arg s "$LB_SUFFIX" \
+                       '.metadata[] | sub("^/1\\.0/instances/"; "") | sub("\\?.*$"; "") | select(startswith($p) and endswith($s))' \
+                  | head -n1 || true )
+                [ -n "$LB_NAME" ] && break
+                sleep 5
+              done
+              [ -n "$LB_NAME" ] || {
+                echo "FAIL: LB instance ${LB_PREFIX}*${LB_SUFFIX} did not appear within ${WAIT_TIMEOUT_SECONDS}s"
+                exit 1
+              }
+              echo "    LB instance: ${LB_NAME}"
+
+              # Idempotent shortcut: device already present with matching listen port.
+              EXISTING=$( $CURL "$SERVER/1.0/instances/${LB_NAME}?project=${PROJECT}" \
+                | jq -r --arg p "tcp:0.0.0.0:${API_PROXY_PORT}" \
+                     '(.metadata.devices."api-proxy" // empty) | select(.listen == $p) | .listen' )
+              if [ -n "$EXISTING" ]; then
+                echo "==> api-proxy device already attached on ${LB_NAME} (listen=${EXISTING}); nothing to do"
+                exit 0
+              fi
+
+              echo "==> attaching api-proxy device on ${LB_NAME} (listen=tcp:0.0.0.0:${API_PROXY_PORT} → connect=tcp:127.0.0.1:6443)"
+              PAYLOAD=$( jq -nc --arg port "$API_PROXY_PORT" \
+                '{devices:{"api-proxy":{type:"proxy",
+                                       listen:("tcp:0.0.0.0:" + $port),
+                                       connect:"tcp:127.0.0.1:6443",
+                                       bind:"host"}}}' )
+              $CURL -X PATCH \
+                -H "Content-Type: application/json" \
+                "$SERVER/1.0/instances/${LB_NAME}?project=${PROJECT}" \
+                -d "$PAYLOAD"
+
+              echo "==> done; api-proxy attached on ${LB_NAME}"
+          volumeMounts:
+            - name: incus-identity
+              mountPath: /etc/incus-identity
+              readOnly: true
+      volumes:
+        - name: incus-identity
+          secret:
+            # Same Secret CAPN itself reads to talk to the LXD API. Owned
+            # by role bootstrap_capn_secret; default name `incus-identity`
+            # comes from the §8 global k8s_lab_infrastructure_secret_name.
+            secretName: {{ .Values.apiProxy.infrastructureSecretName | quote }}
+            defaultMode: 0400

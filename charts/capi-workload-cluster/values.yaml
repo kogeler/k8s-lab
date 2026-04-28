@@ -84,6 +84,65 @@ topology:
     # consumer-tunable).
     replicas: 2
 
+# ---- LXD load balancer / API proxy ------------------------------------------
+# CAPN's `lxc` load-balancer mode (the MVP default in
+# charts/capi-cluster-class) provisions a haproxy LXC instance whose
+# IPv6 endpoint lives on the capi-int LXD bridge — reachable inside
+# the LXD host but NOT from a runner / dev machine on the libvirt
+# network. To expose the workload kube-apiserver outside the LXD host
+# the chart ships a Helm post-install hook Job that PATCHes the LB
+# instance's LXD config to add an `api-proxy` proxy device
+# (`listen=tcp:0.0.0.0:<port>` `connect=tcp:127.0.0.1:6443`
+# `bind=host`) — see templates/api-proxy-attach-job.yaml.
+#
+# Why a hook Job rather than a ClusterClass topology patch:
+# CAPN's LXCCluster.spec.template.spec.loadBalancer.lxc.instanceSpec
+# is a closed CRD schema (only profiles/image/flavor/target — no
+# devices field), so the proxy device cannot flow through the
+# topology API. The hook owns the post-CAPI step inside the chart
+# itself, so every consumer (Molecule e2e, Terraform module, manual
+# `helm install`) gets runner-reachability automatically.
+#
+# Default port is computed deterministically from `cluster.name` via
+# Adler-32 hash mapped into 20000-29999 — see
+# templates/_helpers.tpl `capi-workload-cluster.apiProxyPort`. The
+# helper exposes the port back through the `k8s-lab.io/api-proxy-port`
+# annotation on the Cluster CR so downstream consumers (TF module
+# §16.4 kubeconfig rewrite) read it without recomputing.
+loadBalancer:
+  lxc:
+    # Override the auto-derived port. Useful when two workloads on
+    # the same LXD host happen to hash to the same port (collision
+    # ≈ 0.5% on 10 workloads). Default 0 = use the hash.
+    proxyApiPort: 0
+
+# ---- API proxy attach/detach hook Jobs --------------------------------------
+# Tunables for the post-install / pre-delete hook Jobs that wire (and
+# unwire) the LXD `api-proxy` device on the haproxy LB instance.
+# See templates/api-proxy-{attach,detach}-job.yaml.
+apiProxy:
+  # Base image. Pinned to current stable Alpine; the Job installs
+  # curl + jq at runtime via apk (no bitnami, no vendor-wrapped
+  # tooling images — see memory rules). The script drives the LXD
+  # HTTPS REST API directly with mTLS material from the
+  # `incus-identity` Secret — no `incus`/`lxc` CLI binary needed.
+  image: "alpine:3.21"
+
+  # CAPN identity Secret consumed by the hook Job — same Secret
+  # the CAPN controller reads to talk to the LXD daemon. Default
+  # tracks the §8 global k8s_lab_infrastructure_secret_name owned
+  # by role bootstrap_capn_secret. Override for multi-tenant /
+  # alt-named installs.
+  infrastructureSecretName: "incus-identity"
+
+  # Maximum wait inside the post-install Job for CAPN to materialise
+  # the haproxy LB LXC instance. CAPN reconcile is async with helm
+  # install — on a cold lab host the LB instance typically appears
+  # within 60-180 s of Cluster CR creation. 600 s (10 min) is a
+  # generous buffer that still surfaces real CAPN provisioning
+  # failures within a reasonable timeframe.
+  lbWaitTimeoutSeconds: 600
+
 # ---- Cluster pod / service networking ---------------------------------------
 # Dual-stack support: each cidrBlocks list accepts up to two entries
 # ([IPv4, IPv6]); a single-stack cluster may pass a single entry.

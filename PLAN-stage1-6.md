@@ -101,8 +101,11 @@ end-to-end (`make -C tests/molecule cleanup-bootstrap-delegated-test`,
    → per-workload ClusterClass. На этом этапе Helm-managed add-ons
    автоматически удаляются перед underlying cluster'ом — TF
    dependency graph гарантирует порядок;
-2. **Per-workload artefacts cleanup** — `.artifacts/clusters/<name>.kubeconfig`
-   удаляется TF (`local_file` resource lifecycle) на destroy;
+2. **Per-workload artefacts cleanup** — module §16.4 не пишет
+   файлы (см. §16.4 architectural fence), так что нечего очищать
+   на TF-стороне. Molecule e2e-local debug-копия в
+   `.artifacts/clusters/<name>.kubeconfig` снимается через
+   `make clean-local` (на стадии 5 ниже).
 3. **`pivot_clusterctl_move` reverse** (если был pivot, §18.1) —
    опционально, scope Stage 2;
 4. **`cleanup_bootstrap` Ansible role** (§19.1) — снимает bootstrap

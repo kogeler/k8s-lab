@@ -9,20 +9,17 @@
     _bootstrap_kubeconfig: "{{ _artifacts_root }}/bootstrap.kubeconfig"
     _workload_namespace: "capi-clusters"
     _workload_cluster_name: "{{ k8s_lab_workload_cluster_name }}"
+    # Runner-reachable kubeconfig minted by converge.yml after
+    # capi-workload-cluster's post-install hook attaches the LXD
+    # `proxy` device on the haproxy LB. Every helm test below talks
+    # to the workload API through this rewritten endpoint.
     _workload_kubeconfig: "{{ _artifacts_root }}/clusters/{{ _workload_cluster_name }}.kubeconfig"
     _kubernetes_version: "{{ k8s_lab_kubernetes_version }}"
-    _snapshot_pod_name: "{{ _workload_cluster_name }}-verify-snapshot"
-    # cni-calico release lives on the workload cluster (tigera-operator
-    # namespace); helm test is run on the VM because workload API is
-    # not runner-reachable (capi-int IPv6 endpoint).
-    _vm_helm_binary: "/opt/capi-lab/bin/helm"
-    _vm_workload_kubeconfig: "/opt/capi-lab/etc/{{ _workload_cluster_name }}.kubeconfig"
-    # MetalLB release lives on the workload cluster (metallb-system
-    # namespace). The chart-side helm test deploys a demo Deployment +
+    _metallb_namespace: "metallb-system"
+    # MetalLB chart-side helm test deploys a demo Deployment +
     # LoadBalancer Service named after `tests.demoName` in values.yaml;
     # we read that Service's allocated VIP and drive an external curl
     # against it from the VM through `ext6-ra-peer` to close Gate A.
-    _metallb_namespace: "metallb-system"
     _metallb_demo_service: "k8s-lab-metallb-demo"
     _metallb_demo_port: 80
     _capi_kinds:
@@ -33,11 +30,15 @@
       - { api_version: "infrastructure.cluster.x-k8s.io/v1alpha2", kind: "LXCCluster" }
       - { api_version: "infrastructure.cluster.x-k8s.io/v1alpha2", kind: "LXCMachine" }
   tasks:
-    # `helm test` has no equivalent in kubernetes.core; this is the only
-    # shell fallback in this play. The chart's own `before-hook-creation,
-    # hook-succeeded` policy makes re-runs idempotent (prior test pod is
-    # deleted on the next invocation), so we don't add a synthetic pre-
-    # check; we just don't mask the `changed: true` the run rightly emits.
+    # `helm test` has no equivalent in kubernetes.core; this is the
+    # only shell fallback in this play. Each chart's own
+    # `before-hook-creation,hook-succeeded` policy makes re-runs
+    # idempotent (prior test pod is deleted on the next invocation),
+    # so we don't add a synthetic pre-check; we just don't mask the
+    # `changed: true` the run rightly emits. All `helm test` calls
+    # run on the runner — the workload API is runner-reachable
+    # through the rewritten kubeconfig.
+
     - name: "Verify | e2e-local | run workload chart helm test"
       ansible.builtin.command:
         argv:
@@ -54,28 +55,21 @@
       delegate_to: localhost
       register: _helm_test
 
-    # cni-calico release lives on the workload cluster — helm runs on
-    # the VM (workload API not runner-reachable). Same reasoning as the
-    # workload-chart test for `changed_when` masking: helm test creates
-    # ephemeral pods, `Phase: Succeeded` reaps them via
-    # `hook-delete-policy: hook-succeeded` — re-runnable but mutating.
     - name: "Verify | e2e-local | run cni-calico helm test"
       ansible.builtin.command:
         argv:
-          - "{{ _vm_helm_binary }}"
+          - helm
           - test
           - cni-calico
           - --namespace
           - tigera-operator
           - --kubeconfig
-          - "{{ _vm_workload_kubeconfig }}"
+          - "{{ _workload_kubeconfig }}"
           - --logs
           - --timeout
           - 15m
+      delegate_to: localhost
       register: _cni_helm_test
-      # /opt/capi-lab/etc/<cluster>.kubeconfig is mode 0600 root-owned
-      # (materialised by converge); helm needs to read it.
-      become: true
 
     # ---- MetalLB chart-side acceptance ------------------------------
     # In-cluster proof: controller Available, speaker DS rolled out,
@@ -86,36 +80,39 @@
     - name: "Verify | e2e-local | run metallb-config helm test"
       ansible.builtin.command:
         argv:
-          - "{{ _vm_helm_binary }}"
+          - helm
           - test
           - metallb-config
           - --namespace
           - "{{ _metallb_namespace }}"
           - --kubeconfig
-          - "{{ _vm_workload_kubeconfig }}"
+          - "{{ _workload_kubeconfig }}"
           - --logs
           - --timeout
           - 15m
+      delegate_to: localhost
       register: _metallb_helm_test
-      become: true
 
     # ---- Gate A external-segment closure ----------------------------
     # The chart-side hook left the demo Deployment + Service running
     # (`hook-delete-policy: before-hook-creation` only). Read the VIP
-    # from the workload cluster and drive an HTTP GET against it from
-    # the VM. The curl runs on the VM (no `delegate_to: localhost`)
-    # so the packet egresses through `ext6-ra-peer` (2001:db8:42:100::1)
-    # → veth → `br-ext6` → eth1 of the speaker leader → kube-proxy →
-    # backend Pod. Round-trip 200 + body "ok\n" == Gate A green.
+    # from the workload cluster (runner-side via rewritten kubeconfig)
+    # and drive an HTTP GET against it from the VM. The curl runs on
+    # the VM (no `delegate_to: localhost`) so the packet egresses
+    # through `ext6-ra-peer` (2001:db8:42:100::1) → veth → `br-ext6`
+    # → eth1 of the speaker leader → kube-proxy → backend Pod.
+    # Round-trip 200 + body "ok\n" == Gate A green.
     - name: "Verify | e2e-local | read MetalLB demo Service VIP"
       kubernetes.core.k8s_info:
-        kubeconfig: "{{ _vm_workload_kubeconfig }}"
+        kubeconfig: "{{ _workload_kubeconfig }}"
         api_version: v1
         kind: Service
         namespace: "{{ _metallb_namespace }}"
         name: "{{ _metallb_demo_service }}"
       register: _metallb_demo_svc
-      become: true
+      delegate_to: localhost
+      vars:
+        ansible_python_interpreter: "{{ ansible_playbook_python }}"
 
     - name: "Verify | e2e-local | assert MetalLB allocated a VIP"
       ansible.builtin.assert:
@@ -146,7 +143,6 @@
       retries: 6
       delay: 5
       until: _metallb_external_curl.status == 200
-      become: false
 
     - name: "Verify | e2e-local | assert external GET body is 'ok'"
       ansible.builtin.assert:
@@ -171,147 +167,50 @@
       vars:
         ansible_python_interpreter: "{{ ansible_playbook_python }}"
 
-    - name: "Verify | e2e-local | read workload kubeconfig Secret"
+    # ---- Runner-reachable nodes-ready acceptance --------------------
+    # converge.yml already wrote the rewritten kubeconfig to
+    # `.artifacts/clusters/<cluster>.kubeconfig`. Re-query workload
+    # Nodes through it and assert all are Ready=True. This proves the
+    # full path runner → libvirt → VM:<api-proxy-port> → LXD proxy
+    # device → haproxy LB → CP backend → kube-apiserver works end-to-
+    # end. CNI is in by now (helm test cni-calico above), so Ready=True
+    # is the right bar.
+    - name: "Verify | e2e-local | runner-side workload Nodes through rewritten kubeconfig"
       kubernetes.core.k8s_info:
-        kubeconfig: "{{ _bootstrap_kubeconfig }}"
+        kubeconfig: "{{ _workload_kubeconfig }}"
         api_version: v1
-        kind: Secret
-        namespace: "{{ _workload_namespace }}"
-        name: "{{ _workload_cluster_name }}-kubeconfig"
-      register: _wl_kubeconfig_secret
-      delegate_to: localhost
-      vars:
-        ansible_python_interpreter: "{{ ansible_playbook_python }}"
-
-    - name: "Verify | e2e-local | assert workload kubeconfig Secret has body"
-      ansible.builtin.assert:
-        that:
-          - (_wl_kubeconfig_secret.resources | length) == 1
-          - (_wl_kubeconfig_secret.resources[0].data.value | default('')) | length > 0
-        fail_msg: >-
-          {{ _workload_cluster_name }}-kubeconfig Secret missing or empty
-          in {{ _workload_namespace }}.
-
-    - name: "Verify | e2e-local | ensure runner-side clusters/ dir exists"
-      ansible.builtin.file:
-        path: "{{ _workload_kubeconfig | dirname }}"
-        state: directory
-        mode: "0700"
-      delegate_to: localhost
-
-    - name: "Verify | e2e-local | export workload kubeconfig for inspection"
-      ansible.builtin.copy:
-        dest: "{{ _workload_kubeconfig }}"
-        content: "{{ _wl_kubeconfig_secret.resources[0].data.value | b64decode }}"
-        mode: "0600"
-      delegate_to: localhost
-
-    # The workload API endpoint in the kubeconfig is an LXD-bridge IPv6
-    # address that is NOT reachable from the runner — only from inside
-    # the bootstrap cluster. We therefore run `kubectl get nodes` from a
-    # short-lived Pod on the bootstrap cluster, scheduled under the test
-    # ServiceAccount the workload chart already provisions.
-    - name: "Verify | e2e-local | clean any prior workload-nodes snapshot pod"
-      kubernetes.core.k8s:
-        kubeconfig: "{{ _bootstrap_kubeconfig }}"
-        state: absent
-        api_version: v1
-        kind: Pod
-        namespace: "{{ _workload_namespace }}"
-        name: "{{ _snapshot_pod_name }}"
-        wait: true
-      delegate_to: localhost
-      vars:
-        ansible_python_interpreter: "{{ ansible_playbook_python }}"
-
-    - name: "Verify | e2e-local | apply workload-nodes snapshot pod"
-      kubernetes.core.k8s:
-        kubeconfig: "{{ _bootstrap_kubeconfig }}"
-        state: present
-        definition:
-          apiVersion: v1
-          kind: Pod
-          metadata:
-            name: "{{ _snapshot_pod_name }}"
-            namespace: "{{ _workload_namespace }}"
-          spec:
-            serviceAccountName: "{{ _workload_cluster_name }}-test"
-            restartPolicy: Never
-            containers:
-              - name: probe
-                image: alpine:3.21
-                imagePullPolicy: IfNotPresent
-                env:
-                  - name: KUBECTL_VERSION
-                    value: "{{ _kubernetes_version }}"
-                  - name: NAME
-                    value: "{{ _workload_cluster_name }}"
-                  - name: NS
-                    value: "{{ _workload_namespace }}"
-                command: ["/bin/sh", "-ceu"]
-                args:
-                  - |
-                    wget -qO /tmp/kubectl \
-                      "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/amd64/kubectl"
-                    chmod +x /tmp/kubectl
-                    /tmp/kubectl -n "$NS" get secret "${NAME}-kubeconfig" \
-                      -o jsonpath="{.data.value}" \
-                      | base64 -d > /tmp/wl.kubeconfig
-                    /tmp/kubectl --kubeconfig=/tmp/wl.kubeconfig get nodes -o wide
-      delegate_to: localhost
-      vars:
-        ansible_python_interpreter: "{{ ansible_playbook_python }}"
-
-    - name: "Verify | e2e-local | wait for snapshot pod to reach a terminal phase"
-      kubernetes.core.k8s_info:
-        kubeconfig: "{{ _bootstrap_kubeconfig }}"
-        api_version: v1
-        kind: Pod
-        namespace: "{{ _workload_namespace }}"
-        name: "{{ _snapshot_pod_name }}"
-      register: _snapshot_pod
-      until: >-
-        (_snapshot_pod.resources | length) > 0
-        and (_snapshot_pod.resources[0].status.phase | default('')) in ['Succeeded', 'Failed']
-      retries: 60
+        kind: Node
+      register: _wl_nodes_runner
+      retries: 12
       delay: 5
+      until: >-
+        (_wl_nodes_runner.resources | default([])) | length ==
+        ((k8s_lab_workload_controlplane_count | int) +
+         (k8s_lab_workload_worker_count | int))
       delegate_to: localhost
       vars:
         ansible_python_interpreter: "{{ ansible_playbook_python }}"
 
-    - name: "Verify | e2e-local | fetch snapshot pod logs"
-      kubernetes.core.k8s_log:
-        kubeconfig: "{{ _bootstrap_kubeconfig }}"
-        api_version: v1
-        kind: Pod
-        namespace: "{{ _workload_namespace }}"
-        name: "{{ _snapshot_pod_name }}"
-      register: _workload_nodes
-      delegate_to: localhost
-      vars:
-        ansible_python_interpreter: "{{ ansible_playbook_python }}"
-
-    - name: "Verify | e2e-local | assert snapshot pod succeeded"
+    - name: "Verify | e2e-local | assert all workload Nodes Ready=True (runner-side)"
       ansible.builtin.assert:
         that:
-          - (_snapshot_pod.resources[0].status.phase | default('')) == 'Succeeded'
+          - (_wl_nodes_runner.resources | length) ==
+            ((k8s_lab_workload_controlplane_count | int) +
+             (k8s_lab_workload_worker_count | int))
+          - (_wl_nodes_runner.resources
+              | map(attribute='status.conditions')
+              | map('selectattr', 'type', 'eq', 'Ready')
+              | map('first')
+              | map(attribute='status')
+              | unique
+              | list) == ['True']
         fail_msg: >-
-          workload-nodes snapshot pod ended in phase
-          {{ _snapshot_pod.resources[0].status.phase | default('?') }}.
-          logs: {{ _workload_nodes.log | default('<none>') }}
-
-    - name: "Verify | e2e-local | delete snapshot pod"
-      kubernetes.core.k8s:
-        kubeconfig: "{{ _bootstrap_kubeconfig }}"
-        state: absent
-        api_version: v1
-        kind: Pod
-        namespace: "{{ _workload_namespace }}"
-        name: "{{ _snapshot_pod_name }}"
-        wait: true
-      delegate_to: localhost
-      vars:
-        ansible_python_interpreter: "{{ ansible_playbook_python }}"
+          Runner-side Node check via {{ _workload_kubeconfig }} failed.
+          Got {{ _wl_nodes_runner.resources | length }} Nodes, conditions:
+          {{ _wl_nodes_runner.resources
+             | map(attribute='status.conditions')
+             | map('selectattr', 'type', 'eq', 'Ready')
+             | map('first') | list }}
 
     - name: "Verify | e2e-local | print compact state"
       ansible.builtin.debug:
@@ -320,6 +219,7 @@
           - "{{ _cni_helm_test.stdout_lines | default([]) }}"
           - "{{ _metallb_helm_test.stdout_lines | default([]) }}"
           - "metallb VIP={{ _metallb_demo_vip | default('<unread>') }} external_status={{ _metallb_external_curl.status | default('<none>') }}"
+          - "workload kubeconfig = {{ _workload_kubeconfig }} ({{ _wl_nodes_runner.resources | default([]) | length }} Nodes Ready)"
           - >-
             {{ _capi_snapshot.results
                | map(attribute='resources')
@@ -327,4 +227,3 @@
                | map('map', attribute='metadata.name')
                | map('list')
                | list }}
-          - "{{ (_workload_nodes.log | default('')).split('\n') }}"

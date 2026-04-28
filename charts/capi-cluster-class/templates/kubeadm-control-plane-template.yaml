@@ -100,7 +100,44 @@ spec:
               {{- with $cp.kubeletExtraArgs }}
               {{- toYaml . | nindent 14 }}
               {{- end }}
+        # Substrate-required eth1 RA reception baseline. CABPK inlines
+        # these into the node's user-data as `write_files`, so the
+        # files exist before kubelet / kube-proxy / MetalLB speaker
+        # come up. `accept_ra=2` is required because workload nodes
+        # have `forwarding=1` for k8s pod networking — default
+        # `accept_ra=1` ignores RA when forwarding is on. The
+        # systemd-networkd drop-in pairs `IPv6AcceptRA=yes` so the
+        # interface is networkd-managed (not unmanaged + kernel-only).
+        # Effect: eth1 SLAAC's a global IPv6 from the upstream RA,
+        # so MetalLB speaker can send NDP replies with a global
+        # source IPv6 instead of failing `network is unreachable`.
+        files:
+          - path: /etc/sysctl.d/99-capi-ra.conf
+            owner: root:root
+            permissions: "0644"
+            content: |
+              net.ipv6.conf.eth1.disable_ipv6 = 0
+              net.ipv6.conf.eth1.accept_ra = 2
+              net.ipv6.conf.eth1.accept_ra_defrtr = 1
+          - path: /etc/systemd/network/30-capi-ext.network
+            owner: root:root
+            permissions: "0644"
+            content: |
+              [Match]
+              Name=eth1
+
+              [Network]
+              DHCP=no
+              LinkLocalAddressing=ipv6
+              IPv6AcceptRA=yes
         preKubeadmCommands:
+          # Substrate-required: load the eth1 RA sysctls + reload
+          # systemd-networkd so the matching .network file
+          # (KubeadmConfigSpec.files above) takes effect before
+          # kubeadm runs anything that depends on eth1 being SLAAC'd
+          # (e.g. MetalLB speaker NDP replies, gateway routing).
+          - sysctl --load=/etc/sysctl.d/99-capi-ra.conf
+          - networkctl reload
           # Substrate-required: pin kube-proxy to nftables mode so the
           # workload-cluster CNI (charts/cni-calico Installation CR) can
           # run with `linuxDataplane: Nftables`. Calico's docs state

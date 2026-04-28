@@ -1,0 +1,119 @@
+{{/*
+Helm pre-delete hook Job: detach the LXD `proxy` device from the
+CAPN-managed haproxy LB instance before `helm uninstall` removes
+the Cluster CR (which causes CAPN to delete the LB instance, taking
+the device with it).
+
+WHY A SEPARATE pre-delete Job
+=============================
+On `helm uninstall <workload>` Cluster CR deletion triggers CAPN to
+tear down its LXC instances (CP, workers, LB). The `proxy` device
+itself goes away with the LB instance, so strictly speaking a clean
+uninstall does NOT leak the device. But:
+
+  1) If the user re-installs the SAME cluster name shortly after,
+     the new LB will get the same Adler-32 port — and the listener
+     is bound `bind=host` on the LXD host's TCP stack. If anything
+     is still holding the listener (rarely, but seen on slow LXD
+     reconciles), the new attach Job's PATCH succeeds but the
+     listener is not reachable.
+
+  2) On `helm uninstall --keep-history` or partial-failure paths,
+     symmetry helps: every Helm-installed device has a
+     Helm-removed counterpart, so the chart owns the full lifecycle
+     of the resource it created.
+
+The Job is best-effort: it does not fail uninstall if the LB
+instance has already been removed by CAPN (`exit 0` on
+404 / instance-gone). It is the symmetric inverse of the attach Job.
+*/}}
+{{- $port := include "capi-workload-cluster.apiProxyPort" . | int -}}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ printf "%s-api-proxy-detach" .Values.cluster.name | trunc 63 | trimSuffix "-" }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "capi-workload-cluster.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/hook: pre-delete
+    helm.sh/hook-weight: "0"
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: 2
+  ttlSecondsAfterFinished: 600
+  template:
+    metadata:
+      labels:
+        {{- include "capi-workload-cluster.labels" . | nindent 8 }}
+        app.kubernetes.io/component: api-proxy-detach
+    spec:
+      restartPolicy: OnFailure
+      serviceAccountName: {{ printf "%s-api-proxy-hook" .Release.Name | trunc 63 | trimSuffix "-" }}
+      containers:
+        - name: detach
+          image: {{ .Values.apiProxy.image | quote }}
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: CLUSTER_NAME
+              value: {{ .Values.cluster.name | quote }}
+            - name: API_PROXY_PORT
+              value: {{ $port | quote }}
+            - name: SECRET_DIR
+              value: "/etc/incus-identity"
+          command: ["/bin/sh", "-eu", "-c"]
+          args:
+            - |
+              echo "==> install curl + jq"
+              apk add --no-cache curl jq >/dev/null
+
+              SERVER=$(cat "$SECRET_DIR/server")
+              PROJECT=$(cat "$SECRET_DIR/project")
+
+              # `-k` mirrors api-proxy-attach-job.yaml — see that
+              # template for the trust-on-client-fingerprint rationale.
+              CURL="curl -sS -k \
+                --cert $SECRET_DIR/client-crt \
+                --key  $SECRET_DIR/client-key"
+
+              LB_PREFIX="${CLUSTER_NAME}-"
+              LB_SUFFIX="-lb"
+              LB_NAME=$( $CURL "$SERVER/1.0/instances?project=${PROJECT}" \
+                | jq -r --arg p "$LB_PREFIX" --arg s "$LB_SUFFIX" \
+                     '.metadata[] | sub("^/1\\.0/instances/"; "") | sub("\\?.*$"; "") | select(startswith($p) and endswith($s))' \
+                | head -n1 || true )
+
+              if [ -z "$LB_NAME" ]; then
+                echo "==> no LB instance ${LB_PREFIX}*${LB_SUFFIX}; nothing to detach"
+                exit 0
+              fi
+              echo "    LB instance: ${LB_NAME}"
+
+              EXISTING=$( $CURL "$SERVER/1.0/instances/${LB_NAME}?project=${PROJECT}" \
+                | jq -r '.metadata.devices."api-proxy" // empty | type' )
+              if [ "$EXISTING" != "object" ]; then
+                echo "==> no api-proxy device on ${LB_NAME}; nothing to detach"
+                exit 0
+              fi
+
+              echo "==> detaching api-proxy device from ${LB_NAME}"
+              # PATCH with `null` value removes the device key; surrounding
+              # devices (root disk, NICs, …) are left intact by LXD's
+              # merge-on-PATCH semantics.
+              PAYLOAD='{"devices":{"api-proxy":null}}'
+              $CURL -X PATCH \
+                -H "Content-Type: application/json" \
+                "$SERVER/1.0/instances/${LB_NAME}?project=${PROJECT}" \
+                -d "$PAYLOAD"
+
+              echo "==> done; api-proxy detached"
+          volumeMounts:
+            - name: incus-identity
+              mountPath: /etc/incus-identity
+              readOnly: true
+      volumes:
+        - name: incus-identity
+          secret:
+            secretName: {{ .Values.apiProxy.infrastructureSecretName | quote }}
+            defaultMode: 0400

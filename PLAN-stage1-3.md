@@ -48,8 +48,12 @@ null_resource'ы**, провайдеры разрешаются runtime-style:
 3. **Wait + read workload kubeconfig** — `kubernetes_resources` data
    source (provider = mgmt) polling до появления Secret
    `<cluster_name>-kubeconfig` в `capi-clusters`. `data.value` (b64)
-   декодируется в local + (опционально) write в `local_file` resource
-   для consumer-side артефакта.
+   декодируется в local; rewritten в local (replace internal
+   capi-int IPv6 → `https://<lxd_host_address>:<api_proxy_port>` +
+   inject `tls-server-name`); используется как inline config для
+   workload helm provider. **На filesystem не пишется** — output
+   sensitive, consumer'у нужен файл — `terraform output -raw
+   kubeconfig` (см. §16.7 + architectural fence в §16.4 epilogue).
 4. `helm_release.cni_calico` — chart `charts/cni-calico/`, provider =
    `helm` aliased на workload kubeconfig (получен из шага 3).
    `depends_on` на (2) + workload kubeconfig data.
@@ -160,6 +164,41 @@ hardcoded:
 cluster bring-up'е через kubeadm init. Live patch ConfigMap'а на
 running кластере (ad-hoc) ломает conntrack state на лету — proper
 declarative path только через kubeadm init.**
+
+**Step 15 (2026-04-28) — bumped to 0.6.3** ships eth1 RA reception
+baseline as `KubeadmConfigSpec.files` on both
+`KubeadmControlPlaneTemplate` and `KubeadmConfigTemplate`. Two files
+per node:
+
+* `/etc/sysctl.d/99-capi-ra.conf` — `net.ipv6.conf.eth1.{disable_ipv6=0,
+  accept_ra=2, accept_ra_defrtr=1}`. `accept_ra=2` is required because
+  workload nodes run with `forwarding=1` for k8s pod networking, and
+  the default `accept_ra=1` ignores RA when forwarding is on.
+* `/etc/systemd/network/30-capi-ext.network` — `[Match] Name=eth1
+  [Network] DHCP=no LinkLocalAddressing=ipv6 IPv6AcceptRA=yes`.
+
+Paired `preKubeadmCommands` run `sysctl --load=/etc/sysctl.d/99-capi-ra.conf`
++ `networkctl reload` so the config is live before kubelet,
+kube-proxy, and MetalLB speaker come up. Effect: eth1 SLAAC's a
+global IPv6 from the upstream RA, which MetalLB speaker uses as
+the source IP for NDP replies on announced VIPs.
+
+The CAPN haproxy LB instance does **not** receive an LXD proxy
+device through the topology API — `LXCCluster.spec.loadBalancer.lxc
+.instanceSpec` is a closed CRD schema (only `{profiles, image,
+flavor, target}`), no `devices` field. The proxy device is
+attached post-CAPI by `charts/capi-workload-cluster/`'s own Helm
+hook Jobs (`templates/api-proxy-{attach,detach}-job.yaml`) which
+PATCH the LXD HTTPS REST API directly with mTLS material from the
+`incus-identity` Secret; see §16.7 for the runner-reachability
+flow.
+
+Memory rules applied in Step 15:
+* `feedback_chart_required_values_hardcoded.md` — files block hardcoded
+  in template (substrate-required, not values-tunable);
+* `feedback_active_provisioning_monitor.md` — substrate state monitor
+  alongside test stdout caught CRD admission errors live in the
+  `TopologyReconciled` condition.
 
 Содержит реусабельный CAPI topology-контракт для CAPN unprivileged
 kubeadm path. Целевой API-surface зафиксирован на:
@@ -485,6 +524,67 @@ KubeProxyConfiguration в KCPT (§16.2 Step 13), что в name-versioning
 — любой workload Cluster CR, ссылающийся на ClusterClass через
 classRef.name, должен резолвить новое имя. Annotation pin держит
 этот invariant.**
+
+**Step 15 (2026-04-28) — bumped to 0.7.2** в паре с
+charts/capi-cluster-class 0.6.3 (rotation contract). Изменения в
+этом чарте:
+
+* **Per-workload deterministic API proxy port** — helper
+  `capi-workload-cluster.apiProxyPort` computeит port из имени
+  кластера через **Adler-32 hash** (Sprig `adler32sum`, returns
+  decimal string parseable через `atoi`):
+  `add 20000 (mod (atoi (adler32sum .Values.cluster.name)) 10000)`.
+  Pure function — same name → same port across re-installs.
+  Range 20000-29999 (10k bucket'ов; collision rate <1% на 10
+  workload'ах). Override через `loadBalancer.lxc.proxyApiPort`
+  (integer, default 0 = use hash).
+* **Cluster CR.metadata.annotations** — добавляется
+  `k8s-lab.io/api-proxy-port: "<computed>"` (string-quoted decimal).
+  **Single source of truth** для downstream consumers (Molecule
+  verify.yml, future TF `workload_cluster` module): port читается
+  из CR-аннотации, не вычисляется заново.
+* **Helm-only LXD `proxy` device delivery** — chart ships two hook
+  Jobs (`templates/api-proxy-{attach,detach}-job.yaml`) which patch
+  the haproxy LB instance through the **LXD HTTPS REST API**:
+  - `post-install,post-upgrade` Job (`api-proxy-attach`): waits for
+    CAPN to materialise `<cluster>-<suffix>-lb` LXC instance, then
+    `PATCH /1.0/instances/<lb>?project=<p>` body
+    `{"devices":{"api-proxy":{"type":"proxy","listen":"tcp:0.0.0.0:<port>","connect":"tcp:127.0.0.1:6443","bind":"host"}}}`
+    — LXD merge-on-PATCH adds the device without disturbing the
+    instance's other devices (root disk, NICs).
+  - `pre-delete` Job (`api-proxy-detach`): symmetric inverse —
+    `PATCH` with `{"devices":{"api-proxy":null}}` removes the key.
+  Image: `alpine:3.21`, runtime `apk add curl jq` (no incus/lxc CLI
+  binary). Driven against the LXD daemon URL + mTLS material from
+  the `incus-identity` Secret (same Secret CAPN itself reads —
+  owned by role `bootstrap_capn_secret`). New values knobs:
+  `apiProxy.image`, `apiProxy.infrastructureSecretName`,
+  `apiProxy.lbWaitTimeoutSeconds`.
+
+  **Why a hook Job rather than ClusterClass topology patch:** CAPN
+  v1alpha2 declares `LXCCluster.spec.template.spec.loadBalancer.lxc
+  .instanceSpec` as a closed CRD schema (only `profiles/image/
+  flavor/target` — no `devices` field). A JSON patch through the
+  ClusterClass topology API to add the `devices` block fails at
+  admission with `field not declared in schema`. A post-install
+  Helm hook is the only declarative path that keeps the device
+  attach inside chart-owned lifecycle (every consumer — Molecule,
+  TF, manual `helm install` — gets it for free).
+* Annotation pin bumped `k8s-lab.io/capi-cluster-class-chart-version`
+  → `"0.6.3"`. ClusterClass / *Template имена ротируются на
+  `capn-default-0-6-3`.
+
+Memory rules applied in Step 15:
+* `feedback_chart_required_values_hardcoded.md` — port computation
+  formula hardcoded in helper, override only via legitimate optional
+  values knob;
+* `feedback_test_artifact_naming.md` — annotation prefix
+  `k8s-lab.io/` for project-owned annotation key;
+* `feedback_helm_first_no_raw_manifests.md` — runner-reachability
+  delivered through the chart's own hook Jobs, not through inline
+  shell in Molecule / `null_resource` in TF;
+* `feedback_no_bitnami_images.md` — alpine + apk for hook Job
+  image, no vendored client tooling.**
 
 Содержит один Cluster CR (`cluster.x-k8s.io/v1beta2`), который
 ссылается на ClusterClass из §16.2 через `spec.topology.classRef`,
@@ -857,11 +957,18 @@ Module не принимает substrate-required CR-поля (они hardcoded 
   * `metallb_extra_node_selectors` (map(string), default `{}`) —
     stacked поверх substrate-required CP-exclusion (§17.3 chart).
 
-* **Workload kubeconfig output**:
-  * `workload_kubeconfig_path` (string, optional) — если задан,
-    module пишет workload kubeconfig в этот path через
-    `local_file` resource (mode 0600, owner = TF runner). Default
-    empty = нет файла; consumer reads kubeconfig via TF output.
+* **Workload kubeconfig endpoint rewrite**:
+  * `lxd_host_address` (string, required) — runner-reachable
+    адрес LXD host'а (для local Vagrant — Vagrant VM IP, для prod
+    — public IP / DNS name LXD host'а). Используется для
+    kubeconfig server URL rewrite (см. §16.7).
+  * Module **не пишет kubeconfig в файл**. Workload kubeconfig
+    живёт в TF state (sensitive); inline конфигурирует workload
+    helm provider; экспортируется через `output "kubeconfig"
+    { sensitive = true }`. Если consumer хочет файл — это
+    consumer-side concern: `terraform output -raw kubeconfig >
+    path.kubeconfig` или wrapped Makefile target. Подробности —
+    §16.7 + architectural fence ниже.
 
 ### Internals (helm_release chain)
 
@@ -883,32 +990,35 @@ Module не принимает substrate-required CR-поля (они hardcoded 
    `local-exec sh -c 'kubectl get secret ... -w --timeout=20m'` —
    `kubernetes_resource` data source сам по себе не имеет
    poll-until-exists semantic'ов, hence the `null_resource`-shim;
-4. **Decode kubeconfig**: `data.kubernetes_resource` (после wait)
-   читает Secret, `local.workload_kubeconfig = base64decode(...)`;
-5. (Опционально) `local_file.workload_kubeconfig` — если задан
-   `workload_kubeconfig_path` input, материализует kubeconfig в
-   файл (mode 0600);
-6. `provider "helm"` aliased на workload — конфигурируется через
+4. **Decode + rewrite kubeconfig**: `data.kubernetes_resource`
+   (после wait) читает Secret. `local.workload_kubeconfig_raw =
+   base64decode(...)`. `local.workload_kubeconfig` — rewritten
+   копия с server URL заменённым на
+   `https://<lxd_host_address>:<api_proxy_port>` (port читается
+   из Cluster CR's `metadata.annotations["k8s-lab.io/api-proxy-port"]`)
+   + inject `tls-server-name: kubernetes.default.svc`. **На
+   filesystem не пишется** — никаких `local_file` resource'ов;
+5. `provider "helm"` aliased на workload — конфигурируется через
    `kubernetes { config = local.workload_kubeconfig }` (inline
-   string, не path). Это keeps module hermetic: kubeconfig никогда
-   не trittenет файловую систему если consumer не запросил;
-7. `helm_release.cni_calico` — provider workload. Ставит
+   string, не path). Module hermetic: kubeconfig живёт только в
+   TF state (sensitive=true);
+6. `helm_release.cni_calico` — provider workload. Ставит
    `charts/cni-calico/` в namespace `tigera-operator` (chart owns
    namespace). `depends_on` на (4);
-8. `null_resource.helm_test_cni_calico` — `local-exec` вызывает
+7. `null_resource.helm_test_cni_calico` — `local-exec` вызывает
    `helm test cni-calico --kubeconfig <tmpfile> --namespace
    tigera-operator --timeout 15m --logs`. Failure → TF apply fails
    с понятным выводом (`triggers` includes chart version + release
    ID, поэтому повторный apply re-runs тест на upgrade);
-9. `helm_release.metallb` — provider workload. Ставит
+8. `helm_release.metallb` — provider workload. Ставит
    `charts/metallb/` (subchart wrapper над upstream) в
    `metallb-system`. `depends_on = [null_resource.helm_test_cni_calico]`
    — CNI зелёный → MetalLB можно ставить;
-10. `helm_release.metallb_config` — provider workload. Ставит
-    `charts/metallb-config/` в `metallb-system`. `depends_on =
-    [helm_release.metallb]` — split rationale §17.1 (CRDs first,
-    CRs second);
-11. `null_resource.helm_test_metallb_config` — `local-exec` вызывает
+9. `helm_release.metallb_config` — provider workload. Ставит
+   `charts/metallb-config/` в `metallb-system`. `depends_on =
+   [helm_release.metallb]` — split rationale §17.3 (CRDs first,
+   CRs second);
+10. `null_resource.helm_test_metallb_config` — `local-exec` вызывает
     `helm test metallb-config --kubeconfig <tmpfile> --namespace
     metallb-system --timeout 15m --logs`. Failure → TF apply fails.
 
@@ -942,6 +1052,37 @@ in-cluster apply hermetic relative to runner FS state.
 проявлений: bump KubeadmControlPlaneTemplate в одном workload не
 требует bump'а в другом). `cluster_class_namespace = cluster_namespace`
 default keeps each workload self-contained.
+
+### Architectural fence: TF module имеет zero filesystem coupling с Molecule artefacts
+
+Это hard contract:
+
+* **TF module §16.4 не пишет ни в `.artifacts/clusters/`, ни в
+  любую другую path под `.artifacts/`.** Никаких `local_file`
+  resource'ов, никаких `provisioner "local-exec"` пишущих файлы.
+  Workload kubeconfig живёт только в TF state (sensitive=true) и
+  inline в helm provider config'е.
+* **TF module не читает файлы из `.artifacts/`** (за исключением
+  `var.mgmt_kubeconfig_path` который указывает на bootstrap
+  kubeconfig — но это input, не assumption о Molecule pipeline).
+* **Molecule e2e-local artefacts в `.artifacts/clusters/<cluster>.kubeconfig`**
+  — debug-копия workload kubeconfig (raw Secret content, internal
+  capi-int IPv6 endpoint — НЕ rewritten) для operator inspection.
+  Никакая TF / Ansible / Helm task этот файл не consume'ит.
+* **Если consumer хочет workload kubeconfig как файл** — это его
+  concern вне module'а:
+  * `terraform output -raw kubeconfig > path.kubeconfig` в
+    consumer-side wrapper Makefile;
+  * или просто `kubectl --context=<...>` через kubeconfig merger
+    из output stream.
+
+Этот fence гарантирует:
+* TF apply воспроизводим с zero state на runner'е (никаких
+  pre-existing файлов кроме `mgmt_kubeconfig_path`);
+* Molecule harness и TF flow остаются independent — каждый владеет
+  своими debug-артефактами;
+* Multiple TF workspaces / multiple Molecule scenarios могут
+  сосуществовать без stomp'инга друг друга.
 
 ### CAPI invariants module enforces
 
@@ -1007,11 +1148,9 @@ aliases), fixture их не переопределяет.
 * `mgmt_kubeconfig_path` (default `${path.module}/../../../../../.artifacts/bootstrap.kubeconfig`)
   — pre-pivot path к bootstrap k3s kubeconfig'у. Post-pivot (см.
   §18.3) consumer переключает на `.artifacts/mgmt.kubeconfig`
-  через tfvar override;
-* `workload_kubeconfig_path` (default
-  `${path.module}/../../../../../.artifacts/clusters/<cluster_name>.kubeconfig`)
-  — где module пишет workload kubeconfig (через `local_file` resource
-  внутри module, §16.4 outputs);
+  через tfvar override. Это **input** module'у, не assumption о
+  Molecule pipeline — fixture default просто tracks reference
+  layout `export_artifacts` role'а;
 * `cluster_class_chart_version` (default tracks §8
   `k8s_lab_capi_cluster_class_chart_version`);
 * `cluster_workload_chart_version` (default tracks §8
@@ -1032,8 +1171,8 @@ aliases), fixture их не переопределяет.
 module "workload_cluster" {
   source = "../../../../../terraform/modules/workload_cluster"
 
-  mgmt_kubeconfig_path     = var.mgmt_kubeconfig_path
-  workload_kubeconfig_path = var.workload_kubeconfig_path
+  mgmt_kubeconfig_path = var.mgmt_kubeconfig_path
+  lxd_host_address     = var.k8s_lab_lxd_host_address
 
   cluster_name        = var.k8s_lab_workload_cluster_name
   cluster_namespace   = "capi-clusters"
@@ -1073,7 +1212,14 @@ module "workload_cluster" {
 * `cluster_name`, `cluster_namespace` — passthrough (для cleanup
   orchestration §19.2);
 * `cluster_class_name` — passthrough;
-* `workload_kubeconfig_path` — echo input'а если materialized;
+* `kubeconfig` (sensitive) — rewritten workload kubeconfig content
+  как string. Consumer'у нужен файл — `terraform output -raw
+  kubeconfig > path.kubeconfig` через consumer-side wrapper
+  Makefile target. Module не пишет файл сам (см. §16.4
+  architectural fence);
+* `api_proxy_port` — passthrough Cluster annotation
+  `k8s-lab.io/api-proxy-port` для downstream consumers
+  (например, kubectl wrapper'ов с `--server` override);
 * `helm_releases` — passthrough (smoke-check fixture).
 
 ## 16.6. Phase 5 — Apply workload cluster
@@ -1131,8 +1277,15 @@ Acceptance:
    chart-side acceptance (см. §17.3): demo Service получил VIP из
    pool, in-cluster HTTP probe от driver Pod к VIP returns 200.
 8. `terraform output -raw kubeconfig` возвращает рабочий
-   workload kubeconfig (строкой). Если `workload_kubeconfig_path`
-   задан — тот же kubeconfig материализован файлом mode 0600.
+   workload kubeconfig (строкой) с rewritten server URL
+   (`https://<lxd_host_address>:<api_proxy_port>` + injected
+   `tls-server-name`). Module **не пишет kubeconfig в файл** — это
+   consumer-side concern (см. §16.4 architectural fence).
+9. Acceptance smoke: `kubectl --kubeconfig <(terraform output -raw
+   kubeconfig) get nodes` с runner'а возвращает все workload-nodes
+   Ready. Это runner-side verification что LXD proxy device + TLS
+   chain работают end-to-end (без in-cluster jump-pod, как было в
+   pre-Step-15 Molecule e2e-local).
 
 Failure любого acceptance criterion → TF apply фейлится; state
 помечен tainted; повторный apply re-runs только failed resource'ы
@@ -1254,38 +1407,132 @@ mount — `kubeadm join` preflight `SystemVerification` валится
 capi-controlplane (`/proc/config.gz` физически не существует на
 Debian 13 kernel — `CONFIG_IKCONFIG=n`).
 
-## 16.7. Workload kubeconfig export
+## 16.7. Workload kubeconfig pipeline (in-state) + API endpoint rewrite
 
-Workload kubeconfig export — **internal step §16.4 module'а**, не
-отдельная Phase. Module:
+Workload kubeconfig pipeline — **internal step §16.4 module'а**, не
+отдельная Phase, **никогда не пишется в файл**. Module:
 
 1. ждёт Secret `<cluster_name>-kubeconfig` в `<cluster_namespace>`
    через `null_resource` + `kubectl get secret -w --timeout=20m`
    (mgmt kubeconfig);
 2. читает Secret через `data.kubernetes_resource` (server-side,
    нативный TF), декодирует `data.value` (base64) в local;
-3. конфигурирует workload-aliased helm provider inline через
-   `kubernetes { config = local.workload_kubeconfig }` — kubeconfig
-   живёт только в TF state, не trittenет файловую систему;
-4. опционально пишет kubeconfig в файл через `local_file` resource
-   если задан `var.workload_kubeconfig_path` (mode 0600,
-   sensitive=true).
+3. читает Cluster CR'а annotation
+   `k8s-lab.io/api-proxy-port` (которую `charts/capi-workload-cluster/`
+   пишет — см. §16.3 Step 15) — это computed Adler-32 hash port на
+   LXD haproxy LB instance;
+4. **rewrite'ит kubeconfig server URL** в local: replace
+   `server: https://[<internal-v6>]:6443` →
+   `server: https://<lxd_host_address>:<api-proxy-port>`. Также
+   inject'ит `tls-server-name: kubernetes.default.svc` в каждый
+   `clusters[].cluster` если ещё не задан, чтобы избежать
+   x509 SAN mismatch (workload kubeadm SANs не знают про rewrite'ed
+   host);
+5. конфигурирует workload-aliased helm provider inline через
+   `kubernetes { config = local.workload_kubeconfig_rewritten }`;
+6. эмитирует через `output "kubeconfig" { sensitive = true }`
+   sensitive string. Никаких `local_file` resource'ов.
 
-Consumer'у видим kubeconfig двумя путями:
+Consumer'у видим rewritten kubeconfig — **только через TF output**:
 
-* `terraform output -raw kubeconfig > path.kubeconfig` — на любом
-  apply, явный pull;
-* `var.workload_kubeconfig_path = ".artifacts/clusters/<name>.kubeconfig"`
-  — module пишет файл сам, путь предсказуем.
+```bash
+terraform output -raw kubeconfig > /path/to/kubeconfig
+```
 
-Server URL внутри kubeconfig'а — controlPlane endpoint (CAPN
-auto-derived из LXCCluster status; на local Vagrant substrate это
-internal bridge IPv6 — reachable изнутри VM, не с dev-машины).
-Runner-side доступ к workload API — через kubectl с VM или через LXD
-proxy device на workload CP (декларация делается через
-`LXCMachineTemplate.spec.instance.devices` в `charts/capi-cluster-class/`
-если consumer запрашивает; substrate-required wiring живёт в чарте,
-не в module).
+Это consumer-side concern. Для local-harness operator может
+завернуть в Makefile target (`make workload-kubeconfig`); для CI
+— pipeline step после `terraform apply`. Module не предполагает
+куда / нужно ли вообще писать.
+
+API endpoint reachability path — production-mirror:
+
+* Inside cluster: workload pods → workload kube-apiserver через CAPN-
+  managed haproxy LB → CP backends. CAPN haproxy LB binds на capi-int
+  IPv6 (`fd42:77:1::/64`); это substrate-managed, не наш scope;
+* Outside cluster (runner / consumer's TF apply / kubectl): traffic
+  → `<lxd_host_address>:<api-proxy-port>` → LXD `proxy` device на LB
+  instance (`bind=host` listener) → 127.0.0.1:6443 внутри LB
+  instance → haproxy → CP backends.
+
+LXD `proxy` device delivery — **owned by `charts/capi-workload-cluster/`
+through Helm hook Jobs**, not by Terraform / Molecule:
+
+* `post-install,post-upgrade` Job
+  (`templates/api-proxy-attach-job.yaml`) waits for CAPN to
+  materialise the haproxy LB LXC instance and then `PATCH`-es
+  `/1.0/instances/<lb>?project=<p>` over the LXD HTTPS REST API to
+  add the `api-proxy` device. PATCH semantics merge top-level
+  `devices` so the LB's pre-existing devices (root disk, NICs)
+  stay untouched.
+* `pre-delete` Job (`templates/api-proxy-detach-job.yaml`) is the
+  symmetric inverse on `helm uninstall <workload>`: `PATCH` with
+  `{"devices":{"api-proxy":null}}` removes the key. Best-effort
+  (`exit 0` if LB instance has already been torn down by CAPN).
+* Image: `alpine:3.21` + `apk add curl jq` at runtime — no incus/
+  lxc CLI binary, no vendored client tooling. Driven by the same
+  `incus-identity` Secret that CAPN consumes (`server`,
+  `client-crt`, `client-key`, `server-crt`, `project` fields per
+  CAPN docs); Job mounts it read-only.
+* `helm install --wait` blocks on hook Job completion by default,
+  so by the time the helm release is reported success the LB
+  instance is provisioned AND the proxy device is wired — no race
+  window where downstream chart installs see a half-ready cluster.
+
+**Why a Helm hook rather than a ClusterClass topology patch:** CAPN
+v1alpha2 declares `LXCCluster.spec.template.spec.loadBalancer.lxc
+.instanceSpec` as a closed CRD schema (only `profiles/image/flavor/
+target` — no `devices` field). A JSON patch through the
+ClusterClass topology API to add the `devices` block fails at
+admission with `field not declared in schema`. The proxy device
+must therefore be attached post-CAPI on the live LB instance; a
+Helm hook Job in the workload chart is the only declarative path
+that keeps the device attach inside chart-owned lifecycle.
+
+Несколько workload clusters на одном LXD host'е получают **разные
+ports** через Adler-32 hash от cluster name → не конфликтуют.
+Collision на 10 workload'ах <1%; conflict resolution через
+`loadBalancer.lxc.proxyApiPort` override в values chart'а
+`charts/capi-workload-cluster/`.
+
+### Co-existence с Molecule e2e-local kubeconfig pipeline
+
+Molecule e2e-local converge.yml + verify.yml owns свой собственный
+kubeconfig pipeline — **независимый от TF module pipeline'а**.
+Reuses те же chart artefacts (Cluster CR annotation
+`k8s-lab.io/api-proxy-port` + post-install hook attach Job which
+wires the LXD `proxy` device on the LB instance) и делает rewrite
+через Ansible-native pipeline:
+
+1. `kubernetes.core.helm` ставит `capi-workload-cluster` chart;
+   `helm install --wait` блокирует до тех пор, пока chart's
+   post-install hook Job не завершит attach LXD `proxy` device —
+   на этом этапе runner-reachability для `<host>:<port>` уже
+   готова;
+2. `kubernetes.core.k8s_info` читает Cluster CR's annotation +
+   workload kubeconfig Secret (через bootstrap kubeconfig);
+3. Ansible-side rewrite через `regex_replace` — заменяет
+   `server: https://...:6443` на `https://<K8SLAB_HOST_ADDR>:<api-proxy-port>`
+   + inject `tls-server-name: kubernetes.default.svc`;
+4. `ansible.builtin.copy` пишет результат в
+   `.artifacts/clusters/<cluster>.kubeconfig`. Этот файл —
+   единственный kubeconfig, через который Molecule converge.yml
+   ставит cluster add-ons (cni-calico, metallb, metallb-config) с
+   runner-side `kubernetes.core.helm` (`delegate_to: localhost`);
+5. Runner-side acceptance test через `kubernetes.core.k8s_info
+   kind=Node` против rewritten kubeconfig'а — assert все workload
+   Nodes Ready=True.
+
+Этот файл и TF-module's `terraform output -raw kubeconfig` — **два
+независимых артефакта** живущих параллельно:
+* Molecule artefact = debug + runner-side acceptance test, rewritten
+  endpoint, written by Ansible Verify pipeline;
+* TF output = production-path delivery, rewritten endpoint, in TF
+  state только.
+
+**TF module ни читает, ни пишет в `.artifacts/clusters/`** (см.
+§16.4 architectural fence). Каждый flow владеет своим pipeline'ом
+для kubeconfig endpoint rewrite — Ansible regex_replace в Molecule,
+TF locals в module. Никакого shared filesystem coupling.
 
 [1]: https://capn.linuxcontainers.org/?utm_source=chatgpt.com "Introduction - The cluster-api-provider-incus book"
 [2]: https://documentation.ubuntu.com/lxd/latest/reference/network_bridge/?utm_source=chatgpt.com "Bridge network - LXD documentation"

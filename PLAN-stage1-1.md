@@ -25,7 +25,7 @@ PLAN-stage1-7.md ................. §20..§22 (Stage 1 meta: out-of-scope, self-
 
 Этот раздел охватывает Ansible-роли Stage 1, которые уже реализованы и
 прогнаны end-to-end в локальном Vagrant/libvirt-контуре по состоянию на
-Step 14 (2026-04-27):
+Step 15 (2026-04-28):
 
 * §13.1 `base_system` (Step 1 + Step 5 required-values refactor);
 * §13.2 `lxd_host` (Step 2);
@@ -36,8 +36,7 @@ Step 14 (2026-04-27):
 * §13.4 `lxd_storage_pools` (Step 3 + Step 5 required-config refactor);
 * §13.5 `lxd_network_int_managed` (Step 3 + Step 5 required-config refactor);
 * §13.6 `lxd_profiles` (Step 3 lean baseline + Step 4 full CAPN
-  unprivileged kubeadm baseline + Step 9 cloud-init vendor-data для
-  capi-worker/capi-controlplane + **Step 11 `host-boot` disk device
+  unprivileged kubeadm baseline + **Step 11 `host-boot` disk device
   на capi-controlplane (read-only `/boot` для kubeadm
   SystemVerification на unprivileged-LXC nodes) + Step 12 тот же
   `host-boot` device на capi-worker — `kubeadm join` preflight на
@@ -632,6 +631,160 @@ ok=20 changed=5`. Compact-state debug:
   external L2 reaches the announced VIP through speaker leader and
   kube-proxy DNAT to the backend Pod.
 
+**Step 15 (2026-04-28) — runner-reachable workload API endpoint.**
+CAPN auto-derives the workload `controlPlaneEndpoint` from the LB
+instance's capi-int IPv6, which is reachable only from inside the
+VM. To let the runner talk to the workload kube-apiserver directly
+(`kubectl`, TF data sources, future `workload_cluster` module),
+Step 15 adds a deterministic per-workload LXD proxy device on the
+CAPN haproxy LB instance and rewrites the workload kubeconfig
+accordingly:
+
+* `charts/capi-cluster-class/` (0.5.0 → 0.6.3): both
+  `KubeadmControlPlaneTemplate` and `KubeadmConfigTemplate` now
+  ship `kubeadmConfigSpec.files` + `preKubeadmCommands` for the
+  eth1 RA reception baseline — `/etc/sysctl.d/99-capi-ra.conf`
+  with `accept_ra=2 accept_ra_defrtr=1` (workload nodes have
+  forwarding=1 for k8s pod networking, which makes the default
+  `accept_ra=1` ignore RA), and `/etc/systemd/network/30-capi-ext.network`
+  with `IPv6AcceptRA=yes`. preKubeadm runs `sysctl --load` +
+  `networkctl reload` so the config is live before MetalLB speaker
+  comes up. The CAPN haproxy LB instance receives an LXD `proxy`
+  device post-CAPI through the workload chart's own Helm hook
+  Jobs (see capi-workload-cluster bump below) — CAPN's
+  `LXCCluster.loadBalancer.lxc.instanceSpec` is a closed CRD
+  schema with no `devices` field, so the device cannot ride the
+  topology API.
+
+* `charts/capi-workload-cluster/` (0.5.0 → 0.7.2): paired bump.
+  `templates/_helpers.tpl` adds `capi-workload-cluster.apiProxyPort`
+  — `add 20000 (mod (atoi (adler32sum cluster.name)) 10000)`,
+  pure function, same cluster name → same port across re-installs.
+  Override via `loadBalancer.lxc.proxyApiPort` values
+  (default 0 = use hash). `templates/cluster.yaml` writes the
+  computed port to `Cluster.metadata.annotations["k8s-lab.io/api-proxy-port"]`
+  — the single source of truth read by Molecule verify and the
+  future TF `workload_cluster` module.
+
+  **Helm-only LXD `proxy` device delivery** —
+  `templates/api-proxy-attach-job.yaml` (post-install/post-upgrade
+  hook) and `templates/api-proxy-detach-job.yaml` (pre-delete
+  hook) drive the LXD HTTPS REST API directly with mTLS material
+  from the `incus-identity` Secret. The attach Job waits for
+  CAPN to materialise `<cluster>-<suffix>-lb`, then `PATCH`-es
+  `/1.0/instances/<lb>?project=<p>` body
+  `{"devices":{"api-proxy":{"type":"proxy","listen":"tcp:0.0.0.0:<port>","connect":"tcp:127.0.0.1:6443","bind":"host"}}}`
+  — LXD merge-on-PATCH adds the device without disturbing the
+  instance's other devices. Detach Job is the symmetric inverse
+  on `helm uninstall <workload>`. Image is `alpine:3.21` +
+  runtime `apk add curl jq` (no incus/lxc CLI binary). New values
+  knobs: `apiProxy.image`, `apiProxy.infrastructureSecretName`,
+  `apiProxy.lbWaitTimeoutSeconds`. Memory rules applied:
+  `feedback_helm_first_no_raw_manifests`,
+  `feedback_no_bitnami_images`. Consequence: `helm install --wait`
+  blocks until the device is wired, so converge.yml / TF apply
+  return only when `<host>:<port>` is ready to forward.
+
+* `tests/molecule/e2e-local/converge.yml`: simplified — no inline
+  LXD device add, no LB instance discovery, no `lxc` shell-out.
+  `helm install` of the workload chart blocks on the post-install
+  hook Job (chart-side), so by the time helm returns the proxy
+  device is already attached. Converge then reads the
+  `k8s-lab.io/api-proxy-port` annotation, rewrites the workload
+  kubeconfig server URL to `https://<vagrant-vm>:<port>` + injects
+  `tls-server-name`, writes
+  `.artifacts/clusters/<cluster>.kubeconfig`, polls `/livez`
+  through the runner-reachable endpoint, and installs
+  `cni-calico` / `metallb` / `metallb-config` runner-side via
+  `kubernetes.core.helm` with `delegate_to: localhost`. No more
+  helm CLI on the VM, no chart .tgz copies, no VM-side workload
+  kubeconfig materialisation.
+
+* `tests/molecule/e2e-local/verify.yml`: every helm test runs
+  runner-side via the rewritten kubeconfig (workload chart goes
+  through the bootstrap kubeconfig as before). External HTTP GET
+  to the MetalLB demo VIP still runs on the VM (correct egress
+  through `ext6-ra-peer`). Final acceptance —
+  `kubernetes.core.k8s_info kind=Node` (delegate_to localhost)
+  asserts all `(controlplane_count + worker_count)` Nodes
+  Ready=True through the rewritten kubeconfig.
+
+* `ansible/roles/lxd_profiles`: removed the
+  `capi-external-vendor-data.yaml.j2` template, the compose-time
+  vendor-data render, the `_external_vendor_data` markers on the
+  catalog, the verify-side byte-for-byte assertion, and the README
+  section. Cloud-init's `cc_write_files` reads only user-data
+  (`cloud-config.txt`); vendor-data write_files would never apply
+  on a kubeadm-bootstrapped node where CAPI/CABPK owns user-data
+  exclusively. The verify scenario now asserts both
+  `cloud-init.user-data` and `cloud-init.vendor-data` slots stay
+  empty on every profile this role manages. §8 lost the
+  now-unused `k8s_lab_external_ra_accept` /
+  `k8s_lab_external_ra_use_gateway` knobs.
+
+* `tests/molecule/shared/inventory/group_vars/k8slab_host.yml`:
+  added explicit `k8s_lab_workload_controlplane_count: 3` +
+  `k8s_lab_workload_worker_count: 2` so the verify play sees them
+  outside any role's defaults.
+
+* `tests/molecule/shared/tasks/ext6-ra-source.yml`: comment-only
+  refresh — references `KubeadmConfigSpec.files` (charts/capi-cluster-class)
+  as the home of eth1 RA reception baseline now that vendor-data
+  is gone.
+
+* `ansible/roles/lxd_bootstrap_instance/defaults/main.yml`:
+  comment-only refresh — `debian/13/cloud` image alias is now
+  required because every CAPN-spawned workload node runs
+  `KubeadmConfigSpec.files` write-files via cloud-init (CABPK
+  user-data path), not because `lxd_profiles` ships vendor-data.
+
+* `.yamllint`: added `charts/**/templates/` to the ignore list.
+  Helm template syntax (`{{- … -}}`) is not parseable as YAML,
+  so yamllint can never lint chart templates correctly; previously
+  every render-time artefact in `templates/` failed `make lint-yaml`,
+  the new ignore makes the pipeline match what `helm lint` already
+  validates.
+
+End-to-end evidence on a clean Vagrant VM (`make clean-local` →
+`make -C tests/molecule e2e-local-vagrant-converge` →
+`e2e-local-vagrant-verify`) with `capi-workload-cluster` 0.7.2:
+* converge — `failed=0 ok=307 changed=5`. Helm install of the
+  workload chart returned in 9.17 s (post-install hook Job
+  matched LB instance, PATCH-ed LXD `proxy` device, exited);
+  `/livez` runner-side probe through the rewritten kubeconfig
+  endpoint succeeded after 31.96 s (kubeadm rolling).
+* verify — `failed=0 ok=12 changed=3`:
+  * three helm tests green (workload chart 11.21 s, cni-calico
+    29.41 s, metallb-config 18.09 s) — all runner-side via the
+    rewritten `.artifacts/clusters/lab-default.kubeconfig`;
+  * Gate A external HTTP GET to MetalLB demo VIP from the VM
+    returned 200 (1.68 s);
+  * runner-side `k8s_info` through the rewritten kubeconfig
+    sees all 3 CP + 2 worker Nodes Ready=True;
+  * confirmation on the LXD host:
+    `lxc --project=capi-lab config device get
+    lab-default-swtr2-deb12-lb api-proxy listen` →
+    `tcp:0.0.0.0:26818` (matches the Adler-32 hash port written
+    to the Cluster CR annotation).
+
+Memory rules applied in Step 15:
+* `feedback_chart_required_values_hardcoded.md` — port computation
+  formula hardcoded in helper, override only via legitimate
+  optional values knob;
+* `feedback_test_artifact_naming.md` — annotation prefix
+  `k8s-lab.io/api-proxy-port`;
+* `feedback_no_ad_hoc_fixes.md` — eth1 SLAAC wired
+  declaratively through `KubeadmConfigSpec.files` (no live patches),
+  LXD `proxy` device delivery owned by the chart's own Helm hook
+  Jobs (no inline shell in Molecule, no `null_resource` in TF),
+  and the dead vendor-data surface in `lxd_profiles` was removed
+  end-to-end (template + compose + markers + verify + README +
+  plan vars);
+* `feedback_active_provisioning_monitor.md` — second monitor на
+  Cluster phase + LXC count выявил CRD reject ошибку до того
+  как converge timeout (`field not declared in schema` приходил
+  в TopologyReconciled condition).
+
 ## 13.1. `base_system`
 
 **Статус: выполнено в Step 1 (2026-04-21).**
@@ -1016,12 +1169,11 @@ _lxd_network_int_managed_required_config:
 ## 13.6. `lxd_profiles`
 
 **Статус: выполнено в Step 3 (2026-04-22) — lean subset baseline;
-доведено до полного CAPN unprivileged kubeadm baseline в Step 4 +
-Step 9 cloud-init vendor-data на capi-controlplane/capi-worker +
-Step 11 (2026-04-26) read-only `host-boot` disk device (host's
+доведено до полного CAPN unprivileged kubeadm baseline в Step 4;
+**Step 11 (2026-04-26) read-only `host-boot` disk device (host's
 `/boot` mount-in) на capi-controlplane для kubeadm
 SystemVerification доступа к `/boot/config-<uname-r>` на
-unprivileged-LXC; **Step 12 (2026-04-26) расширил тот же
+unprivileged-LXC; Step 12 (2026-04-26) расширил тот же
 `host-boot` device на capi-worker** — `kubeadm join` preflight
 выполняет ту же `SystemVerification` ветку, что и `kubeadm init`,
 и без `/boot` mount-in валится на отсутствии файла kernel
@@ -1035,11 +1187,12 @@ KubeProxyConfiguration в KubeadmControlPlaneTemplate + Calico
 Installation pinned VXLAN encapsulation на обоих pod IPPools — IPIP
 IPv4-only, BGP infra нет на substrate'е, VXLAN единственный
 dual-stack-capable mode; calico-node создаёт vxlan device в LXC
-host-netns на старте). LXD pre-loadит модули перед instance start,
-fallback на kernel auto-load остался как safety belt.** Cloud-init
-vendor-data baseline для eth1 bring-up на `capi-controlplane` /
-`capi-worker` выполнен в Step 9 (2026-04-24) — см. «Step 9
-расширения» ниже.**
+host-netns на старте). LXD pre-loadit модули перед instance start,
+fallback на kernel auto-load остался как safety belt.** Eth1 RA
+reception baseline (sysctl + systemd-networkd drop-in) живёт в
+`charts/capi-cluster-class` через `KubeadmConfigSpec.files` (Step
+15, см. PLAN §16.2 / §16.3) — этот role profile-уровневый
+cloud-init не несёт.**
 
 Обязательные profiles:
 
@@ -1170,168 +1323,18 @@ Driver: `bootstrap_k3s` (§13.9) на debian/13 LXD image потребовал
   только добавляет/обновляет, удалить нельзя), чтобы downstream
   scenarios на той же VM не видели pollution.
 
-### Step 9 расширения — cloud-init substrate baseline (vendor-data)
+### Step 9 расширения — cloud-init substrate baseline
 
-**Статус: выполнено (2026-04-24).** Шаблон
-`ansible/roles/lxd_profiles/templates/capi-external-vendor-data.yaml.j2`
-несёт каноническую форму ниже; `tasks/compose.yml` рендерит его один
-раз (`_ifname = lxd_profiles_external_ifname`) в факт
-`_lxd_profiles_external_vendor_data` и инжектит в `config`
-профайлов, у которых в `_lxd_profiles_catalog` стоит маркер
-`_external_vendor_data: true`
-(`capi-controlplane` и `capi-worker`). Маркер role-internal — не
-экспонирован через defaults, consumer не может выключить
-substrate-required vendor-data через override. Молекульный verify
-ассертит rendered value byte-for-byte (через
-`lookup('ansible.builtin.template', …)` от того же template-файла
-с `_ifname=eth1`) на обоих flagged-профайлах и отсутствие
-`cloud-init.vendor-data` / `cloud-init.user-data` на не-flagged
-(`capi-base`, `capi-bootstrap`). Idempotence-run — `changed=0` на
-LXD-диф (multi-line string comparison в `community.general.lxd_profile`
-работает корректно). Полный Molecule-цикл
-(`make -C tests/molecule lxd-profiles-delegated-test`) green.
-
-Deviation vs исходная формулировка Step 9:
-
-* Override-тест через `lxd_profiles_external_ifname: ens5` + re-converge
-  intentionally не реализован в verify этой итерации: требует
-  re-running роли с другим host_vars внутри одного Molecule-сценария,
-  что блокируется `molecule.yml`-ограничением про
-  `provisioner.inventory.host_vars` (см. shared/converge.yml
-  docstring). Contract на template-подстановку `_ifname` уже
-  покрыт косвенно — byte-for-byte сверка использует тот же
-  `lookup('template', …)` механизм, что и роль, поэтому regression
-  на разломанном шаблоне отловится. Full ifname-override тест
-  отложен до Phase 5+ когда CAPN реально гоняет нестандартные
-  NIC layouts.
-
-Motivation: worker-ноды и controlplane-ноды получают eth1 через
-`capi-worker` / `capi-controlplane` LXD profile (см. baseline выше —
-nic device на `br-ext6`). Но LXD nic device только подключает
-interface на L2 — для RA reception внутри контейнера eth1 должен
-быть admin-UP с `IPv6AcceptRA=yes`. В production-pipeline'е этот
-in-container config доставляется cloud-init'ом на first boot; его
-источником должна быть **substrate-required часть profile'а**, а не
-per-instance ad hoc конфигурация. Тогда:
-
-* любой инстанс с profile chain `capi-base` + `capi-worker` (или
-  `capi-controlplane`) — gate test Pod'а, CAPN-созданный worker,
-  manual `lxc launch` для debug — получает идентичный eth1
-  bring-up и RA-accept path на first boot;
-* Ansible в in-container state mutation не участвует;
-* consumer'ские custom images (`k8s_lab_images_*`) обязаны
-  сохранять cloud-init-capability (§8 images block).
-
-Контракт:
-
-* Profile'ы `capi-worker` и `capi-controlplane` в
-  `_lxd_profiles_catalog` (`vars/main.yml`, role-internal) несут
-  ключ `cloud-init.vendor-data` в `config` — substrate-required,
-  не overridable через defaults. **Именно `vendor-data`, не
-  `user-data`** — rationale в merging-секции ниже.
-* `capi-base` и `capi-bootstrap` cloud-init НЕ получают — у них
-  нет eth1, в `capi-bootstrap` cluster живёт только k3s на eth0
-  internal'е.
-
-#### Rendered user-data (каноническая форма)
-
-Значение `cloud-init.vendor-data` — multi-doc YAML `#cloud-config`.
-`{{ _ifname }}` резолвится в `tasks/compose.yml` через role
-variable `lxd_profiles_external_ifname` (default `eth1`, может быть
-переопределён consumer'ом для нестандартных guest NIC layout'ов:
-ens5, enp0s3, etc.).
-
-```yaml
-#cloud-config
-# Managed by Ansible role lxd_profiles (plan §13.6). Do not edit.
-# External nic RA reception baseline — applied on first boot via
-# systemd-sysctl.service + systemd-networkd.
-write_files:
-  - path: /etc/sysctl.d/99-capi-ra.conf
-    owner: root:root
-    permissions: '0644'
-    content: |
-      net.ipv6.conf.{{ _ifname }}.disable_ipv6 = 0
-      net.ipv6.conf.{{ _ifname }}.accept_ra = 2
-      net.ipv6.conf.{{ _ifname }}.accept_ra_defrtr = 1
-  - path: /etc/systemd/network/30-capi-ext.network
-    owner: root:root
-    permissions: '0644'
-    content: |
-      [Match]
-      Name={{ _ifname }}
-
-      [Network]
-      DHCP=no
-      LinkLocalAddressing=ipv6
-      IPv6AcceptRA=yes
-runcmd:
-  - [sysctl, --load=/etc/sysctl.d/99-capi-ra.conf]
-  - [networkctl, reload]
-```
-
-Rendering:
-
-* строковый render через `ansible.builtin.template` с delimiter'ами
-  `{{ }}` — единственная переменная `_ifname`;
-* результат хранится как plain string в profile config (LXD API
-  принимает любой UTF-8, включая newlines, в значениях config-keys);
-* trailing newline сохраняется после render'а (cloud-init требует
-  финальный newline для last document);
-* байтовая идемпотентность: `tasks/profiles.yml` PATCH'ит LXD
-  только если rendered content != live content (live читается через
-  `/1.0/profiles/<name>?project=capi-lab` перед diff'ом).
-
-#### LXD cloud-init merging семантика
-
-Реальные workers (Phase 5+) создаются CAPN controller'ом из Machine
-template, который несёт собственный `cloud-init.user-data` —
-kubeadm bootstrap + CAPI-управляемые секреты. Эти user-data'ы
-сливаются LXD'ом по правилам:
-
-* **Profile-level vs instance-level.** LXD поддерживает
-  `cloud-init.user-data`, `cloud-init.vendor-data`,
-  `cloud-init.network-config` одновременно и на profile, и на
-  instance уровнях. Для каждого ключа **instance-level override
-  полностью заменяет profile-level** (не merge, а replace). Если
-  CAPN Machine template ставит `cloud-init.user-data` на instance —
-  profile user-data **не применяется**.
-* **Вывод для этого контракта.** Substrate baseline eth1 RA
-  должен доставляться через ключ, который CAPN НЕ перекрывает.
-  LXD'шный `cloud-init.vendor-data` — отдельный слот, cloud-init
-  применяет его **вместе** с user-data (cloud-init sees multiple
-  sources natively). CAPN использует ТОЛЬКО `user-data` для
-  kubeadm — `vendor-data` остаётся свободен.
-* Поэтому substrate baseline шипится через
-  `cloud-init.vendor-data` (не `user-data`): rendered YAML тот же,
-  ключ другой. Это меняет §13.6 Step 9 контракт: profile'ы
-  `capi-worker` / `capi-controlplane` несут
-  `cloud-init.vendor-data`, CAPN шипит `cloud-init.user-data`
-  через Machine template — оба слились cloud-init'ом на первом
-  boot без конфликта.
-* **Для bootstrap container (capi-bootstrap profile).** Он не
-  использует eth1, substrate baseline не нужен. Но если consumer
-  в Stage 2 захочет пустить k3s на отдельной CAPI Machine —
-  vendor-data обеспечит ту же baseline на eth1 без конфликта с
-  CAPN user-data.
-
-Verify в `tests/molecule/lxd-profiles`:
-
-* после converge читается `cloud-init.vendor-data` через
-  `http://localhost/1.0/profiles/capi-worker?project=capi-lab`,
-  stringify LXD конфига (без trailing whitespace normalization)
-  сравнивается byte-for-byte с ожидаемым rendered content;
-* то же для `capi-controlplane`;
-* `cloud-init.user-data` у обоих профилей ОТСУТСТВУЕТ (ассертится
-  отдельно — чтобы никакой accidental pollution не перекрыл
-  CAPN'овский user-data);
-* смена `lxd_profiles_external_ifname` → `ens5` и re-converge
-  должна отразить это в vendor-data (проверка через второй fetch).
-
-Acceptance: любой контейнер, стартованный с этими профилями на
-cloud-init-capable образе, имеет global IPv6 на eth1 в пределах
-`k8s_lab_external_ipv6_prefix` после завершения cloud-init
-(проверяется в Gate A acceptance §17.3).
+**Статус: superseded в Step 15 (2026-04-28).** Step 9 ранее ставил
+substrate-required cloud-init `vendor-data` в `capi-controlplane` и
+`capi-worker` LXD profiles для eth1 RA reception baseline. Step 15
+перенёс эту baseline в `charts/capi-cluster-class` через
+`KubeadmConfigSpec.files` + `preKubeadmCommands` (см. PLAN §16.2 /
+§16.3 — на kubeadm-bootstrapped node CABPK владеет user-data
+эксклюзивно, и `cc_write_files` модуль не сливает vendor-data
+write_files в combined cloud-config). Profile-уровневые cloud-init
+slot'ы теперь пустые на всех профайлах этого role; verify-сценарий
+ассертит отсутствие `cloud-init.user-data` / `cloud-init.vendor-data`.
 
 [lxd-options]: https://documentation.ubuntu.com/lxd/latest/reference/instance_options/
 
@@ -1498,16 +1501,16 @@ scenario'ев PASS.
 ### Step 9 расширения (2026-04-24)
 
 Default `lxd_bootstrap_instance_image_alias` переключён с
-`debian/13` на `debian/13/cloud` после того, как §13.6 Step 9
-расширил `capi-worker` / `capi-controlplane` профили ключом
-`cloud-init.vendor-data`. Rationale в §2.10 и §13.6 Step 9: любой
-образ, идущий в capi-lab project, должен быть cloud-init-capable —
-vendor-data на профилях worker/controlplane не сделает свою работу,
-если в образе нет cloud-init'а. Bootstrap-инстанс layered только с
-`capi-base` + `capi-bootstrap` (vendor-data там нет), но мы держим
-одинаковый образ для всей поверхности: LXD кэширует единственный
-rootfs, диагностика предсказуема, переключение worker path на
-custom-образ в Stage 2 не требует рефакторинга bootstrap-path.
+`debian/13` на `debian/13/cloud`. Любой образ, идущий в capi-lab
+project, обязан быть cloud-init-capable — `KubeadmConfigSpec.files`
+из `charts/capi-cluster-class` (PLAN §16.2 / §16.3) доставляет eth1
+RA reception baseline через user-data `write_files` на каждой
+CAPN-spawned ноде. Bootstrap k3s instance layered только с
+`capi-base` + `capi-bootstrap` (cloud-init слоты пусты), но мы
+держим одинаковый образ для всей поверхности: LXD кэширует
+единственный rootfs, диагностика предсказуема, переключение worker
+path на custom-образ в Stage 2 не требует рефакторинга
+bootstrap-path.
 
 Alias `debian/13/cloud` существует в Canonical's
 `https://images.lxd.canonical.com` simplestreams remote (проверено
@@ -1518,8 +1521,8 @@ acceptable для dev harness.
 Регрессий на существующих сценариях `lxd-bootstrap-instance` /
 `bootstrap-k3s` / `bootstrap-clusterctl` / `bootstrap-capn-secret` /
 `export-artifacts` не ожидается — cloud-init внутри bootstrap
-контейнера тихо завершается no-op'ом (vendor-data пустой, user-data
-не выставлен), k3s стартует как раньше.
+контейнера тихо завершается no-op'ом (cloud-init slots на
+профайлах пусты), k3s стартует как раньше.
 
 ## 13.8. `binary_fetch`
 
@@ -1992,10 +1995,13 @@ dev-машины возвращает Ready control-plane node.**
   и `k8s_lab_bootstrap_api_server_url`. API URL derived из shipped
   kubeconfig'а (второй LXD REST probe не нужен).
 * **`.artifacts/clusters/`** — пустой subdir, зарезервирован для
-  per-workload kubeconfig'ов которые Phase 5 module (§16.4) пишет
-  через `local_file` (когда задан `var.workload_kubeconfig_path`);
-  создаётся здесь чтобы downstream phases имели куда писать без
-  bootstrap'а структуры.
+  Molecule e2e-local debug-артефактов (verify.yml пишет туда
+  raw workload kubeconfig для operator inspection, не consumed
+  downstream). TF module §16.4 в этот subdir **не пишет** — он
+  держит kubeconfig только в state и эмитит через `output -raw
+  kubeconfig` (§16.4 architectural fence). Subdir всё равно
+  предсоздаётся `export_artifacts` для предсказуемости пути
+  Molecule debug-копии.
 
 ### Implementation notes (Step 8)
 
@@ -2098,10 +2104,13 @@ dev-машины возвращает Ready control-plane node.**
   новая `tasks/mgmt_kubeconfig.yml` по тому же паттерну (slurp с
   host, copy delegate_to localhost), без breaking change для Phase 4
   callers.
-* **`.artifacts/clusters/<cluster>.kubeconfig`** — workload kubeconfig
-  написанный Phase 5 module'ем (§16.4) через `local_file` resource
-  когда consumer задаёт `var.workload_kubeconfig_path`. Subdir уже
-  создаётся, задел готов.
+* **`.artifacts/clusters/<cluster>.kubeconfig`** — debug-копия
+  workload kubeconfig'а, написанная Molecule e2e-local verify.yml
+  для operator inspection (raw Secret content, internal endpoint
+  — не rewritten). TF module §16.4 этот файл не пишет и не читает
+  (§16.4 architectural fence); module держит rewritten kubeconfig
+  в state и эмитит через `terraform output -raw kubeconfig`.
+  Subdir уже создаётся для Molecule debug needs.
 
 ---
 

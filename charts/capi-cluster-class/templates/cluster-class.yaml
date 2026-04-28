@@ -10,6 +10,21 @@ metadata:
   labels:
     {{- include "capi-cluster-class.labels" . | nindent 4 }}
 spec:
+  # The CAPN v1alpha2 LXCCluster CRD declares `loadBalancer.lxc
+  # .instanceSpec` as a closed schema (only {profiles, image,
+  # flavor, target}); a JSON patch trying to add a `devices`
+  # field would fail at admission with `field not declared in
+  # schema`, so per-workload haproxy LB customisation cannot
+  # flow through the ClusterClass topology API.
+  #
+  # The per-workload API proxy port is therefore owned end-to-end
+  # by `charts/capi-workload-cluster/` (Adler-32 hash on
+  # cluster.name → `k8s-lab.io/api-proxy-port` annotation on the
+  # Cluster CR), and the LXD `proxy` device is attached post-CAPI
+  # by the workload chart's own Helm hook Jobs
+  # (`templates/api-proxy-{attach,detach}-job.yaml`) which PATCH
+  # the LXD HTTPS REST API directly. See PLAN §16.2 / §16.7 for
+  # the runner-reachability contract.
   patches:
     - name: kubeadm-dual-stack-component-args
       description: "Propagate Cluster.spec.clusterNetwork CIDRs into kubeadm-managed control-plane component args."

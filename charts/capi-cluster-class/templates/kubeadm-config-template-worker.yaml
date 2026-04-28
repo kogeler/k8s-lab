@@ -38,7 +38,34 @@ spec:
             {{- with $w.kubeletExtraArgs }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
+      # Substrate-required eth1 RA reception baseline; mirrors the
+      # `files:` block in KubeadmControlPlaneTemplate (same rationale).
+      files:
+        - path: /etc/sysctl.d/99-capi-ra.conf
+          owner: root:root
+          permissions: "0644"
+          content: |
+            net.ipv6.conf.eth1.disable_ipv6 = 0
+            net.ipv6.conf.eth1.accept_ra = 2
+            net.ipv6.conf.eth1.accept_ra_defrtr = 1
+        - path: /etc/systemd/network/30-capi-ext.network
+          owner: root:root
+          permissions: "0644"
+          content: |
+            [Match]
+            Name=eth1
+
+            [Network]
+            DHCP=no
+            LinkLocalAddressing=ipv6
+            IPv6AcceptRA=yes
       preKubeadmCommands:
+        # Substrate-required: load the eth1 RA sysctls + reload
+        # systemd-networkd so the matching .network file
+        # (KubeadmConfigSpec.files above) takes effect before
+        # kubeadm runs anything that depends on eth1 being SLAAC'd.
+        - sysctl --load=/etc/sysctl.d/99-capi-ra.conf
+        - networkctl reload
         # Substrate-required: LXD DHCP/SLAAC addresses are dynamic,
         # but kubelet on bare-metal-style dual-stack nodes must be
         # started with both node IPs. Keep the same family priority

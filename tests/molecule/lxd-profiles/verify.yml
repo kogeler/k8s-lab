@@ -8,16 +8,6 @@
   vars:
     _socket_path: "/var/snap/lxd/common/lxd/unix.socket"
     _project:     "capi-lab"
-    # Repo root derived from MOLECULE_PROJECT_DIRECTORY (= tests/molecule/).
-    # Used to locate the lxd_profiles role's vendor-data template for
-    # byte-for-byte comparison against live profile config.
-    _repo_root: "{{ lookup('ansible.builtin.env', 'MOLECULE_PROJECT_DIRECTORY') | dirname | dirname }}"
-    _vendor_data_template_path: "{{ _repo_root }}/ansible/roles/lxd_profiles/templates/capi-external-vendor-data.yaml.j2"
-    # Profiles that MUST carry cloud-init.vendor-data (role §13.6 Step 9).
-    # capi-base / capi-bootstrap have no external nic → no vendor-data.
-    _expected_vendor_data_profiles:
-      - "capi-controlplane"
-      - "capi-worker"
     # Mirror the role's default contract here so verify asserts
     # against a known expected surface rather than whatever the role
     # happened to converge with.
@@ -191,49 +181,20 @@
       loop_control:
         label: "{{ item.profile }}:{{ item.name }}"
 
-    # ---- cloud-init.vendor-data (role §13.6 Step 9) ---------------------
-    #
-    # `capi-controlplane` and `capi-worker` ship a substrate-required
-    # `cloud-init.vendor-data` rendered from the role's template. We
-    # assert byte-for-byte equality against the same template rendered
-    # with `_ifname=eth1` (scenario default) to prove the role did not
-    # silently drop / mutate the value. Also assert that no stray
-    # `cloud-init.user-data` slipped onto either profile, since CAPN
-    # Machine templates rely on owning that slot exclusively.
-    - name: "Verify | lxd_profiles | render expected external vendor-data"
-      ansible.builtin.set_fact:
-        _expected_vendor_data: "{{ lookup('ansible.builtin.template', _vendor_data_template_path) }}"
-      vars:
-        _ifname: "eth1"
-
-    - name: "Verify | lxd_profiles | assert vendor-data byte-for-byte on flagged profiles"
-      ansible.builtin.assert:
-        that:
-          - (item.json.metadata.config | default({})).get('cloud-init.vendor-data', '') == _expected_vendor_data
-          - "'cloud-init.user-data' not in (item.json.metadata.config | default({}))"
-        fail_msg: >-
-          profile "{{ item.item.name }}" vendor-data drift or stray user-data.
-          expected vendor-data (first 120 chars):
-          "{{ _expected_vendor_data[:120] }}..."
-          live vendor-data (first 120 chars):
-          "{{ (item.json.metadata.config | default({})).get('cloud-init.vendor-data', '<unset>')[:120] }}..."
-          live has cloud-init.user-data?
-          {{ 'cloud-init.user-data' in (item.json.metadata.config | default({})) }}
-      loop: "{{ _verify_show_register.results }}"
-      loop_control:
-        label: "{{ item.item.name }}"
-      when: item.item.name in _expected_vendor_data_profiles
-
-    - name: "Verify | lxd_profiles | assert vendor-data ABSENT on non-flagged profiles"
+    # `cloud-init.user-data` and `cloud-init.vendor-data` are owned by
+    # the chart layer (`KubeadmConfigSpec.files` /
+    # `KubeadmConfigSpec.preKubeadmCommands` in
+    # `charts/capi-cluster-class`, plan §16.2 / §16.3). This role
+    # never sets either — both slots must be empty on every profile.
+    - name: "Verify | lxd_profiles | assert no cloud-init slots set on profiles"
       ansible.builtin.assert:
         that:
           - "'cloud-init.vendor-data' not in (item.json.metadata.config | default({}))"
-          - "'cloud-init.user-data' not in (item.json.metadata.config | default({}))"
+          - "'cloud-init.user-data'   not in (item.json.metadata.config | default({}))"
         fail_msg: >-
-          profile "{{ item.item.name }}" unexpectedly has cloud-init
-          config. This role only ships vendor-data on capi-controlplane
-          and capi-worker.
+          profile "{{ item.item.name }}" has stray cloud-init.* config.
+          live config keys:
+          {{ (item.json.metadata.config | default({})) | dict2items | map(attribute='key') | list }}
       loop: "{{ _verify_show_register.results }}"
       loop_control:
         label: "{{ item.item.name }}"
-      when: item.item.name not in _expected_vendor_data_profiles

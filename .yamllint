@@ -34,3 +34,4 @@ ignore: |
   .artifacts/
   collections/
   charts/**/charts/
+  charts/**/templates/

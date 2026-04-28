@@ -6,16 +6,12 @@
 # Production `lxd_host` creates `br-ext6` as a pure L2 stub — no IP on
 # the bridge, `IPv6AcceptRA=no` on the uplink `.network`. In a real
 # deployment the uplink reaches a provider router that serves RA and
-# DHCPv6 to everything on the L2 segment, so containers attached via
-# `capi-controlplane` / `capi-worker` LXD profiles (vendor-data sets
-# `IPv6AcceptRA=yes` on eth1) autoconfigure a global IPv6 via SLAAC
-# on first boot.
-#
-# Locally no such router exists. The old libvirt `ext6-mock` network
-# served DHCPv6 via dnsmasq but did not enable RA — rdisc6 / tcpdump
-# on `br-ext6` confirmed zero ICMPv6 RA traffic ever hit the bridge.
-# So the architectural contract (container eth1 gets a global IPv6)
-# could not be validated end-to-end against that mock.
+# DHCPv6 to everything on the L2 segment, so CAPN-spawned workload
+# containers — wired with `IPv6AcceptRA=yes` on eth1 by
+# `KubeadmConfigSpec.files` (charts/capi-cluster-class) — autoconfigure
+# a global IPv6 via SLAAC on first boot. The local Vagrant harness
+# has no such provider router, so this task stands one up inside the
+# VM via a veth pair + radvd.
 #
 # Fix
 # ---

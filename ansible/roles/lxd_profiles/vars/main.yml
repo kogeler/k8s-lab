@@ -80,12 +80,6 @@ _lxd_profiles_catalog:
 
   - name:        "capi-controlplane"
     description: "k8s-lab CAPI control-plane — CAPN unprivileged kubeadm baseline + external nic."
-    # Substrate marker: tasks/compose.yml injects `cloud-init.vendor-data`
-    # (rendered from templates/capi-external-vendor-data.yaml.j2) into this
-    # profile's config before apply. The rendered YAML brings eth1 up with
-    # IPv6AcceptRA on first boot via cloud-init. See README § Cloud-init
-    # vendor-data for the vendor-data vs user-data rationale.
-    _external_vendor_data: true
     config:
       security.nesting:                     "true"
       security.privileged:                  "false"
@@ -144,7 +138,6 @@ _lxd_profiles_catalog:
 
   - name:        "capi-worker"
     description: "k8s-lab CAPI worker — CAPN unprivileged kubeadm baseline + external nic."
-    _external_vendor_data: true
     config:
       security.nesting:                     "true"
       security.privileged:                  "false"

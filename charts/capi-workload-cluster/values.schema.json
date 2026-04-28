@@ -9,6 +9,8 @@
     "kubernetes",
     "topology",
     "clusterNetwork",
+    "loadBalancer",
+    "apiProxy",
     "tests"
   ],
   "properties": {
@@ -84,6 +86,48 @@
       "properties": {
         "pods":     { "$ref": "#/$defs/cidrFamily" },
         "services": { "$ref": "#/$defs/cidrFamily" }
+      }
+    },
+    "loadBalancer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["lxc"],
+      "properties": {
+        "lxc": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["proxyApiPort"],
+          "properties": {
+            "proxyApiPort": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 65535,
+              "description": "Override for the auto-derived API proxy port. 0 = use Adler-32 hash of cluster.name."
+            }
+          }
+        }
+      }
+    },
+    "apiProxy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["image", "infrastructureSecretName", "lbWaitTimeoutSeconds"],
+      "properties": {
+        "image": {
+          "type": "string",
+          "minLength": 1
+        },
+        "infrastructureSecretName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 253,
+          "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$"
+        },
+        "lbWaitTimeoutSeconds": {
+          "type": "integer",
+          "minimum": 60,
+          "maximum": 3600
+        }
       }
     },
     "tests": {

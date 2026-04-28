@@ -63,13 +63,14 @@ lxd_bootstrap_instance_extra_profiles: []
 # after the Canonical/Incus split). The `debian/13/cloud` variant
 # matches the host OS (plan §2.1 Debian 13 Trixie) AND ships
 # cloud-init preinstalled — plan §2.10 substrate-requires cloud-init
-# capability on every node image because `capi-worker` / `capi-controlplane`
-# LXD profiles carry `cloud-init.vendor-data` (§13.6 Step 9). The
-# bootstrap instance itself is only layered with `capi-base` +
-# `capi-bootstrap` (no vendor-data), but we keep the same image so
-# the harness caches a single rootfs and behaviour stays consistent
-# across every container LXD spawns in capi-lab. Consumers can pin
-# to a specific fingerprint or switch remotes.
+# capability on every CAPN-spawned workload node image so
+# `KubeadmConfigSpec.files` (charts/capi-cluster-class, plan §16.2 /
+# §16.3) can deliver eth1 RA reception baseline on first boot.
+# Bootstrap k3s itself does not depend on cloud-init beyond image
+# bring-up, but we keep the same image so the harness caches a
+# single rootfs and behaviour stays consistent across every
+# container LXD spawns in capi-lab. Consumers can pin to a specific
+# fingerprint or switch remotes.
 lxd_bootstrap_instance_image_server:   "https://images.lxd.canonical.com"
 lxd_bootstrap_instance_image_protocol: "simplestreams"
 lxd_bootstrap_instance_image_alias:    "debian/13/cloud"

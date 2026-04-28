@@ -1,4 +1,5 @@
 {{- include "capi-workload-cluster.requireCAPI" . -}}
+{{- $apiProxyPort := include "capi-workload-cluster.apiProxyPort" . | int -}}
 ---
 apiVersion: cluster.x-k8s.io/v1beta2
 kind: Cluster
@@ -7,6 +8,16 @@ metadata:
   namespace: {{ .Release.Namespace }}
   labels:
     {{- include "capi-workload-cluster.labels" . | nindent 4 }}
+  annotations:
+    # Single source of truth for the per-workload LXD-host port that
+    # forwards to the workload's kube-apiserver (PLAN §16.3 / §16.7).
+    # Computed by `capi-workload-cluster.apiProxyPort` helper from
+    # `cluster.name` via Adler-32 hash, override-able via
+    # `loadBalancer.lxc.proxyApiPort`. Downstream consumers (TF
+    # module §16.4 kubeconfig-rewrite step) read this annotation to
+    # rewrite `clusters[].cluster.server` from the internal capi-int
+    # IPv6 endpoint to `https://<lxd-host>:<port>`.
+    k8s-lab.io/api-proxy-port: {{ $apiProxyPort | quote }}
 spec:
   clusterNetwork:
     pods:

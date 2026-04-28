@@ -42,6 +42,36 @@ app.kubernetes.io/part-of: cluster-api
 {{- end -}}
 
 {{/*
+Per-workload API proxy port (PLAN §16.3 Step 15).
+
+Default: deterministic Adler-32 hash of the Cluster CR name, mapped
+into the range 20000-29999 (`add 20000 (mod adler32 10000)`). Pure
+function — re-rendering the same `cluster.name` always yields the
+same port, which keeps `helm upgrade` no-op-friendly and makes the
+written kubeconfig stable across re-applies.
+
+Override: `loadBalancer.lxc.proxyApiPort` in values.yaml — explicit
+integer wins over the hash. Used to resolve hash collisions when
+two workload clusters on the same LXD host happen to land on the
+same port (collision rate ≈ 0.5% on 10 workloads, ≈ 5% on 30; for
+larger fleets the operator manages explicit assignments).
+
+The hash uses Sprig `adler32sum`, which returns a *decimal* string
+parseable directly through `atoi` — sha256sum returns hex which
+Helm has no built-in decoder for.
+*/}}
+{{- define "capi-workload-cluster.apiProxyPort" -}}
+{{- /* values.schema.json guarantees loadBalancer.lxc.proxyApiPort
+       exists as an integer; values.yaml ships 0 as the default. */ -}}
+{{- $override := .Values.loadBalancer.lxc.proxyApiPort | int -}}
+{{- if gt $override 0 -}}
+{{- $override -}}
+{{- else -}}
+{{- add 20000 (mod (atoi (adler32sum .Values.cluster.name)) 10000) -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
 CAPI core API availability gate. A chart install against a bootstrap
 cluster that has not yet been `clusterctl init`-ed aborts with a
 readable error instead of silently producing zero objects.

@@ -141,46 +141,17 @@ Run locally:
 make -C tests/molecule lxd-profiles-delegated-test
 ```
 
-## Cloud-init vendor-data (external nic bring-up)
+## Cloud-init slots
 
-`capi-controlplane` and `capi-worker` ship a substrate-required
-`cloud-init.vendor-data` key rendered from
-`templates/capi-external-vendor-data.yaml.j2`. The template resolves
-a single variable — `_ifname`, sourced from
-`lxd_profiles_external_ifname` (default `eth1`) — and emits a
-`#cloud-config` that:
+This role does **not** set `cloud-init.user-data` or
+`cloud-init.vendor-data` on any profile — both slots are owned by
+the chart layer (`charts/capi-cluster-class` via
+`KubeadmConfigSpec.files`, plan §16.2 / §16.3) which delivers the
+eth1 RA reception baseline (sysctl + systemd-networkd `.network`
+drop-in) as user-data `write_files` on every CAPN-created node.
 
-* writes `/etc/sysctl.d/99-capi-ra.conf` enabling
-  `accept_ra=2` / `accept_ra_defrtr=1` on the external nic;
-* writes `/etc/systemd/network/30-capi-ext.network` with
-  `IPv6AcceptRA=yes`, `LinkLocalAddressing=ipv6`, `DHCP=no`;
-* runs `sysctl --load` and `networkctl reload` on first boot.
-
-Without it the LXD nic device attaches eth1 at L2 only; the guest
-never enables RA reception, so no global IPv6 is configured inside
-the container.
-
-Why `vendor-data`, not `user-data`: CAPN Machine templates ship their
-own `cloud-init.user-data` on the instance (kubeadm bootstrap, CAPI
-secrets). LXD merges the instance-level `user-data` by **replacing**
-the profile-level one, so a profile-level `user-data` would never
-reach a CAPN-created node. `vendor-data` is a separate cloud-init
-source that merges with `user-data` natively — CAPN uses `user-data`
-for kubeadm, the profile uses `vendor-data` for eth1 bring-up, no
-conflict.
-
-The key is role-internal and substrate-required: the injection is
-driven by the `_external_vendor_data: true` marker on the catalog
-entry (`vars/main.yml`), not by a user-facing variable. Consumers
-cannot disable vendor-data through `lxd_profiles_capi_<role>_extra_config`
-because extras are merged on top only for keys that don't collide —
-but if a consumer's extras set `cloud-init.vendor-data` explicitly,
-LXD receives the union via `combine`, and the extras-value wins. That
-is a bug in the consumer override, not a feature.
-
-`capi-base` and `capi-bootstrap` do NOT receive vendor-data — they
-have no external nic and the bootstrap k3s container uses only eth0
-on the internal bridge.
+The Molecule verify scenario asserts that both slots stay empty
+on every profile this role manages.
 
 ## Caveats
 

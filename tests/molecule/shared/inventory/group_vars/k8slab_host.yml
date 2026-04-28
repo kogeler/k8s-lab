@@ -64,6 +64,14 @@ k8s_lab_management_cluster_name: "mgmt-1"
 k8s_lab_workload_cluster_name:   "lab-default"
 k8s_lab_kubernetes_version:      "v1.35.0"   # constrained by CAPN simplestreams image set, see §8 inline
 
+# --- Cluster topology counts (plan §8) ----------------------------
+# CAPI invariant: workload controlplane MUST be odd (kubeadm KCP
+# webhook rejects even values under stacked etcd). Default 3 is the
+# minimum HA-capable odd value; default 2 workers exercises the HA
+# pair contract §2.12.
+k8s_lab_workload_controlplane_count: 3
+k8s_lab_workload_worker_count:       2
+
 # --- Workload cluster CIDRs (plan §8) -----------------------------
 #
 # Dual-stack pod / service CIDRs. Consumed by charts/capi-workload-cluster

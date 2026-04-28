@@ -16,15 +16,10 @@
     _workload_namespace: "capi-clusters"
     _cluster_class_namespace: "capi-system"
     _workload_cluster_name: "{{ k8s_lab_workload_cluster_name }}"
+    _workload_kubeconfig: "{{ _artifacts_root }}/clusters/{{ _workload_cluster_name }}.kubeconfig"
     _kubernetes_version: "{{ k8s_lab_kubernetes_version }}"
     _infrastructure_secret_name: "{{ k8s_lab_infrastructure_secret_name | default('incus-identity') }}"
-    # Helm CLI on the VM. Chart contracts target the Helm 3 SDK
-    # (PLAN §16.3 hashicorp/helm 3.x compat); the latest 3.x line
-    # is what we install here. Bump on the same cadence as
-    # k8s_lab_helm_provider_version (§8a).
-    _helm_cli_version: "3.20.0"
-    _vm_helm_binary: "/opt/capi-lab/bin/helm"
-    _vm_workload_kubeconfig: "/opt/capi-lab/etc/{{ _workload_cluster_name }}.kubeconfig"
+    _lxd_host_address: "{{ lookup('env', 'K8SLAB_HOST_ADDR') }}"
   tasks:
     - name: "Converge | e2e-local | build bootstrap management cluster + artifacts"
       ansible.builtin.include_role:
@@ -49,6 +44,14 @@
       vars:
         ansible_python_interpreter: "{{ ansible_playbook_python }}"
 
+    # `helm install` waits for the chart's post-install hook Job
+    # (`api-proxy-attach`) to succeed before returning, so on
+    # success the LXD `proxy` device is already wired on the
+    # haproxy LB instance and `<lxd_host>:<api-proxy-port>` is
+    # ready to forward to workload kube-apiserver.
+    # `wait_timeout` covers (CAPN provisions LB instance) + (hook
+    # Job patches LXD config) — 15 minutes is comfortable on a
+    # cold lab host.
     - name: "Converge | e2e-local | install workload Cluster chart"
       kubernetes.core.helm:
         kubeconfig: "{{ _bootstrap_kubeconfig }}"
@@ -57,7 +60,7 @@
         release_namespace: "{{ _workload_namespace }}"
         create_namespace: false
         wait: true
-        wait_timeout: 5m
+        wait_timeout: 15m
         values:
           cluster:
             name: "{{ _workload_cluster_name }}"
@@ -65,80 +68,23 @@
             namespace: "{{ _cluster_class_namespace }}"
           kubernetes:
             version: "{{ _kubernetes_version }}"
+          apiProxy:
+            infrastructureSecretName: "{{ _infrastructure_secret_name }}"
       delegate_to: localhost
       become: false
       vars:
         ansible_python_interpreter: "{{ ansible_playbook_python }}"
 
-    # ---- CNI delivery ------------------------------------------------
-    # The workload-cluster API endpoint is published on the LXD-bridge
-    # IPv6 (capi-int) and is reachable only from inside the VM, not
-    # from the runner. So everything below runs on the VM (no
-    # `delegate_to: localhost`) — install helm CLI, ship the chart
-    # tree, materialise the workload kubeconfig from the bootstrap-
-    # side Secret, and `helm install` against it on the VM.
-
-    - name: "Converge | e2e-local | install helm CLI on VM"
-      ansible.builtin.unarchive:
-        src: "https://get.helm.sh/helm-v{{ _helm_cli_version }}-linux-amd64.tar.gz"
-        dest: "{{ _vm_helm_binary | dirname }}"
-        remote_src: true
-        extra_opts:
-          - "--strip-components=1"
-          - "--wildcards"
-          - "linux-amd64/helm"
-        creates: "{{ _vm_helm_binary }}"
-        mode: "0755"
-        owner: root
-        group: root
-
-    # Package the chart (with its tigera-operator subchart bundled)
-    # on the runner, then copy a single .tgz to the VM. Avoids
-    # `ansible.posix.synchronize`'s `dest_port` re-templating bug
-    # against the env-driven `ansible_port`, and avoids shipping the
-    # subchart cache that lives in the runner-side gitignore.
-    - name: "Converge | e2e-local | read cni-calico Chart.yaml on runner"
-      ansible.builtin.slurp:
-        src: "{{ _cni_calico_chart }}/Chart.yaml"
-      register: _cni_calico_chart_yaml
-      delegate_to: localhost
-      become: false
-
-    - name: "Converge | e2e-local | derive cni-calico chart version"
-      ansible.builtin.set_fact:
-        _cni_calico_chart_version: >-
-          {{ (_cni_calico_chart_yaml.content | b64decode | from_yaml).version }}
-
-    - name: "Converge | e2e-local | helm dependency update on runner"
-      ansible.builtin.command:
-        argv:
-          - helm
-          - dependency
-          - update
-          - "{{ _cni_calico_chart }}"
-      delegate_to: localhost
-      become: false
-      changed_when: true
-
-    - name: "Converge | e2e-local | helm package cni-calico on runner"
-      ansible.builtin.command:
-        argv:
-          - helm
-          - package
-          - "{{ _cni_calico_chart }}"
-          - --destination
-          - "{{ _artifacts_root }}"
-      delegate_to: localhost
-      become: false
-      changed_when: true
-
-    - name: "Converge | e2e-local | copy cni-calico chart tarball to VM"
-      ansible.builtin.copy:
-        src: "{{ _artifacts_root }}/cni-calico-{{ _cni_calico_chart_version }}.tgz"
-        dest: "/opt/capi-lab/etc/cni-calico-{{ _cni_calico_chart_version }}.tgz"
-        mode: "0644"
-        owner: root
-        group: root
+    # ---- Runner-reachable workload kubeconfig -----------------------
+    # The kubeconfig CAPN mints in the `<cluster>-kubeconfig` Secret
+    # points at the in-cluster CP VIP (LXD-bridge IPv6, runner-
+    # unreachable). Rewrite the server URL to
+    # `https://<vagrant-vm>:<port>` (where <port> comes from the
+    # Cluster CR annotation `k8s-lab.io/api-proxy-port` written by
+    # `capi-workload-cluster`) and inject
+    # `tls-server-name: kubernetes.default.svc` to bypass the SAN
+    # mismatch the rewrite introduces. Every add-on chart below
+    # installs from the runner against this rewritten kubeconfig.
 
     - name: "Converge | e2e-local | wait for workload kubeconfig Secret on bootstrap"
       kubernetes.core.k8s_info:
@@ -158,22 +104,80 @@
       vars:
         ansible_python_interpreter: "{{ ansible_playbook_python }}"
 
-    - name: "Converge | e2e-local | materialise workload kubeconfig on VM"
+    - name: "Converge | e2e-local | read api-proxy-port annotation from Cluster CR"
+      kubernetes.core.k8s_info:
+        kubeconfig: "{{ _bootstrap_kubeconfig }}"
+        api_version: cluster.x-k8s.io/v1beta2
+        kind: Cluster
+        namespace: "{{ _workload_namespace }}"
+        name: "{{ _workload_cluster_name }}"
+      register: _converge_wl_cluster
+      delegate_to: localhost
+      become: false
+      vars:
+        ansible_python_interpreter: "{{ ansible_playbook_python }}"
+
+    - name: "Converge | e2e-local | bind api proxy port"
+      ansible.builtin.set_fact:
+        _api_proxy_port: >-
+          {{ _converge_wl_cluster.resources[0].metadata.annotations['k8s-lab.io/api-proxy-port'] }}
+
+    - name: "Converge | e2e-local | ensure runner-side clusters/ dir exists"
+      ansible.builtin.file:
+        path: "{{ _workload_kubeconfig | dirname }}"
+        state: directory
+        mode: "0700"
+      delegate_to: localhost
+      become: false
+
+    - name: "Converge | e2e-local | rewrite + write runner-reachable workload kubeconfig"
       ansible.builtin.copy:
-        dest: "{{ _vm_workload_kubeconfig }}"
-        content: "{{ _converge_wl_kc_secret.resources[0].data.value | b64decode }}"
+        dest: "{{ _workload_kubeconfig }}"
+        content: |
+          {{ _converge_wl_kc_secret.resources[0].data.value
+             | b64decode
+             | regex_replace('server: https://[^\n]+',
+                             'server: https://' ~ _lxd_host_address ~ ':' ~ _api_proxy_port ~ '\n    tls-server-name: kubernetes.default.svc') }}
         mode: "0600"
-        owner: root
-        group: root
+      delegate_to: localhost
+      become: false
+
+    # Workload kube-apiserver may be momentarily unreachable while
+    # CAPI is mid-rollout (KCP rotating CP machines, kubeadm join
+    # still in progress). A fresh `helm install cni-calico` would
+    # then fail with `Kubernetes cluster unreachable: connection
+    # refused`. Poll /livez through the runner-reachable endpoint
+    # until 200 before proceeding.
+    - name: "Converge | e2e-local | wait for workload kube-apiserver /livez (runner-side)"
+      ansible.builtin.uri:
+        url: "https://{{ _lxd_host_address }}:{{ _api_proxy_port }}/livez"
+        method: GET
+        validate_certs: false
+        status_code: [200, 401]
+        timeout: 10
+      register: _converge_apiserver_probe
+      retries: 60
+      delay: 10
+      until: _converge_apiserver_probe.status in [200, 401]
+      delegate_to: localhost
+      become: false
+
+    # ---- Cluster add-ons (CNI + MetalLB) ----------------------------
+    # The runner now holds a kubeconfig pointing at a runner-reachable
+    # endpoint, so every workload-cluster add-on installs from the
+    # runner via `kubernetes.core.helm` with `delegate_to: localhost`.
+    # `dependency_update: true` is set on charts whose Chart.yaml has
+    # a `dependencies:` block — Helm refreshes the subchart cache
+    # from the upstream registry on first run.
 
     - name: "Converge | e2e-local | install CNI Calico on workload cluster"
       kubernetes.core.helm:
-        binary_path: "{{ _vm_helm_binary }}"
-        kubeconfig: "{{ _vm_workload_kubeconfig }}"
+        kubeconfig: "{{ _workload_kubeconfig }}"
         name: cni-calico
-        chart_ref: "/opt/capi-lab/etc/cni-calico-{{ _cni_calico_chart_version }}.tgz"
+        chart_ref: "{{ _cni_calico_chart }}"
         release_namespace: tigera-operator
         create_namespace: true
+        dependency_update: true
         wait: true
         wait_timeout: 10m
         values:
@@ -184,16 +188,12 @@
                 - "{{ k8s_lab_workload_pod_cidr_v6 }}"
           tests:
             kubectlVersion: "{{ _kubernetes_version }}"
+      delegate_to: localhost
+      become: false
+      vars:
+        ansible_python_interpreter: "{{ ansible_playbook_python }}"
 
-    # ---- MetalLB delivery (two-release pair) ------------------------
-    # Same packaging pattern as cni-calico above: the in-cluster helm
-    # binary cannot do `helm dependency update` without network egress
-    # to metallb.github.io, so each wrapper is packaged on the runner,
-    # the .tgz is copied to the VM, and helm install runs on the VM
-    # against the workload kubeconfig. The workload API endpoint is
-    # on the LXD-bridge IPv6 (capi-int) and is runner-unreachable.
-    #
-    # Two-release pair (PLAN §17.1):
+    # ---- MetalLB delivery (two-release pair, PLAN §17.1) ------------
     #   1) charts/metallb/         — upstream subchart wrapper
     #      (CRDs + controller + speaker). Installed first so the
     #      metallb.io/v1beta1 API is registered by the time the
@@ -205,102 +205,26 @@
     # CRs ship in the same release (the upstream subchart puts CRDs
     # in `templates/crds/` rather than the Helm `crds/` folder).
 
-    - name: "Converge | e2e-local | read metallb Chart.yaml on runner"
-      ansible.builtin.slurp:
-        src: "{{ _metallb_chart }}/Chart.yaml"
-      register: _metallb_chart_yaml
-      delegate_to: localhost
-      become: false
-
-    - name: "Converge | e2e-local | derive metallb chart version"
-      ansible.builtin.set_fact:
-        _metallb_chart_version: >-
-          {{ (_metallb_chart_yaml.content | b64decode | from_yaml).version }}
-
-    - name: "Converge | e2e-local | helm dependency update on runner (metallb)"
-      ansible.builtin.command:
-        argv:
-          - helm
-          - dependency
-          - update
-          - "{{ _metallb_chart }}"
-      delegate_to: localhost
-      become: false
-      changed_when: true
-
-    - name: "Converge | e2e-local | helm package metallb on runner"
-      ansible.builtin.command:
-        argv:
-          - helm
-          - package
-          - "{{ _metallb_chart }}"
-          - --destination
-          - "{{ _artifacts_root }}"
-      delegate_to: localhost
-      become: false
-      changed_when: true
-
-    - name: "Converge | e2e-local | copy metallb chart tarball to VM"
-      ansible.builtin.copy:
-        src: "{{ _artifacts_root }}/metallb-{{ _metallb_chart_version }}.tgz"
-        dest: "/opt/capi-lab/etc/metallb-{{ _metallb_chart_version }}.tgz"
-        mode: "0644"
-        owner: root
-        group: root
-
     - name: "Converge | e2e-local | install upstream MetalLB on workload cluster"
       kubernetes.core.helm:
-        binary_path: "{{ _vm_helm_binary }}"
-        kubeconfig: "{{ _vm_workload_kubeconfig }}"
+        kubeconfig: "{{ _workload_kubeconfig }}"
         name: metallb
-        chart_ref: "/opt/capi-lab/etc/metallb-{{ _metallb_chart_version }}.tgz"
+        chart_ref: "{{ _metallb_chart }}"
         release_namespace: "{{ _metallb_namespace }}"
         create_namespace: true
+        dependency_update: true
         wait: true
         wait_timeout: 10m
-
-    - name: "Converge | e2e-local | read metallb-config Chart.yaml on runner"
-      ansible.builtin.slurp:
-        src: "{{ _metallb_config_chart }}/Chart.yaml"
-      register: _metallb_config_chart_yaml
       delegate_to: localhost
       become: false
-
-    - name: "Converge | e2e-local | derive metallb-config chart version"
-      ansible.builtin.set_fact:
-        _metallb_config_chart_version: >-
-          {{ (_metallb_config_chart_yaml.content | b64decode | from_yaml).version }}
-
-    # `helm package` on a chart with no deps does not need a prior
-    # `helm dependency update`. metallb-config has no Chart.yaml
-    # `dependencies:` block — the upstream subchart lives in the
-    # sibling `charts/metallb/` wrapper.
-    - name: "Converge | e2e-local | helm package metallb-config on runner"
-      ansible.builtin.command:
-        argv:
-          - helm
-          - package
-          - "{{ _metallb_config_chart }}"
-          - --destination
-          - "{{ _artifacts_root }}"
-      delegate_to: localhost
-      become: false
-      changed_when: true
-
-    - name: "Converge | e2e-local | copy metallb-config chart tarball to VM"
-      ansible.builtin.copy:
-        src: "{{ _artifacts_root }}/metallb-config-{{ _metallb_config_chart_version }}.tgz"
-        dest: "/opt/capi-lab/etc/metallb-config-{{ _metallb_config_chart_version }}.tgz"
-        mode: "0644"
-        owner: root
-        group: root
+      vars:
+        ansible_python_interpreter: "{{ ansible_playbook_python }}"
 
     - name: "Converge | e2e-local | install MetalLB config on workload cluster"
       kubernetes.core.helm:
-        binary_path: "{{ _vm_helm_binary }}"
-        kubeconfig: "{{ _vm_workload_kubeconfig }}"
+        kubeconfig: "{{ _workload_kubeconfig }}"
         name: metallb-config
-        chart_ref: "/opt/capi-lab/etc/metallb-config-{{ _metallb_config_chart_version }}.tgz"
+        chart_ref: "{{ _metallb_config_chart }}"
         release_namespace: "{{ _metallb_namespace }}"
         create_namespace: false
         wait: true
@@ -312,3 +236,7 @@
             interface: "{{ k8s_lab_metallb_interface | default('eth1') }}"
           tests:
             kubectlVersion: "{{ _kubernetes_version }}"
+      delegate_to: localhost
+      become: false
+      vars:
+        ansible_python_interpreter: "{{ ansible_playbook_python }}"
