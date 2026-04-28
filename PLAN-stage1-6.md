@@ -91,46 +91,113 @@ end-to-end (`make -C tests/molecule cleanup-bootstrap-delegated-test`,
 
 ## 19.2. Phase 8 — Destroy
 
-Чёткая reverse-ordered цепочка:
+**Статус: выполнено в Step 18 (2026-04-28) — Makefile destroy/clean
+graph причёсан в две явные оси (`destroy-*` для running infra,
+`clean-*` для file-only deletes), каждый destroy auto-cascade'ит
+clean-* которые он invalidate'ит, два compound supertarget'а покрывают
+типовые operator workflows. Operator не отслеживает manual cleanup
+после ни одного из destroy-шагов — следующий forward target работает
+без касаний.**
+
+Reverse-ordered chain в исходной форме:
 
 1. **`make destroy-workload`** — `terraform destroy` на §16.5
    fixture (`tests/fixtures/terraform/workload-clusters/lab-default/`).
    TF разворачивает helm_release цепочку §16.4 module'а в обратном
    порядке: metallb-config → metallb → cni-calico → workload Cluster
    CR (CAPI/CAPN delete LXC instances + workload kubeconfig Secret)
-   → per-workload ClusterClass. На этом этапе Helm-managed add-ons
-   автоматически удаляются перед underlying cluster'ом — TF
-   dependency graph гарантирует порядок;
+   → per-workload ClusterClass. **Cascade: `clean-tfstate` +
+   `clean-workload-kubeconfig`** — TF state в фикстуре + любая
+   материализованная workload kubeconfig копия в
+   `.artifacts/clusters/` смысла не имеют после destroy.
 2. **Per-workload artefacts cleanup** — module §16.4 не пишет
-   файлы (см. §16.4 architectural fence), так что нечего очищать
-   на TF-стороне. Molecule e2e-local debug-копия в
-   `.artifacts/clusters/<name>.kubeconfig` снимается через
-   `make clean-local` (на стадии 5 ниже).
+   файлы (§16.4 architectural fence). Молекулярные debug-копии в
+   `.artifacts/clusters/<name>.kubeconfig` (написанные
+   `make workload-kubeconfig` consumer-side wrapper'ом) — wiped
+   шагом 1 cascade'ом.
 3. **`pivot_clusterctl_move` reverse** (если был pivot, §18.1) —
    опционально, scope Stage 2;
 4. **`cleanup_bootstrap` Ansible role** (§19.1) — снимает bootstrap
    publication (LXD proxy device), удаляет bootstrap LXC instance,
-   очищает `capi-lab` project assets;
-5. **Vagrant/libvirt cleanup** — `make clean-local` (включает
-   `vagrant destroy`) возвращает harness в чистое состояние.
+   очищает `capi-lab` project assets. **Локально на Vagrant flow
+   шаг (4) и (5) совпадают** — VM teardown subsumes bootstrap
+   cleanup; роль остаётся отдельным testable Molecule scenario
+   (`tests/molecule/cleanup-bootstrap/`) для production paths где
+   substrate persistent.
+5. **Vagrant/libvirt cleanup** — `make destroy-vm` возвращает
+   harness в чистое состояние. **Cascade: `clean-bootstrap-bundle`
+   + `clean-workload-kubeconfig` + `clean-tfstate`** — после
+   wipe'а VM ВСЕ runner-side артефакты (handoff bundle + workload
+   kubeconfig + workload TF state) указывают на призраков.
 
-Контракт:
+### Naming convention (Step 18)
+
+* **`destroy-*`** — operate on running infra (TF state, helm
+  releases, VM, libvirt domains). Каждый каскадирует `clean-*`
+  что сделал stale. После любого `destroy-*` следующий forward
+  target (`deploy-workload`, `vagrant up`, …) работает без manual
+  intermediate cleanup.
+* **`clean-*`** — file/directory deletes only. Idempotent против
+  отсутствующего state (безопасно запускать на repo без infra).
+* **compound** — operator-facing supertarget'ы:
+  * **`make clean-local`** (≈30s) — «start over» fast reset:
+    `destroy-vm + clean-molecule`. VM destruction subsumes
+    bootstrap cleanup transitively; не упражняет
+    `terraform destroy` на live workload'е.
+  * **`make reset-all`** (≈3-5min) — полная PLAN §19.2
+    reverse chain: `destroy-workload → destroy-vm + clean-molecule`.
+    Упражняет каждый destroy-step на живой infra (helm uninstall
+    + Cluster CR cascade delete + LXC teardown via CAPN, потом
+    VM wipe). Используется когда operator хочет валидировать
+    destroy contract end-to-end перед next test cycle.
+
+### Cascade graph
+
+```
+destroy-workload  ─→  clean-tfstate
+                  └→  clean-workload-kubeconfig
+
+destroy-vm        ─→  clean-bootstrap-bundle
+                  └→  clean-workload-kubeconfig
+                  └→  clean-tfstate
+
+clean-local       ─→  destroy-vm  (← which cascades the cleans above)
+                  └→  clean-molecule
+
+reset-all         ─→  destroy-workload  (← cascades clean-tfstate + clean-workload-kubeconfig)
+                  └→  destroy-vm        (← cascades clean-bootstrap-bundle + clean-workload-kubeconfig + clean-tfstate)
+                  └→  clean-molecule
+```
+
+### Контракт
 
 * shared external bridge не трогаем, если его не создавал harness
   (production-mirror — bridge обычно живёт за пределами repo);
-* operator вызывает шаги через Makefile-target'ы
-  (`feedback_makefile_only.md`): `make destroy-workload` для (1)-(2),
-  `make clean-local` для (4)-(5). Direct `terraform destroy` /
-  `vagrant destroy` не invoке'ятся.
+* operator вызывает шаги ТОЛЬКО через root-level Makefile target'ы
+  (memory `feedback_makefile_only`); direct `terraform destroy`
+  или `vagrant destroy` не invoке'ятся;
+* `tests/vagrant/debian13/Makefile destroy` после Step 18 операует
+  ТОЛЬКО на VM + libvirt orphans — `.artifacts/*` cleanup owned
+  root Makefile'ом через cascade. Stand-alone
+  `make -C tests/vagrant/debian13 destroy` оставляет `.artifacts/`
+  нетронутым (operator's call использовать `destroy-vm` если
+  cascade нужен).
 
-Acceptance:
+### Acceptance
 
-* clean local redeploy from scratch возможен после `make
-  clean-local` без manual вмешательства;
+Все три критерия зелёные (Step 18 verification, 2026-04-28):
+
+* `make destroy-workload` на 5/5 Ready cluster'е → TF destroy
+  снёс 7 ресурсов, cascade очистил `.terraform/`, `terraform.tfstate*`,
+  `.artifacts/clusters/lab-default.kubeconfig`. Сразу следом
+  `make deploy-workload` поднял свежий cluster zero-touch
+  (без manual cleanup между destroy и deploy);
 * `terraform destroy` идемпотентен — повторный destroy на
-  пустом state'е no-op'ит;
-* `cleanup_bootstrap` Molecule scenario зелёный (§19.1 уже
-  shipped в Step 9).
+  empty state'е (после первого destroy + до cascade-wipe'а) no-op'ит
+  с `Resources: 0 destroyed`;
+* `cleanup_bootstrap` Molecule scenario зелёный (§19.1 shipped в
+  Step 9; подтверждение что role-level reverse path работает на
+  isolated test substrate).
 
 [1]: https://capn.linuxcontainers.org/?utm_source=chatgpt.com "Introduction - The cluster-api-provider-incus book"
 [2]: https://documentation.ubuntu.com/lxd/latest/reference/network_bridge/?utm_source=chatgpt.com "Bridge network - LXD documentation"

@@ -1,7 +1,26 @@
 {{/*
-Helm post-install/post-upgrade hook Job: attach an LXD `proxy` device
-to the CAPN-managed haproxy LB instance so the workload kube-apiserver
-becomes reachable from outside the LXD host.
+Helm post-install/post-upgrade hook Job: gate workload-cluster
+readiness end-to-end so that downstream chart installs (CNI,
+MetalLB, etc.) executed by helm install / TF apply see a fully
+serving cluster the moment helm reports the release deployed.
+
+The hook owns FOUR readiness gates inside one Job:
+
+  1. Wait for CAPN to materialise the haproxy LB LXC instance.
+  2. Wait for KCP to emit `<cluster>-kubeconfig` Secret in the
+     release namespace (KCP issues it when cluster certs are
+     generated on the first CP node).
+  3. Wait for the LB instance to reach LXD `Running` state and
+     attach the `api-proxy` proxy device on its config (idempotent
+     PATCH; merge-on-PATCH preserves existing devices).
+  4. Probe `https://<lb-cap-int-ip>:6443/livez` until the apiserver
+     responds (200/401/403). This proves the haproxy → CP backend
+     chain is live, not just that the LXD entity exists.
+
+Once all four gates pass, helm reports the release deployed and
+TF apply proceeds to workload-side helm_release installations
+without separate kubectl/curl wait scripts. Chart owns its
+readiness contract end-to-end.
 
 WHY THIS LIVES IN A HOOK JOB
 ============================
@@ -12,54 +31,37 @@ topology API to add a `devices` block on the LB instance fails at
 admission with `field not declared in schema`. The proxy device must
 therefore be attached post-CAPI on the live LB instance.
 
-By shipping the attach as a Helm hook in this chart (rather than as
-an inline `lxc config device add` in Molecule / TF code), every
+By shipping the readiness gates as a Helm hook in this chart (rather
+than as inline `kubectl`/`curl` shell in Molecule / TF code), every
 consumer — Molecule e2e, Terraform module, manual `helm install` —
-gets runner-reachability automatically as part of `helm install`.
-
-WHY ALPINE + curl + jq AGAINST LXD REST API
-===========================================
-LXD exposes a complete HTTPS REST API at :8443. The CAPN identity
-Secret (charts/capi-workload-cluster + role bootstrap_capn_secret)
-already carries the mTLS material LXD requires (`client-crt`,
-`client-key`, `server-crt`) plus the daemon URL (`server`) and the
-target project (`project`). curl can drive the API directly — no
-`incus`/`lxc` CLI image needed (would be ~50 MB+ and a chained
-external dependency for upstream binaries). Plain alpine + apk
-(curl, jq, tini) is ~10 MB and audit-friendly.
-
-LXD API endpoints used:
-  * GET  /1.0/instances?project=<p>           — list URLs
-  * GET  /1.0/instances/<lb>?project=<p>      — read existing devices
-  * PATCH /1.0/instances/<lb>?project=<p>     — merge in our device
-
-LXD PATCH semantics merge top-level fields, so passing
-`{"devices":{"api-proxy":{...}}}` adds our device and leaves any
-other devices on the instance untouched.
+gets full runner-reachability + apiserver-serving guarantees
+automatically as part of `helm install --wait`.
 
 IDEMPOTENCY
 ===========
 On re-install / re-upgrade Helm sets `before-hook-creation` so a
 prior attempt's Job is deleted before this one runs. Inside the
 script: a GET on the instance's existing devices.api-proxy block
-short-circuits with success if the device is already attached and
-matches the desired listen port, so the Job is safe to re-run on
-helm upgrade with no API churn.
+short-circuits the PATCH if the device is already attached and
+matches the desired listen port; the kubeconfig wait + livez probe
+short-circuit if their conditions are already true.
 
 LIFECYCLE
 =========
 post-install + post-upgrade. helm waits for hook Jobs by default,
 so the converge / TF apply that calls `helm install <workload>`
 returns only after the LB instance is provisioned by CAPN AND the
-proxy device is wired — no race window where downstream chart
-installs see a half-ready cluster.
+proxy device is wired AND the kubeconfig Secret materialised AND
+the apiserver responds /livez.
 */}}
-{{- $port := include "capi-workload-cluster.apiProxyPort" . | int -}}
+{{- $port      := include "capi-workload-cluster.apiProxyPort" . | int -}}
+{{- $hookSA    := printf "%s-api-proxy-hook" .Release.Name | trunc 63 | trimSuffix "-" -}}
+{{- $kubecfgSecret := printf "%s-kubeconfig" .Values.cluster.name -}}
 ---
 apiVersion: v1
 kind: ServiceAccount
 metadata:
-  name: {{ printf "%s-api-proxy-hook" .Release.Name | trunc 63 | trimSuffix "-" }}
+  name: {{ $hookSA }}
   namespace: {{ .Release.Namespace }}
   labels:
     {{- include "capi-workload-cluster.labels" . | nindent 4 }}
@@ -67,6 +69,47 @@ metadata:
     helm.sh/hook: pre-install,pre-upgrade,pre-delete
     helm.sh/hook-weight: "-10"
     helm.sh/hook-delete-policy: before-hook-creation
+---
+# RBAC — minimum read scope for the post-install gate to confirm KCP
+# has emitted the workload kubeconfig Secret. Read-only, restricted
+# to the single resource name; same SA is also reused by the
+# pre-delete detach Job (read scope is still safe there).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ $hookSA }}-kubeconfig-reader
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "capi-workload-cluster.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade,pre-delete
+    helm.sh/hook-weight: "-9"
+    helm.sh/hook-delete-policy: before-hook-creation
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    resourceNames: [{{ $kubecfgSecret | quote }}]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ $hookSA }}-kubeconfig-reader
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "capi-workload-cluster.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade,pre-delete
+    helm.sh/hook-weight: "-9"
+    helm.sh/hook-delete-policy: before-hook-creation
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ $hookSA }}-kubeconfig-reader
+subjects:
+  - kind: ServiceAccount
+    name: {{ $hookSA }}
+    namespace: {{ .Release.Namespace }}
 ---
 apiVersion: batch/v1
 kind: Job
@@ -77,8 +120,9 @@ metadata:
     {{- include "capi-workload-cluster.labels" . | nindent 4 }}
   annotations:
     # Runs after the Cluster CR is applied. CAPN starts provisioning
-    # asynchronously; the script's wait-loop polls the LXD API for
-    # the LB instance to appear before patching it.
+    # asynchronously; the script's wait-loops poll the LXD API for
+    # the LB instance + KCP for kubeconfig Secret + apiserver /livez
+    # for end-to-end readiness.
     helm.sh/hook: post-install,post-upgrade
     helm.sh/hook-weight: "10"
     helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
@@ -92,7 +136,7 @@ spec:
         app.kubernetes.io/component: api-proxy-attach
     spec:
       restartPolicy: OnFailure
-      serviceAccountName: {{ printf "%s-api-proxy-hook" .Release.Name | trunc 63 | trimSuffix "-" }}
+      serviceAccountName: {{ $hookSA }}
       containers:
         - name: attach
           image: {{ .Values.apiProxy.image | quote }}
@@ -102,10 +146,14 @@ spec:
               value: {{ .Values.cluster.name | quote }}
             - name: API_PROXY_PORT
               value: {{ $port | quote }}
+            - name: KUBECFG_SECRET
+              value: {{ $kubecfgSecret | quote }}
             - name: WAIT_TIMEOUT_SECONDS
               value: {{ .Values.apiProxy.lbWaitTimeoutSeconds | quote }}
             - name: SECRET_DIR
               value: "/etc/incus-identity"
+            - name: SA_DIR
+              value: "/var/run/secrets/kubernetes.io/serviceaccount"
           command: ["/bin/sh", "-eu", "-c"]
           args:
             - |
@@ -118,31 +166,27 @@ spec:
               # `-k` skips server-cert SAN validation by design.
               # LXD authorisation is mutual-TLS keyed on the client
               # cert's fingerprint trusted into LXD's store by role
-              # bootstrap_capn_secret (lxd_trust task), so confidentiality
-              # + authenticity are anchored on the client side.
-              # Using `--cacert server-crt` would fail because the LXD
-              # daemon's self-signed server cert is not issued for the
-              # capi-int gateway IP we connect to (no SAN coverage); LXD
-              # convention is to pin the cert by fingerprint, not by SAN
-              # — which curl does not support natively.
-              CURL="curl -sS --fail-with-body -k \
+              # bootstrap_capn_secret (lxd_trust task).
+              LXD="curl -sS --fail-with-body -k \
                 --cert $SECRET_DIR/client-crt \
                 --key  $SECRET_DIR/client-key"
 
-              # CAPN names the haproxy LB instance
-              # `<cluster>-<rand>-<image-flavor>-lb` (e.g.
-              # `lab-default-7bfkj-deb12-lb`). Match by prefix +
-              # `-lb` suffix rather than a positional regex so any
-              # hyphenated middle part (image flavor slug) doesn't
-              # break the wait loop.
+              # In-cluster mgmt API access (Kubernetes default service)
+              # — use the SA token mounted by the SA contract.
+              SA_TOKEN=$(cat "$SA_DIR/token")
+              SA_NS=$(cat "$SA_DIR/namespace")
+              KAPI="curl -sS -k \
+                --cacert $SA_DIR/ca.crt \
+                -H \"Authorization: Bearer $SA_TOKEN\""
+
+              # ===== Gate 1 — LB instance materialised in LXD ============
               LB_PREFIX="${CLUSTER_NAME}-"
               LB_SUFFIX="-lb"
-
-              echo "==> waiting up to ${WAIT_TIMEOUT_SECONDS}s for LB instance ${LB_PREFIX}*${LB_SUFFIX} in project ${PROJECT}"
+              echo "==> [1/4] waiting up to ${WAIT_TIMEOUT_SECONDS}s for LB instance ${LB_PREFIX}*${LB_SUFFIX} in project ${PROJECT}"
               DEADLINE=$(( $(date +%s) + WAIT_TIMEOUT_SECONDS ))
               LB_NAME=""
               while [ "$(date +%s)" -lt "$DEADLINE" ]; do
-                LB_NAME=$( $CURL "$SERVER/1.0/instances?project=${PROJECT}" \
+                LB_NAME=$( $LXD "$SERVER/1.0/instances?project=${PROJECT}" \
                   | jq -r --arg p "$LB_PREFIX" --arg s "$LB_SUFFIX" \
                        '.metadata[] | sub("^/1\\.0/instances/"; "") | sub("\\?.*$"; "") | select(startswith($p) and endswith($s))' \
                   | head -n1 || true )
@@ -155,27 +199,87 @@ spec:
               }
               echo "    LB instance: ${LB_NAME}"
 
+              # ===== Gate 2 — kubeconfig Secret materialised by KCP ======
+              echo "==> [2/4] waiting for Secret ${SA_NS}/${KUBECFG_SECRET}"
+              while [ "$(date +%s)" -lt "$DEADLINE" ]; do
+                code=$( eval "$KAPI -o /dev/null -w '%{http_code}'" \
+                  "https://kubernetes.default.svc/api/v1/namespaces/${SA_NS}/secrets/${KUBECFG_SECRET}" \
+                  || echo 000 )
+                [ "$code" = "200" ] && break
+                sleep 5
+              done
+              [ "$code" = "200" ] || {
+                echo "FAIL: Secret ${SA_NS}/${KUBECFG_SECRET} not present (last HTTP ${code})"
+                exit 1
+              }
+              echo "    Secret present"
+
+              # ===== Gate 3 — LB Running + proxy device attached =========
+              echo "==> [3/4] waiting for LB instance Running state"
+              while [ "$(date +%s)" -lt "$DEADLINE" ]; do
+                state=$( $LXD "$SERVER/1.0/instances/${LB_NAME}/state?project=${PROJECT}" \
+                  | jq -r '.metadata.status' 2>/dev/null || true )
+                [ "$state" = "Running" ] && break
+                sleep 5
+              done
+              [ "$state" = "Running" ] || {
+                echo "FAIL: LB instance ${LB_NAME} not Running (last state=${state:-unknown})"
+                exit 1
+              }
+
               # Idempotent shortcut: device already present with matching listen port.
-              EXISTING=$( $CURL "$SERVER/1.0/instances/${LB_NAME}?project=${PROJECT}" \
+              EXISTING=$( $LXD "$SERVER/1.0/instances/${LB_NAME}?project=${PROJECT}" \
                 | jq -r --arg p "tcp:0.0.0.0:${API_PROXY_PORT}" \
                      '(.metadata.devices."api-proxy" // empty) | select(.listen == $p) | .listen' )
-              if [ -n "$EXISTING" ]; then
-                echo "==> api-proxy device already attached on ${LB_NAME} (listen=${EXISTING}); nothing to do"
-                exit 0
+              if [ -z "$EXISTING" ]; then
+                echo "==> attaching api-proxy device on ${LB_NAME} (listen=tcp:0.0.0.0:${API_PROXY_PORT} → connect=tcp:127.0.0.1:6443)"
+                PAYLOAD=$( jq -nc --arg port "$API_PROXY_PORT" \
+                  '{devices:{"api-proxy":{type:"proxy",
+                                         listen:("tcp:0.0.0.0:" + $port),
+                                         connect:"tcp:127.0.0.1:6443",
+                                         bind:"host"}}}' )
+                $LXD -X PATCH \
+                  -H "Content-Type: application/json" \
+                  "$SERVER/1.0/instances/${LB_NAME}?project=${PROJECT}" \
+                  -d "$PAYLOAD"
+              else
+                echo "    api-proxy device already attached (listen=${EXISTING})"
               fi
 
-              echo "==> attaching api-proxy device on ${LB_NAME} (listen=tcp:0.0.0.0:${API_PROXY_PORT} → connect=tcp:127.0.0.1:6443)"
-              PAYLOAD=$( jq -nc --arg port "$API_PROXY_PORT" \
-                '{devices:{"api-proxy":{type:"proxy",
-                                       listen:("tcp:0.0.0.0:" + $port),
-                                       connect:"tcp:127.0.0.1:6443",
-                                       bind:"host"}}}' )
-              $CURL -X PATCH \
-                -H "Content-Type: application/json" \
-                "$SERVER/1.0/instances/${LB_NAME}?project=${PROJECT}" \
-                -d "$PAYLOAD"
+              # ===== Gate 4 — apiserver /livez via LB capi-int IPv4 ======
+              # Pick the LB's first global IPv4 on eth0 (capi-int subnet
+              # — reachable from the bootstrap LXC the hook runs in).
+              LB_IP=$( $LXD "$SERVER/1.0/instances/${LB_NAME}/state?project=${PROJECT}" \
+                | jq -r '.metadata.network.eth0.addresses[]?
+                         | select(.family == "inet" and .scope == "global")
+                         | .address' \
+                | head -n1 || true )
+              [ -n "$LB_IP" ] || {
+                echo "FAIL: no global IPv4 on LB ${LB_NAME} eth0"
+                exit 1
+              }
 
-              echo "==> done; api-proxy attached on ${LB_NAME}"
+              echo "==> [4/4] probing apiserver /livez via https://${LB_IP}:6443"
+              while [ "$(date +%s)" -lt "$DEADLINE" ]; do
+                code=$(curl -sk -o /dev/null -w "%{http_code}" \
+                       --connect-timeout 3 --max-time 5 \
+                       "https://${LB_IP}:6443/livez" || echo 000)
+                case "$code" in
+                  200|401|403) break ;;
+                esac
+                sleep 5
+              done
+              case "$code" in
+                200|401|403)
+                  echo "    apiserver /livez = ${code}"
+                  ;;
+                *)
+                  echo "FAIL: apiserver /livez did not respond on https://${LB_IP}:6443 (last HTTP ${code})"
+                  exit 1
+                  ;;
+              esac
+
+              echo "==> done; workload cluster ${CLUSTER_NAME} fully ready"
           volumeMounts:
             - name: incus-identity
               mountPath: /etc/incus-identity

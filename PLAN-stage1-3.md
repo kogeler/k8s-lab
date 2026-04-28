@@ -586,6 +586,33 @@ Memory rules applied in Step 15:
 * `feedback_no_bitnami_images.md` — alpine + apk for hook Job
   image, no vendored client tooling.**
 
+**Step 17 (2026-04-28) — bumped to 0.8.0** — chart забирает full
+workload-cluster readiness gating себе, чтобы TF module §16.4
+не вёл собственные wait-петли через bash скрипты. Изменения в
+`templates/api-proxy-attach-job.yaml` (single `post-install`
+hook Job + минимальная Role/RoleBinding на `<release>-api-proxy-hook`
+SA с `get` на `secrets/<cluster>-kubeconfig` в `.Release.Namespace`):
+
+* **Gate 1** — wait LB instance materialised в LXD (был в 0.7.2);
+* **Gate 2** — wait `<cluster>-kubeconfig` Secret present (NEW);
+  пробит через mounted SA token + `kubernetes.default.svc` REST API,
+  без `kubectl` в hook image (alpine + curl + jq баланс сохранён);
+* **Gate 3** — wait LB instance LXD `Running` state + idempotent
+  PATCH api-proxy device (был в 0.7.2; добавлено polling Running);
+* **Gate 4** — probe `https://<lb-capi-int-ipv4>:6443/livez` через
+  bootstrap-LXC-side curl до 200/401/403 (NEW). Доказательство, что
+  haproxy → CP backend chain на самом деле serving, не просто что
+  LXD entity exists.
+
+`helm install --wait` блокирует release deployed status до
+прохождения всех 4 gates. Downstream chart installs (CNI, MetalLB)
+сразу могут talk to workload API. **Memory rule
+`feedback_chart_required_values_hardcoded` applied:** chart owns
+весь readiness contract сам, TF потребитель.
+
+Annotation pin `k8s-lab.io/capi-cluster-class-chart-version`
+остаётся `"0.6.3"` — coupling с capi-cluster-class не изменился.
+
 Содержит один Cluster CR (`cluster.x-k8s.io/v1beta2`), который
 ссылается на ClusterClass из §16.2 через `spec.topology.classRef`,
 плюс `spec.clusterNetwork` dual-stack CIDR'ы для pod/service (это
@@ -871,6 +898,53 @@ ClusterClass отсутствует или её *Templates кривые — CAPI
 
 ## 16.4. Module: `terraform/modules/workload_cluster/`
 
+**Статус: выполнено в Step 16 (2026-04-28) — module shipped end-to-end
+на live Vagrant substrate'е через `make deploy-workload`. Файлы:
+`versions.tf`, `providers.tf` (mgmt + workload helm/kubernetes aliases,
+workload helm provider parses kubeconfig fields inline — host /
+cluster_ca / client_cert / client_key из распарсенного Secret'а, без
+config_path и без write на FS), `variables.tf` (validation на odd CP
+count, dual-stack [v4,v6] arrays, k8s version regex, non-empty
+lxd_host_address), `locals.tf` (slug формула совпадает с chart-side,
+все 5 chart-values маппинги, kubeconfig parse + endpoint rewrite +
+inject `tls-server-name: kubernetes.default.svc`), `main.tf` (chain
+из шагов 1..10), `outputs.tf`, `scripts/wait_for_secret.sh`,
+`scripts/wait_for_workload_api.sh` (deviation, см. ниже),
+`scripts/helm_test.sh`. End-to-end timing на cold Vagrant substrate'е
+(существующий bootstrap из Step 15): ClusterClass 14s + workload
+chart 14s + wait_for_kubeconfig_secret 0s + workload_api wait
+~5min (kubeadm init на 3 CPs + API serving) + CNI install 14s +
+Gate B 1m43s + MetalLB 32s + MetalLB-config 1s + Gate A 19s ≈ ~9
+мин total.**
+
+**Step 17 (2026-04-28) — full readiness gating перенесён внутрь
+chart `capi-workload-cluster` 0.8.0 hook Job** (см. §16.3 Step 17).
+Module Step 16 содержал два null_resource'а с bash-скриптами
+(`wait_for_secret.sh` + `wait_for_workload_api.sh`) для покрытия
+gap'а между Secret-existence (KCP cert generation) и фактическим
+apiserver /livez serving. Step 17 двигает контракт «I'm fully
+ready» на правильного владельца — chart's post-install hook —
+и module сводится к чистой TF-only orchestration:
+
+* `scripts/` директория удалена полностью (3 файла); `helm_test`
+  driver inline'ом heredoc в `provisioner "local-exec"` обоих
+  null_resource'ов helm-test'ов;
+* `null_resource.wait_for_kubeconfig_secret` и
+  `null_resource.wait_for_workload_api` удалены — chart's hook
+  блокирует helm install via 4 gate'а (LB materialised → Secret
+  emitted → LB Running + proxy attached → apiserver /livez
+  reachable). После `helm install --wait` retraверс'а workload
+  API готов из коробки;
+* variables `wait_for_kubeconfig_secret_timeout_seconds` и
+  `wait_for_workload_api_timeout_seconds` удалены;
+* `helm_release.capi_workload_cluster.timeout = 1500` (25 min)
+  даёт hook generous budget на cold-cache CAPN provisioning.
+
+Module теперь **полностью без `.sh` файлов** — все 6 файлов это
+`*.tf` + один `.terraform.lock.hcl`. Memory rule
+`feedback_chart_required_values_hardcoded` honored: chart owns
+свой full-readiness contract.
+
 Единственный TF module проекта. Один `terraform apply` поднимает
 полнофункциональный workload-кластер: ClusterClass + Cluster CR +
 CNI + MetalLB + acceptance helm test'ы. Module self-contained —
@@ -982,14 +1056,14 @@ Module не принимает substrate-required CR-поля (они hardcoded 
 2. `helm_release.capi_workload_cluster` — provider mgmt. Ставит
    `charts/capi-workload-cluster/` в `var.cluster_namespace`.
    `depends_on = [helm_release.capi_cluster_class]`;
-3. **Wait for workload kubeconfig Secret**: `kubernetes_resources`
-   data source (provider = `kubernetes` aliased на mgmt) polling до
-   появления Secret `<cluster_name>-kubeconfig` в
-   `<cluster_namespace>`. Module использует `data.kubernetes_resource`
-   (singular) с `field_manager`-aware retry внутри `null_resource` +
-   `local-exec sh -c 'kubectl get secret ... -w --timeout=20m'` —
-   `kubernetes_resource` data source сам по себе не имеет
-   poll-until-exists semantic'ов, hence the `null_resource`-shim;
+3. **Wait for workload kubeconfig Secret** — Step 17 update: чёрный
+   ящик внутри `helm_release.capi_workload_cluster` hook'а. Chart's
+   post-install Job blocks helm install completion до тех пор, пока
+   Secret `<cluster_name>-kubeconfig` не materialized + LB Running
+   + apiserver /livez serving. Поэтому `data.kubernetes_resource`
+   с `depends_on = helm_release.capi_workload_cluster` гарантированно
+   читает Secret сразу после helm Creation complete — отдельный
+   `null_resource` polling shim не требуется;
 4. **Decode + rewrite kubeconfig**: `data.kubernetes_resource`
    (после wait) читает Secret. `local.workload_kubeconfig_raw =
    base64decode(...)`. `local.workload_kubeconfig` — rewritten
@@ -999,9 +1073,17 @@ Module не принимает substrate-required CR-поля (они hardcoded 
    + inject `tls-server-name: kubernetes.default.svc`. **На
    filesystem не пишется** — никаких `local_file` resource'ов;
 5. `provider "helm"` aliased на workload — конфигурируется через
-   `kubernetes { config = local.workload_kubeconfig }` (inline
-   string, не path). Module hermetic: kubeconfig живёт только в
-   TF state (sensitive=true);
+   `kubernetes { host=… cluster_ca_certificate=… client_certificate=…
+   client_key=… tls_server_name="kubernetes.default.svc" }` —
+   индивидуальные fields из распарсенного kubeconfig'а (Step 16:
+   helm provider 3.x не имеет `kubernetes.config` inline-content
+   field, только `config_path`; парсинг yamldecode + base64decode
+   в `local.workload_helm_kubernetes` keep'ит module hermetic).
+   Workload kubeconfig живёт только в TF state (sensitive=true).
+   **Step 17 update**: chart 0.8.0 post-install hook сам блокирует
+   шаг (2) до full readiness (LB + Secret + Running + /livez), so
+   шаги (3)+(4) data sources гарантированно успешны без отдельных
+   wait null_resource'ов;
 6. `helm_release.cni_calico` — provider workload. Ставит
    `charts/cni-calico/` в namespace `tigera-operator` (chart owns
    namespace). `depends_on` на (4);
@@ -1096,6 +1178,27 @@ default keeps each workload self-contained.
   responsibility consumer'а через §8 default.
 
 ## 16.5. Test fixture: `tests/fixtures/terraform/workload-clusters/lab-default/`
+
+**Статус: выполнено в Step 16 (2026-04-28) — fixture root + Makefile
+target'ы `deploy-workload` / `workload-kubeconfig` / `destroy-workload`
+работают end-to-end из repo root. Файлы: `providers.tf` (только
+`required_providers` без provider configs — module owns aliases),
+`variables.tf` (defaults матчат §8 reference deployment + 7 unused
+declared vars для silently consuming mgmt-side keys из auto-tfvars),
+`main.tf` (derives `lxd_host_address` из `k8s_lab_bootstrap_api_server_url`
+host component через regex с двумя capture groups + `coalesce` —
+поддерживает оба `[ipv6]:port` и `host:port` формы), `outputs.tf`
+(passthrough всех module outputs).**
+
+**Step 16 deviation от исходного §16.5 design'а: `.artifacts/bootstrap.auto.tfvars.json`
+**не auto-load'ится** Terraform-ом из cwd фикстуры.** TF auto-loads
+`*.auto.tfvars.json` только из своего working directory; репозиторий
+держит handoff bundle на repo-root (`.artifacts/`), а fixture cwd —
+`tests/fixtures/terraform/workload-clusters/lab-default/`. Makefile
+target `deploy-workload` threading'ит файл явно через
+`-var-file=$(REPO_ROOT)/.artifacts/bootstrap.auto.tfvars.json` +
+preflight check на наличие файла. Альтернативный путь — committed
+symlink в фикстуре — отвергнут как hidden filesystem coupling.
 
 Единственный TF root этого репо. Invokes module `workload_cluster/`
 с дефолтными §8 значениями для local Vagrant/libvirt контура.
@@ -1406,6 +1509,80 @@ mount — `kubeadm join` preflight `SystemVerification` валится
 без него на той же причине, что Step 11 уже решил для
 capi-controlplane (`/proc/config.gz` физически не существует на
 Debian 13 kernel — `CONFIG_IKCONFIG=n`).
+
+### Acceptance status (Step 16, 2026-04-28)
+
+Все 9 acceptance criteria из §16.6 выше **зелёные** на live Vagrant
+substrate'е (LXD host = 192.168.121.95, инициализированный через
+Step 15 chain). End-to-end run: `make deploy-workload` → `Apply
+complete! Resources: 6 added, 0 changed, 0 destroyed` за ~9 мин.
+
+(1)-(2) ✓ — `helm_release.capi_cluster_class` ставит
+`capn-default-0-6-3` ClusterClass + 5 *Templates в `capi-clusters`
+namespace (cluster_class_namespace defaults к cluster_namespace —
+per-workload self-contained, без cross-ns reference). Cluster CR
+`lab-default` в той же namespace, `spec.topology.classRef.name=
+capn-default-0-6-3`, `TopologyReconciled=True (ReconcileSucceeded)`.
+
+(3)-(4) ✓ — CAPN провижится 3 CP + 2 worker LXC instances + LB
+instance `lab-default-j8hvk-deb12-lb` за ~5 мин; kubeadm init/join
+проходят на всех; KCP `r=3 u=3 r=3`; workload kubeconfig Secret
+`lab-default-kubeconfig` материализуется в `capi-clusters`. CNI
+Calico installation (тот же `helm_release.cni_calico` через
+workload-aliased helm provider) — все 5 Nodes Ready=True (3 CP +
+2 worker), calico-node DS 5/5 ready, calico-typha 3 replicas,
+calico-apiserver + calico-kube-controllers up.
+
+(5) ✓ Gate B — `null_resource.helm_test_cni_calico` зелёный за
+1m43s; chart-side hook (§17.2) подтверждает tigera-operator
+Available, calico-system Pods Ready, dual-stack `podCIDRs` per-Node,
+ICMP4/ICMP6 pod-to-pod через два worker'а.
+
+(6)-(7) ✓ Gate A — `helm_release.metallb` (subchart wrapper) +
+`helm_release.metallb_config` оба deployed. metallb controller +
+5 speaker DS replicas Running. IPAddressPool `metallb-config-v6`
+с range `2001:db8:42:100::200-2001:db8:42:100::2ff` reconciled.
+L2Advertisement `metallb-config-v6` указывает на eth1.
+`null_resource.helm_test_metallb_config` зелёный за 19s; chart-side
+hook (§17.3) поднимает demo Service `k8s-lab-metallb-demo` (nginx
+backend) — controller выделяет VIP `2001:db8:42:100::200` из pool;
+in-cluster HTTP probe возвращает 200.
+
+(8) ✓ — `terraform output -raw kubeconfig` эмитит rewritten
+kubeconfig: `server: https://192.168.121.95:26818` (lxd_host_address
++ Adler-32-derived port из Cluster annotation
+`k8s-lab.io/api-proxy-port`), `tls-server-name: kubernetes.default.svc`
+(injected, decouple'ит TLS identity от runner-reachable URL),
+полный CA + client cert/key из Secret'а. Module ничего не пишет
+на FS — output остаётся sensitive в TF state.
+
+(9) ✓ Acceptance smoke — после `make workload-kubeconfig`
+(materialise `terraform output -raw kubeconfig` в
+`.artifacts/clusters/lab-default.kubeconfig` через consumer-side
+wrapper, umask 077), `kubectl --kubeconfig <path> get nodes -o wide`
+с runner'а возвращает все 5 workload Nodes Ready на v1.35.0,
+ContainerRuntime containerd 2.2.0. Это доказывает, что LXD proxy
+device (Helm hook on chart) + haproxy LB → CP backends + apiserver
+TLS chain работают end-to-end из external runner'а.
+
+**Step 16 secondary deviation для consumer ergonomics**: попытка
+`kubectl --kubeconfig <(terraform output -raw kubeconfig)` через
+process substitution **не работает** — kubectl делает `seek()` на
+kubeconfig file для refresh credentials, FIFO от `<(...)` не
+support'ит seek и API errors на `localhost:8080` (defaults). Module
+fence (§16.4 architectural fence) сохранён: TF не пишет файл; для
+consumer convenience Makefile target `workload-kubeconfig`
+materialise'ит output в `.artifacts/clusters/<cluster>.kubeconfig`
+с `umask 077`. Subdir уже предсоздан Phase 4 `export_artifacts`
+(§15.6).
+
+Step 16 НЕ потребовал substrate-side fixes — chart-side и role-side
+contract'ы Step 11/12/13/15 покрывают provisioning chain полностью;
+TF module — declarative orchestrator поверх готовых компонентов без
+«своих» CR'ов или manifest'ов (memory rule
+`feedback_helm_first_no_raw_manifests` honored: ноль
+`kubernetes_manifest`, ноль `kubectl apply -f`, все CR'ы через
+`helm_release`).
 
 ## 16.7. Workload kubeconfig pipeline (in-state) + API endpoint rewrite
 

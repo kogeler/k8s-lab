@@ -25,7 +25,10 @@ PLAN-stage1-7.md ................. §20..§22 (Stage 1 meta: out-of-scope, self-
 
 Этот раздел охватывает Ansible-роли Stage 1, которые уже реализованы и
 прогнаны end-to-end в локальном Vagrant/libvirt-контуре по состоянию на
-Step 15 (2026-04-28):
+Step 17 (2026-04-28). Step 16/17 не вводили новых Ansible-ролей и не
+меняли существующие — Step 16 ship'ил Phase 5 TF module + fixture,
+Step 17 чистил module от bash-скриптов перенося readiness gating в
+chart hook (см. §14.7 / §16.3 / §16.4 / §16.5 / §16.6):
 
 * §13.1 `base_system` (Step 1 + Step 5 required-values refactor);
 * §13.2 `lxd_host` (Step 2);
@@ -2592,6 +2595,126 @@ Acceptance целой Phase 4 — **закрыта** (2026-04-23):
 * providers healthy                                  ✓ (Step 6 — §13.10)
 * LXD identity secret present                        ✓ (Step 6 — §13.11)
 * handoff bundle shipped to `.artifacts/`            ✓ (Step 8 — §13.12)
+
+## 14.7. Phase 5 — workload cluster delivery via Terraform module
+
+**Статус: выполнено в Step 16 (2026-04-28) — см. §16.4 / §16.5 / §16.6
+Step 16 status headers + Acceptance status (Step 16) для полного
+file/timing/deviation breakdown.** Один TF root
+`tests/fixtures/terraform/workload-clusters/lab-default/` invokes
+`terraform/modules/workload_cluster/`; `make deploy-workload`
+поднимает workload cluster end-to-end через цепочку из 5 helm_release
++ 2 wait null_resource'ов + 2 helm-test null_resource'ов за ~9 мин
+на cold cache.
+
+Сделано в Step 16:
+
+* TF module `terraform/modules/workload_cluster/` — versions/providers/
+  variables/locals/main/outputs.tf + 3 bash helper'а
+  (`wait_for_secret.sh`, `wait_for_workload_api.sh`, `helm_test.sh`).
+  Module owns mgmt + workload helm/kubernetes provider configs внутри
+  (fixture их не переопределяет). Workload helm provider парсит
+  kubeconfig fields (host/CA/client-cert/client-key) из распарсенного
+  Secret'а и передаёт inline — на FS ничего не пишется (memory rule
+  «module не пишет в .artifacts/» honored).
+* Test fixture root `tests/fixtures/terraform/workload-clusters/lab-default/` —
+  defaults тречат §8 reference deployment; derives `lxd_host_address`
+  из `k8s_lab_bootstrap_api_server_url` host-component через regex
+  + coalesce (поддерживает оба `[ipv6]:port` и `host:port`); 7
+  unused declared vars silently consume mgmt-side keys из
+  auto-tfvars.
+* Корневой `Makefile` — добавлены target'ы `deploy-workload`,
+  `workload-kubeconfig`, `destroy-workload`. Все three thread'ат
+  `-var-file=$(REPO_ROOT)/.artifacts/bootstrap.auto.tfvars.json`
+  + preflight check на наличие файла (TF auto-load работает только
+  из cwd фикстуры, а handoff bundle лежит на repo-root —
+  symlink-альтернатива отвергнута как hidden filesystem coupling).
+* §16.4 design deviation — добавлен новый шаг 5b
+  `null_resource.wait_for_workload_api` между data source workload
+  kubeconfig Secret и первым workload-side helm_release. Probe
+  ходит на rewritten URL `<lxd_host>:<api_proxy_port>/livez` до
+  HTTP 200/401/403. Без него первый CNI install падает `EOF` —
+  KCP эмитит kubeconfig Secret раньше, чем kube-apiserver static
+  pod реально начинает serving (cert generation ≠ ready).
+* §16.4 secondary ergonomic deviation — `kubectl --kubeconfig
+  <(terraform output -raw kubeconfig)` через process substitution
+  не работает (kubectl seek'ает kubeconfig file, FIFO seek не
+  support'ит). Workaround в Makefile target `workload-kubeconfig` —
+  материализует output в `.artifacts/clusters/<cluster>.kubeconfig`
+  через consumer-side wrapper с umask 077.
+
+Memory rules применены в Step 16:
+
+* `feedback_helm_first_no_raw_manifests` — все CR'ы через
+  `helm_release` (mgmt-side capi-cluster-class + capi-workload-cluster,
+  workload-side cni-calico + metallb + metallb-config); ноль
+  `kubernetes_manifest`, ноль `kubectl apply`;
+* `feedback_chart_required_values_hardcoded` — module передаёт
+  только legitimate optional tunables; substrate-required CR fields
+  остаются hardcoded в chart templates;
+* `feedback_makefile_only` — е2е через `make deploy-workload`,
+  никаких прямых `terraform apply`;
+* `feedback_active_provisioning_monitor` — второй Monitor поверх
+  CAPI/CAPN controller logs + Cluster CR conditions поймал
+  `Kubernetes cluster unreachable: EOF` фейл live; root-cause
+  diagnosed без timeout-wait; fix (wait_for_workload_api)
+  внедрён в module owner;
+* `feedback_no_ad_hoc_fixes` — root-cause фейла CNI install (Secret
+  existence ≠ API serving) исправлен в module owner (TF), не
+  workaround'ом в Molecule / shell script.
+
+Сделано в Step 17 (тот же 2026-04-28, follow-up к Step 16):
+
+* **Refactor**: убран `terraform/modules/workload_cluster/scripts/`
+  целиком (3 bash файла — `wait_for_secret.sh`,
+  `wait_for_workload_api.sh`, `helm_test.sh`). Module теперь содержит
+  ровно `*.tf` + `.terraform.lock.hcl`, ноль скриптов.
+* **Chart `capi-workload-cluster` 0.7.2 → 0.8.0** — hook Job
+  `api-proxy-attach` забирает full workload-cluster readiness
+  contract себе (см. §16.3 Step 17 расширения):
+  * Gate 1 — LB instance materialised in LXD
+  * Gate 2 — `<cluster>-kubeconfig` Secret emitted by KCP (NEW;
+    SA token + REST API call к `kubernetes.default.svc`, без
+    kubectl в hook image; добавлены минимальные Role +
+    RoleBinding на `secrets/get` resourceNames-restricted на
+    одно имя)
+  * Gate 3 — LB Running + idempotent PATCH api-proxy device
+  * Gate 4 — apiserver `/livez` через `<lb-capi-int-ipv4>:6443`
+    отвечает 200/401/403 (NEW; доказывает haproxy → CP backend
+    chain serving, не просто что LXD entity exists)
+* **TF module** drops `wait_for_kubeconfig_secret` +
+  `wait_for_workload_api` null_resource'ы (chart's hook их
+  subsume'ит); helm test driver inline'ом heredoc'ом в
+  `provisioner "local-exec"` с `interpreter = ["/usr/bin/env",
+  "bash", "-c"]` — без скриптов на FS.
+* **Deviation (учтено)**: `interpreter = ["bash"]` без `-c`
+  трактует command-text как filename. `-c` flag обязателен для
+  inline-script execution. Обнаружено end-to-end (helm test
+  фейлился `: No such file or directory`), исправлено в обоих
+  null_resource'ах.
+
+Acceptance Step 17 — **зелёный end-to-end**: `make destroy-workload`
++ `make deploy-workload` свежий цикл, helm test cni-calico
+`Phase: Succeeded` за ~2 min, helm test metallb-config
+`Phase: Succeeded` за 28s, all 5 Nodes Ready, demo Service
+получает VIP `2001:db8:42:100::200`. Module final layout — 6
+`.tf` файлов, ноль `.sh`.
+
+Acceptance целой Phase 5 — **закрыта** (2026-04-28):
+
+* `terraform apply` зелёный                          ✓ (Step 16)
+* ClusterClass + 5 *Templates applied                ✓ (Step 16)
+* Cluster CR + KCP + MD reconciled                   ✓ (Step 16)
+* 3 CP + 2 worker LXC instances kubeadm-joined       ✓ (Step 16)
+* Workload kubeconfig Secret materialised            ✓ (Step 16)
+* Workload API serving через LXD proxy + haproxy LB  ✓ (Step 16)
+* CNI Calico — все 5 Nodes Ready=True                ✓ (Step 16)
+* Gate B (helm test cni-calico)                      ✓ (Step 16 — 1m43s)
+* MetalLB controller + speakers                      ✓ (Step 16)
+* MetalLB IPAddressPool + L2Advertisement reconciled ✓ (Step 16)
+* Gate A (helm test metallb-config) — VIP allocated  ✓ (Step 16 — 19s)
+* Runner-side `kubectl get nodes` через
+  rewritten kubeconfig                               ✓ (Step 16)
 
 ---
 

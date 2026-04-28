@@ -90,12 +90,123 @@ test-local-e2e: ## Full local pipeline (plan §13.2); may take significant time
 	$(MAKE) -C $(MOLECULE_DIR) e2e-local-vagrant-converge
 	$(MAKE) -C $(MOLECULE_DIR) e2e-local-vagrant-verify
 
+# --------------------------------------------------------------------------
+# Phase 5 — workload cluster (PLAN §16.6)
+# --------------------------------------------------------------------------
+#
+# Deploys the workload cluster end-to-end via the single Terraform module
+# `terraform/modules/workload_cluster` invoked from the test fixture
+# `tests/fixtures/terraform/workload-clusters/lab-default/`. The module
+# reads `.artifacts/bootstrap.auto.tfvars.json` (emitted by Phase 4
+# export_artifacts) — threaded explicitly via -var-file because Terraform
+# auto-loads *.auto.tfvars.json only from cwd, not from the repo-root
+# .artifacts/ where Phase 4 deposits the handoff.
+#
+# Runner deps: terraform, helm, kubectl on PATH (no Python venv needed
+# for these targets).
+
+WORKLOAD_TF_DIR  := $(TF_FIXTURES)/workload-clusters/lab-default
+BOOTSTRAP_TFVARS := $(REPO_ROOT)/.artifacts/bootstrap.auto.tfvars.json
+ARTIFACTS_DIR    := $(REPO_ROOT)/.artifacts
+
+.PHONY: deploy-workload
+deploy-workload: ## Phase 5 — terraform apply workload cluster (CAPI + CNI + MetalLB + helm tests)
+	@test -f $(BOOTSTRAP_TFVARS) \
+	  || { echo "ERROR: $(BOOTSTRAP_TFVARS) missing — run Phase 4 first (make test-local-e2e)"; exit 1; }
+	cd $(WORKLOAD_TF_DIR) \
+	  && $(TERRAFORM) init -upgrade \
+	  && $(TERRAFORM) apply -auto-approve -var-file=$(BOOTSTRAP_TFVARS)
+
+.PHONY: workload-kubeconfig
+workload-kubeconfig: ## Materialise rewritten workload kubeconfig to .artifacts/clusters/<cluster>.kubeconfig
+	@mkdir -p $(ARTIFACTS_DIR)/clusters
+	@cd $(WORKLOAD_TF_DIR) \
+	  && cluster_name="$$($(TERRAFORM) output -raw cluster_name)" \
+	  && out="$(ARTIFACTS_DIR)/clusters/$${cluster_name}.kubeconfig" \
+	  && umask 077 \
+	  && $(TERRAFORM) output -raw kubeconfig >"$$out" \
+	  && echo "wrote $$out"
+
+# --------------------------------------------------------------------------
+# Destroy / clean graph (PLAN §19.2)
+# --------------------------------------------------------------------------
+#
+# Naming convention:
+#   destroy-*  operates on running infra (TF state, helm releases, VM,
+#              libvirt domains). Each destroy auto-cascades the clean-*
+#              targets that the destruction itself makes stale, so the
+#              operator never has to remember which files to wipe
+#              afterwards. After any destroy-*, the corresponding next-
+#              cycle command (deploy-workload, vagrant up, …) just works.
+#
+#   clean-*    file/directory deletes only. Idempotent against absent
+#              state (run safely with no infra at all).
+#
+#   compound   `clean-local` = "I want to start over fast" (destroys VM,
+#              cleans every artefact). `reset-all` = "exercise the full
+#              destroy chain end-to-end" (TF destroy on the live workload
+#              first, then VM destroy + cleans).
+
+# ---- DESTROY ----------------------------------------------------------------
+
+.PHONY: destroy-workload
+destroy-workload: ## Phase 5 reverse — terraform destroy + cascade clean-{tfstate,workload-kubeconfig}
+	@# Subshell-wrap cd so it does not leak into the next recipe line under .ONESHELL.
+	@if [ -f $(WORKLOAD_TF_DIR)/terraform.tfstate ] && [ -f $(BOOTSTRAP_TFVARS) ]; then \
+	  echo "== terraform destroy on workload fixture" ; \
+	  ( cd $(WORKLOAD_TF_DIR) && $(TERRAFORM) destroy -auto-approve -var-file=$(BOOTSTRAP_TFVARS) ) ; \
+	else \
+	  echo "== skip terraform destroy: no tfstate or no bootstrap.auto.tfvars.json" ; \
+	fi
+	@$(MAKE) clean-tfstate clean-workload-kubeconfig
+
+.PHONY: destroy-vm
+destroy-vm: ## Destroy local Vagrant VM + libvirt orphans; cascades clean-{bootstrap-bundle,workload-kubeconfig,tfstate}
+	$(MAKE) -C $(VAGRANT_DIR) destroy
+	@$(MAKE) clean-bootstrap-bundle clean-workload-kubeconfig clean-tfstate
+
+# ---- CLEAN (file-only, idempotent) -----------------------------------------
+
+.PHONY: clean-tfstate
+clean-tfstate: ## Wipe local Terraform state in workload fixture (.terraform/, tfstate*, lock files)
+	@rm -rf $(WORKLOAD_TF_DIR)/.terraform \
+	        $(WORKLOAD_TF_DIR)/.terraform.lock.hcl \
+	        $(WORKLOAD_TF_DIR)/terraform.tfstate \
+	        $(WORKLOAD_TF_DIR)/terraform.tfstate.backup \
+	        $(WORKLOAD_TF_DIR)/.terraform.tfstate.lock.info
+	@echo "== cleaned: $(WORKLOAD_TF_DIR) terraform state"
+
+.PHONY: clean-bootstrap-bundle
+clean-bootstrap-bundle: ## Remove .artifacts/bootstrap.{kubeconfig,auto.tfvars.json} + harness-vm-id
+	@rm -f $(ARTIFACTS_DIR)/bootstrap.kubeconfig \
+	       $(ARTIFACTS_DIR)/bootstrap.auto.tfvars.json \
+	       $(ARTIFACTS_DIR)/harness-vm-id
+	@echo "== cleaned: bootstrap handoff bundle"
+
+.PHONY: clean-workload-kubeconfig
+clean-workload-kubeconfig: ## Remove .artifacts/clusters/*.kubeconfig (stale workload kubeconfigs)
+	@find $(ARTIFACTS_DIR)/clusters -mindepth 1 -name '*.kubeconfig' -delete 2>/dev/null || true
+	@echo "== cleaned: workload kubeconfigs in $(ARTIFACTS_DIR)/clusters/"
+
+.PHONY: clean-molecule
+clean-molecule: ## Remove ~/.ansible/tmp/molecule.* scratch directories
+	@find $$HOME/.ansible/tmp -maxdepth 1 -type d -name 'molecule.*' -exec rm -rf {} + 2>/dev/null || true
+	@echo "== cleaned: ~/.ansible/tmp/molecule.*"
+
+# ---- COMPOUND ---------------------------------------------------------------
+
 .PHONY: clean-local
-clean-local: ## Destroy local Vagrant VM, Molecule state, ephemeral artifacts
-	-$(MAKE) -C $(VAGRANT_DIR) destroy
-	-find $$HOME/.ansible/tmp -maxdepth 1 -type d -name 'molecule.*' -exec rm -rf {} +
-	rm -rf $(REPO_ROOT)/.artifacts/*
-	touch $(REPO_ROOT)/.artifacts/.gitkeep
+clean-local: ## "Start over" — destroys VM and cascades every clean-*. Fast; does NOT exercise terraform destroy on the live workload.
+	@$(MAKE) destroy-vm
+	@$(MAKE) clean-molecule
+	@echo "== local harness reset complete"
+
+.PHONY: reset-all
+reset-all: ## Full PLAN §19.2 reverse — terraform destroy on live workload, THEN destroy-vm + clean-molecule. Slow; exercises every destroy step.
+	@$(MAKE) destroy-workload
+	@$(MAKE) destroy-vm
+	@$(MAKE) clean-molecule
+	@echo "== full destroy chain complete"
 
 # --------------------------------------------------------------------------
 # Convenience

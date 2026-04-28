@@ -16,7 +16,6 @@ SHELL := /bin/bash
 
 HERE          := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
 NET_DIR       := $(HERE)/libvirt-networks
-ARTIFACTS_DIR := $(abspath $(HERE)/../../../.artifacts)
 VAGRANT       ?= vagrant
 # virsh talks to the system libvirtd via the libvirt group socket; the
 # runner is expected to be a member of `libvirt`. No sudo — if the call
@@ -42,21 +41,15 @@ up: networks
 		cd $(HERE) && $(VAGRANT) up --provider=libvirt probe ; \
 	fi
 
-# `destroy` tears down the VM AND wipes runner-side artefacts: the
-# bootstrap kubeconfig, the auto.tfvars.json handoff, per-cluster
-# kubeconfigs, and the harness-vm-id tracker all refer to the VM we
-# are about to remove and would otherwise mislead the next run (the
-# `scripts/molecule_run.py` drift check is one consumer of the
-# tracker; helm / kubectl invocations against the stale kubeconfig
-# are another). `.gitkeep` is preserved so the directory stays
-# tracked.
+# `destroy` tears down the VM + libvirt orphans only. Runner-side
+# artefacts (.artifacts/bootstrap.*, .artifacts/clusters/*, workload TF
+# state) are owned by the root Makefile's clean-* targets — destroy
+# from there as `make destroy-vm` so the cascade fires once, in one
+# place. Stand-alone `make -C tests/vagrant/debian13 destroy` leaves
+# .artifacts/ untouched (operator's call).
 .PHONY: destroy
 destroy:
 	-cd $(HERE) && $(VAGRANT) destroy -f
-	@if [ -d $(ARTIFACTS_DIR) ]; then \
-		echo "== cleanup: wiping $(ARTIFACTS_DIR)/* (preserving .gitkeep)" ; \
-		find $(ARTIFACTS_DIR) -mindepth 1 ! -name '.gitkeep' -exec rm -rf {} + 2>/dev/null || true ; \
-	fi
 	@# Safety net for the case where vagrant was killed mid-flight (SIGKILL
 	@# on `vagrant up`, OOM, session drop). `vagrant destroy` can no longer
 	@# clean up orphan libvirt domains + volumes if its own state tracker
