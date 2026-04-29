@@ -58,7 +58,12 @@
       k8s_lab_kubernetes_version:       "{{ k8s_lab_kubernetes_version | default('v1.35.3') }}"
       # --- Topology counts (plan §8) ---
       k8s_lab_management_controlplane_count: "{{ k8s_lab_management_controlplane_count | default(1) | int }}"
-      k8s_lab_management_worker_count:       "{{ k8s_lab_management_worker_count | default(1) | int }}"
+      # Mgmt worker count default 2 — chart-required floor: cni-calico
+      # helm test phase 6 ("live pod-to-pod across workers") enforces
+      # pod anti-affinity that needs 2 distinct worker nodes. Any
+      # cluster going through workload_cluster TF module (which
+      # unconditionally drives Gate B) inherits this minimum.
+      k8s_lab_management_worker_count:       "{{ k8s_lab_management_worker_count | default(2) | int }}"
       k8s_lab_workload_controlplane_count:   "{{ k8s_lab_workload_controlplane_count | default(3) | int }}"
       k8s_lab_workload_worker_count:         "{{ k8s_lab_workload_worker_count | default(2) | int }}"
       # --- CAPN pinning ---

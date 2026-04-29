@@ -2115,6 +2115,77 @@ dev-машины возвращает Ready control-plane node.**
   в state и эмитит через `terraform output -raw kubeconfig`.
   Subdir уже создаётся для Molecule debug needs.
 
+## 13.13. `pivot_clusterctl_move` (Step 17)
+
+**Статус: выполнено в Step 18 (2026-04-29).**
+
+Role drives the canonical CAPI bootstrap-and-pivot flow on the LXD
+host: materialise runner-reachable kubeconfig for the target mgmt
+cluster, `clusterctl init --infrastructure incus:<ver>` on target,
+`clusterctl move --to-kubeconfig` to relocate every CAPI CR from
+bootstrap to target. Hard-gated on global `k8s_lab_pivot_enabled`
+(§3.1 default `false` — role is a documented no-op in MVP mode).
+
+Full role contract — `ansible/roles/pivot_clusterctl_move/README.md`.
+Plan-side detail — §18.2.
+
+**Cross-role coupling discipline (§2.6.5 verified):**
+
+* No reads of `<other_role>_*` prefix. Bootstrap kubeconfig path is
+  duplicated as a value with a comment pointing at
+  `bootstrap_clusterctl_kubeconfig_path` upstream default.
+* Single meta-dep on `bootstrap_clusterctl` with `# why` comment;
+  transitively pulls full Phase 0..4 substrate chain.
+* Substrate-required values (CAPN provider name `incus`,
+  `tls-server-name: kubernetes.default.svc`, api-proxy-port
+  annotation key `k8s-lab.io/api-proxy-port`, required Deployment
+  list) live in `vars/main.yml` under
+  `_pivot_clusterctl_move_required_*` per memory rule
+  `feedback_required_values_hardcoded.md`.
+
+**Idempotence (§2.6.1):** every mutating step gated on a read-only
+probe before a fallback shell tool fires:
+
+* `init.yml` — probe target for `capn-controller-manager`
+  Deployment via `kubernetes.core.k8s_info`; skip when present
+  (clusterctl init is all-or-nothing).
+* `move.yml` — guarded by `target_kubeconfig.yml`'s
+  `_pivot_clusterctl_move_target_on_bootstrap` fact (set from a
+  Cluster CR query on bootstrap). False ⇒ move already happened,
+  skip.
+
+**Acceptance proven by role healthchecks (`tasks/healthchecks.yml`),
+no separate Molecule scenario:**
+
+* cert-manager + 4 CAPI/CAPN provider Deployments Available on
+  target;
+* 4 Provider CRs (Core/Bootstrap/ControlPlane/Infrastructure=`incus`)
+  present on target;
+* target Cluster CR is on target;
+* bootstrap holds zero Cluster CRs in target namespace.
+
+**End-to-end run on local Vagrant harness (Step 17, 2026-04-29):**
+
+`make deploy-pivot` → 275 ok / 6 changed / 0 failed against a
+freshly-seeded Phase 0..4 substrate. Result matrix:
+
+* mgmt-1 cluster (1 CP + 2 worker, all Ready, dual-stack pod CIDRs);
+* CAPI providers freshly installed by clusterctl init on target,
+  4/4 Available;
+* Cluster CR `mgmt-1` lives on target post-move;
+* `capi-bootstrap-0` LXC container absent — `cleanup_bootstrap`
+  chained in the same playbook removed it idempotently.
+
+**Bootstrap retirement chained in same playbook:**
+
+The Phase 6 acceptance "bootstrap deleted" is owned by the existing
+`cleanup_bootstrap` role (§19.1), invoked as the second role in the
+Phase 6 playbook
+(`tests/fixtures/ansible/pivot_clusterctl_move/playbook.yml`).
+Runner-side `.artifacts/` is intentionally NOT wiped here — operator
+decides separately when to clean stale `bootstrap.kubeconfig` /
+`bootstrap.auto.tfvars.json`.
+
 ---
 
 # 14. Выполненные phases
@@ -2128,13 +2199,13 @@ Vagrant/libvirt-контуре по состоянию на Step 6 (2026-04-23):
 * §14.3 Phase 2 — LXD substrate (Step 3);
 * §14.4 Phase 3 — bootstrap instance (Step 3);
 * §14.5 Phase 3.5 — `binary_fetch` (Step 4);
-* §14.6 Phase 4 — bootstrap management cluster (Step 4 + Step 6 +
-  Step 8 — частично: `bootstrap_k3s` готов с Step 4;
+* §14.6 Phase 4 — bootstrap management cluster (Steps 4 + 6 + 8;
+  фаза закрыта end-to-end): `bootstrap_k3s` готов с Step 4;
   `bootstrap_clusterctl` + `bootstrap_capn_secret` готовы с Step 6;
   отдельная роль `bootstrap_api_publish` removed в Step 7 — публикация
   API перенесена на LXD proxy device поверх `lxd_bootstrap_instance`,
-  см. §15.5; `export_artifacts` реализован в Step 8 / §13.12, но
-  Molecule-цикл ещё не прогон → фаза формально не закрыта).
+  см. §15.5; `export_artifacts` реализован + Molecule-цикл прогон в
+  Step 8 / §13.12.
 
 Step 5 — **сквозной refactor без новых phases**: substrate-required
 значения в `base_system` / `lxd_storage_pools` / `lxd_network_int_managed`
@@ -2715,6 +2786,107 @@ Acceptance целой Phase 5 — **закрыта** (2026-04-28):
 * Gate A (helm test metallb-config) — VIP allocated  ✓ (Step 16 — 19s)
 * Runner-side `kubectl get nodes` через
   rewritten kubeconfig                               ✓ (Step 16)
+
+## 14.8. Phase 6 — Pivot bootstrap → self-hosted mgmt (Step 18)
+
+**Статус: выполнено в Step 18 (2026-04-29) — см. §18 (PLAN-stage1-5.md)
+для полного контракта (TF fixture mgmt-1, Phase 6 playbook,
+deploy-pivot Make target). End-to-end зелёный прогон на local Vagrant
+harness — 275 ok / 6 changed / 0 failed после `make deploy-pivot`
+поверх Phase 4 fresh export-artifacts converge.**
+
+Сделано в Step 18 (2026-04-29):
+
+* **TF fixture** `tests/fixtures/terraform/management-clusters/mgmt-1/`
+  — TF root, instantiates the same generic `workload_cluster` module
+  (§16.4) with mgmt-cluster topology values (1 CP + 2 worker;
+  `class_prefix=capn-mgmt`; isolated MetalLB VIP range
+  `2001:db8:42:100::300-::3ff` to avoid speaker collision with
+  workload's `::200-::2ff` if both coexist pre-pivot).
+* **Role** `pivot_clusterctl_move` (§13.13) — host-side driver for
+  `clusterctl init` on target + `clusterctl move` from bootstrap.
+  Hard-gated on `k8s_lab_pivot_enabled` (§3.1 default `false`); role
+  is a documented no-op in MVP mode.
+* **Phase 6 playbook**
+  `tests/fixtures/ansible/pivot_clusterctl_move/playbook.yml` —
+  chains `pivot_clusterctl_move` → `cleanup_bootstrap` in one play.
+  Role's own healthchecks re-assert the post-pivot end state, no
+  separate Molecule scenario is shipped.
+* **Make-target** `deploy-pivot` (root Makefile) — three-stage
+  recipe: `vagrant up` (idempotent) → `terraform apply mgmt-1` →
+  `ansible-playbook pivot.yml` (with `K8SLAB_HOST_*` env populated
+  inline from `vagrant ssh-config host` via one awk pass —
+  no Python wrapper).
+* **Inventory contract.** Phase 6 playbook lives in
+  `tests/fixtures/ansible/pivot_clusterctl_move/` with a single-host
+  `hosts.yml`; shared substrate `group_vars/` from
+  `tests/molecule/shared/inventory/` are picked up via a second `-i`
+  argument so Molecule scenarios and the fixture playbook share one
+  source of truth for substrate vars.
+* **§8 default change.** `k8s_lab_management_worker_count` default
+  bumped `1 → 2` because the cni-calico chart's helm test phase 6
+  enforces pod anti-affinity that requires 2 distinct worker nodes;
+  workload_cluster module unconditionally drives Gate B → ≥2 workers
+  is the chart-required floor for any cluster going through the
+  module. §2.12 mgmt HA note updated accordingly: replica-contract
+  on mgmt activates automatically through the existing
+  `var.worker_count >= 2` Terraform condition; CP-side HA still
+  requires explicit `k8s_lab_management_controlplane_count = 3` opt-in.
+* **Removed.** Empty `tests/molecule/pivot/` scenario directory and
+  its entry in `tests/molecule/Makefile:SCENARIOS`. Pivot acceptance
+  is owned by the role's own healthchecks per §18.2.
+
+Memory rules applied in Step 18:
+
+* `feedback_role_dependencies.md` — single meta-dep
+  `bootstrap_clusterctl` with `# why` comment; no transitive deps
+  enumerated;
+* `feedback_required_values_hardcoded.md` — substrate-required
+  values (CAPN provider name, tls-server-name, api-proxy-port
+  annotation key, required Deployment list) live in `vars/main.yml`
+  under `_pivot_clusterctl_move_required_*` prefix;
+* `feedback_global_var_prefix.md` — globals are only `k8s_lab_*`
+  (`k8s_lab_pivot_enabled`, `k8s_lab_management_cluster_name`,
+  `k8s_lab_capn_provider_version`, `k8s_lab_lxd_host_address`,
+  `k8s_lab_opt_root`); role-scoped vars are
+  `pivot_clusterctl_move_*`;
+* `feedback_ansible_native_first.md` — every `kubectl`/`clusterctl`
+  shell-out gated by a read-only `kubernetes.core.k8s_info` probe
+  for honest `changed` reporting and idempotent re-runs;
+* `feedback_makefile_only.md` — entire Phase 6 driven through
+  `make deploy-pivot`; `vagrant`/`virsh`/`terraform`/`ansible-playbook`
+  not invoked directly;
+* `feedback_no_ad_hoc_fixes.md` — when the cni-calico helm test
+  failed on probe-b Pending (pod-anti-affinity vs single-worker
+  topology), root cause was traced to chart-required worker_count
+  floor, fix landed in §8 default (chart owner's contract surface)
+  + `export_artifacts` tfvars baseline default — not as a
+  manual `kubectl scale` or scenario-local `worker_count` override.
+* `feedback_plan_rewrite_no_historical_refs.md` — §18 rewritten
+  forward-looking; obsolete sentences about "wait target mgmt
+  cluster (CAPI docs require this order)" replaced with the actual
+  chain implemented in §18.1 + §18.2 + §18.3.
+
+Acceptance Phase 6 — **зелёный end-to-end** (2026-04-29):
+
+* TF apply mgmt-1 fixture зелёный                    ✓ (Step 18)
+* mgmt-1 ClusterClass + Cluster CR + 1 CP + 2 worker  ✓ (Step 18)
+* CNI Calico — все 3 Nodes Ready=True                ✓ (Step 18)
+* Gate B (helm test cni-calico)                      ✓ (Step 18)
+* MetalLB IPAddressPool + L2Advertisement reconciled ✓ (Step 18)
+* Gate A (helm test metallb-config)                  ✓ (Step 18)
+* `clusterctl init` on target — 4 Provider CRs Available  ✓ (Step 18)
+* `clusterctl move` — Cluster CR moved to target     ✓ (Step 18)
+* bootstrap source flushed (zero Cluster CRs)        ✓ (Step 18)
+* `cleanup_bootstrap` — capi-bootstrap-0 absent      ✓ (Step 18)
+* Re-converge idempotence (probes skip mutating steps)  ✓ (Step 18)
+
+Phase 7 (post-pivot workload cluster creation through self-hosted
+mgmt) is a documented re-run of `make deploy-workload` with
+`mgmt_kubeconfig_path` overridden to the materialised mgmt-1
+kubeconfig (see §18.3 invocation example). No new artefacts; not
+exercised end-to-end in Step 18 — left to operator workflow / Stage
+2 as a documented capability.
 
 ---
 

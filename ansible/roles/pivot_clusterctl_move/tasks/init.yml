@@ -1,0 +1,60 @@
+---
+# Run `clusterctl init` against the TARGET management cluster (plan §18.1).
+#
+# Idempotence model (plan §2.6.1): clusterctl init is NOT idempotent on
+# its own — re-running against an initialised cluster fails with `there
+# is already an instance of the "<provider>" provider installed`. We
+# probe with `kubernetes.core.k8s_info` first: if CAPN's controller
+# Deployment exists in `capn-system` on the target, every other
+# provider is already in place too (clusterctl init is all-or-nothing)
+# and we skip the apply. Same probe shape bootstrap_clusterctl uses.
+
+- name: "pivot-clusterctl-move | init | probe target CAPN controller deployment"
+  kubernetes.core.k8s_info:
+    kubeconfig:  "{{ pivot_clusterctl_move_target_kubeconfig_path }}"
+    api_version: "apps/v1"
+    kind:        "Deployment"
+    namespace:   "capn-system"
+    name:        "capn-controller-manager"
+  register: _pivot_clusterctl_move_init_probe_register
+  changed_when: false
+
+- name: "pivot-clusterctl-move | init | record initialised flag"
+  ansible.builtin.set_fact:
+    _pivot_clusterctl_move_target_already_initialised: >-
+      {{ (_pivot_clusterctl_move_init_probe_register.resources | default([])) | length > 0 }}
+
+- name: "pivot-clusterctl-move | init | compose clusterctl init argv"
+  # Build argv as a fact rather than inline in the command task — keeps
+  # the YAML readable and isolates the conditional `when:` below as the
+  # only branching surface.
+  ansible.builtin.set_fact:
+    _pivot_clusterctl_move_init_argv: >-
+      {{
+        [
+          pivot_clusterctl_move_clusterctl_path,
+          'init',
+          '--config=' ~ pivot_clusterctl_move_config_path,
+          '--kubeconfig=' ~ pivot_clusterctl_move_target_kubeconfig_path,
+          '--infrastructure=' ~ _pivot_clusterctl_move_required_provider_name
+                              ~ ':' ~ pivot_clusterctl_move_capn_version,
+          '--wait-providers',
+        ] + (pivot_clusterctl_move_extra_init_flags | list)
+      }}
+
+- name: "pivot-clusterctl-move | init | run clusterctl init on target"
+  # Env: CLUSTER_TOPOLOGY=true flips the ClusterClass / managed-topology
+  # feature gate on the core controller (plan §8
+  # k8s_lab_cluster_topology_enabled; same value used on bootstrap by
+  # bootstrap_clusterctl). async/poll: cold-cache image pulls
+  # (cert-manager + 4 providers) push init to ~3 minutes; foreground
+  # SSH timeouts on shared molecule runs would interrupt that.
+  ansible.builtin.command:
+    argv: "{{ _pivot_clusterctl_move_init_argv }}"
+  environment:
+    CLUSTER_TOPOLOGY: "{{ 'true' if pivot_clusterctl_move_cluster_topology_enabled else 'false' }}"
+  register: _pivot_clusterctl_move_init_register
+  changed_when: _pivot_clusterctl_move_init_register.rc == 0
+  when: not _pivot_clusterctl_move_target_already_initialised
+  async: "{{ pivot_clusterctl_move_init_timeout | int }}"
+  poll: 5

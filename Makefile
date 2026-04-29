@@ -29,6 +29,7 @@ export ANSIBLE_COLLECTIONS_PATH := $(ANSIBLE_COLLECTIONS_DIR)
 # activated (`source <venv>/bin/activate`). We don't hardcode the venv
 # location — the caller owns it.
 ANSIBLE        ?= ansible
+ANSIBLE_PLAY   ?= ansible-playbook
 ANSIBLE_GALAXY ?= ansible-galaxy
 ANSIBLE_LINT   ?= ansible-lint
 YAMLLINT       ?= yamllint
@@ -128,6 +129,78 @@ workload-kubeconfig: ## Materialise rewritten workload kubeconfig to .artifacts/
 	  && echo "wrote $$out"
 
 # --------------------------------------------------------------------------
+# Phase 6 — pivot bootstrap → self-hosted mgmt (PLAN §18)
+# --------------------------------------------------------------------------
+#
+# Two-stage flow stitched into a single Make target:
+#
+#   1. terraform apply on `tests/fixtures/terraform/management-clusters/mgmt-1/`
+#      stands up the target mgmt cluster on the bootstrap k3s — same
+#      generic workload_cluster module the workload fixture uses, just
+#      with mgmt-cluster topology values (distinct ClusterClass prefix,
+#      isolated MetalLB VIP range; topology counts come from §8 globals).
+#
+#   2. tests/fixtures/ansible/pivot_clusterctl_move/playbook.yml runs
+#      `pivot_clusterctl_move` (clusterctl init on target + clusterctl
+#      move bootstrap → target) followed by `cleanup_bootstrap` (delete
+#      the bootstrap LXC). The role's own healthchecks re-assert the
+#      post-pivot end state, so no separate Molecule scenario is needed.
+#
+# Runner deps: terraform + helm + kubectl on PATH (TF stage), and the
+# project venv on PATH (ansible stage — same venv that drives Molecule).
+# K8SLAB_HOST_* env vars are populated inline below from
+# `vagrant ssh-config host` output (one awk pass) — same wiring
+# `scripts/molecule_run.py` does for Molecule scenarios, but the
+# adhoc playbook does not need Molecule's VM-identity tracking, so a
+# Python wrapper would be unnecessary indirection here.
+
+MGMT_TF_DIR     := $(TF_FIXTURES)/management-clusters/mgmt-1
+PIVOT_FIXTURE   := $(REPO_ROOT)/tests/fixtures/ansible/pivot_clusterctl_move
+SHARED_INV_DIR  := $(MOLECULE_DIR)/shared/inventory
+
+.PHONY: deploy-pivot
+deploy-pivot: ## Phase 6 — terraform apply mgmt-1 + run pivot_clusterctl_move + cleanup_bootstrap
+	@test -f $(BOOTSTRAP_TFVARS) \
+	  || { echo "ERROR: $(BOOTSTRAP_TFVARS) missing — run Phase 4 first (make test-local-e2e)"; exit 1; }
+	@echo "== Phase 6 stage 0/2: ensure Vagrant VM is up"
+	$(MAKE) -C $(VAGRANT_DIR) up
+	@echo "== Phase 6 stage 1/2: terraform apply mgmt-1"
+	cd $(MGMT_TF_DIR) \
+	  && $(TERRAFORM) init -upgrade \
+	  && $(TERRAFORM) apply -auto-approve -var-file=$(BOOTSTRAP_TFVARS)
+	@echo "== Phase 6 stage 2/2: ansible-playbook pivot"
+	@# `vagrant ssh-config host` parsed once into K8SLAB_HOST_* — same
+	@# 4 keys `scripts/molecule_run.py` exports for Molecule. awk emits
+	@# `key=value` lines that `eval` consumes in the current shell.
+	cd $(VAGRANT_DIR) \
+	  && eval "$$($(VAGRANT) ssh-config host \
+	       | awk '/^[[:space:]]*HostName/{print "K8SLAB_HOST_ADDR="$$2} \
+	              /^[[:space:]]*User /{print "K8SLAB_HOST_USER="$$2} \
+	              /^[[:space:]]*Port /{print "K8SLAB_HOST_PORT="$$2} \
+	              /^[[:space:]]*IdentityFile/{print "K8SLAB_HOST_KEY="$$2}')" \
+	  && cd $(REPO_ROOT) \
+	  && K8SLAB_HOST_ADDR=$$K8SLAB_HOST_ADDR \
+	     K8SLAB_HOST_USER=$$K8SLAB_HOST_USER \
+	     K8SLAB_HOST_PORT=$$K8SLAB_HOST_PORT \
+	     K8SLAB_HOST_KEY=$$K8SLAB_HOST_KEY \
+	     ANSIBLE_ROLES_PATH=$(ANSIBLE_DIR)/roles \
+	     ANSIBLE_COLLECTIONS_PATH=$(ANSIBLE_COLLECTIONS_DIR) \
+	     $(ANSIBLE_PLAY) \
+	       -i $(PIVOT_FIXTURE)/hosts.yml \
+	       -i $(SHARED_INV_DIR) \
+	       $(PIVOT_FIXTURE)/playbook.yml
+
+.PHONY: mgmt-kubeconfig
+mgmt-kubeconfig: ## Materialise mgmt kubeconfig to .artifacts/clusters/mgmt-1.kubeconfig (consumer of post-pivot deploy-workload)
+	@mkdir -p $(ARTIFACTS_DIR)/clusters
+	@cd $(MGMT_TF_DIR) \
+	  && cluster_name="$$($(TERRAFORM) output -raw cluster_name)" \
+	  && out="$(ARTIFACTS_DIR)/clusters/$${cluster_name}.kubeconfig" \
+	  && umask 077 \
+	  && $(TERRAFORM) output -raw kubeconfig >"$$out" \
+	  && echo "wrote $$out"
+
+# --------------------------------------------------------------------------
 # Destroy / clean graph (PLAN §19.2)
 # --------------------------------------------------------------------------
 #
@@ -160,10 +233,20 @@ destroy-workload: ## Phase 5 reverse — terraform destroy + cascade clean-{tfst
 	fi
 	@$(MAKE) clean-tfstate clean-workload-kubeconfig
 
+.PHONY: destroy-pivot
+destroy-pivot: ## Phase 6 reverse — terraform destroy on mgmt-1 fixture + cascade clean-{pivot-tfstate,mgmt-kubeconfig}
+	@if [ -f $(MGMT_TF_DIR)/terraform.tfstate ] && [ -f $(BOOTSTRAP_TFVARS) ]; then \
+	  echo "== terraform destroy on mgmt-1 fixture" ; \
+	  ( cd $(MGMT_TF_DIR) && $(TERRAFORM) destroy -auto-approve -var-file=$(BOOTSTRAP_TFVARS) ) ; \
+	else \
+	  echo "== skip terraform destroy: no tfstate or no bootstrap.auto.tfvars.json" ; \
+	fi
+	@$(MAKE) clean-pivot-tfstate clean-mgmt-kubeconfig
+
 .PHONY: destroy-vm
-destroy-vm: ## Destroy local Vagrant VM + libvirt orphans; cascades clean-{bootstrap-bundle,workload-kubeconfig,tfstate}
+destroy-vm: ## Destroy local Vagrant VM + libvirt orphans; cascades clean-{bootstrap-bundle,workload-kubeconfig,mgmt-kubeconfig,tfstate,pivot-tfstate}
 	$(MAKE) -C $(VAGRANT_DIR) destroy
-	@$(MAKE) clean-bootstrap-bundle clean-workload-kubeconfig clean-tfstate
+	@$(MAKE) clean-bootstrap-bundle clean-workload-kubeconfig clean-mgmt-kubeconfig clean-tfstate clean-pivot-tfstate
 
 # ---- CLEAN (file-only, idempotent) -----------------------------------------
 
@@ -176,6 +259,15 @@ clean-tfstate: ## Wipe local Terraform state in workload fixture (.terraform/, t
 	        $(WORKLOAD_TF_DIR)/.terraform.tfstate.lock.info
 	@echo "== cleaned: $(WORKLOAD_TF_DIR) terraform state"
 
+.PHONY: clean-pivot-tfstate
+clean-pivot-tfstate: ## Wipe local Terraform state in mgmt-1 fixture (.terraform/, tfstate*, lock files)
+	@rm -rf $(MGMT_TF_DIR)/.terraform \
+	        $(MGMT_TF_DIR)/.terraform.lock.hcl \
+	        $(MGMT_TF_DIR)/terraform.tfstate \
+	        $(MGMT_TF_DIR)/terraform.tfstate.backup \
+	        $(MGMT_TF_DIR)/.terraform.tfstate.lock.info
+	@echo "== cleaned: $(MGMT_TF_DIR) terraform state"
+
 .PHONY: clean-bootstrap-bundle
 clean-bootstrap-bundle: ## Remove .artifacts/bootstrap.{kubeconfig,auto.tfvars.json} + harness-vm-id
 	@rm -f $(ARTIFACTS_DIR)/bootstrap.kubeconfig \
@@ -184,9 +276,15 @@ clean-bootstrap-bundle: ## Remove .artifacts/bootstrap.{kubeconfig,auto.tfvars.j
 	@echo "== cleaned: bootstrap handoff bundle"
 
 .PHONY: clean-workload-kubeconfig
-clean-workload-kubeconfig: ## Remove .artifacts/clusters/*.kubeconfig (stale workload kubeconfigs)
-	@find $(ARTIFACTS_DIR)/clusters -mindepth 1 -name '*.kubeconfig' -delete 2>/dev/null || true
+clean-workload-kubeconfig: ## Remove .artifacts/clusters/<workload>.kubeconfig (stale workload kubeconfigs)
+	@find $(ARTIFACTS_DIR)/clusters -mindepth 1 -name '*.kubeconfig' \
+	      ! -name 'mgmt-*.kubeconfig' -delete 2>/dev/null || true
 	@echo "== cleaned: workload kubeconfigs in $(ARTIFACTS_DIR)/clusters/"
+
+.PHONY: clean-mgmt-kubeconfig
+clean-mgmt-kubeconfig: ## Remove .artifacts/clusters/mgmt-*.kubeconfig (stale mgmt kubeconfigs)
+	@find $(ARTIFACTS_DIR)/clusters -mindepth 1 -name 'mgmt-*.kubeconfig' -delete 2>/dev/null || true
+	@echo "== cleaned: mgmt kubeconfigs in $(ARTIFACTS_DIR)/clusters/"
 
 .PHONY: clean-molecule
 clean-molecule: ## Remove ~/.ansible/tmp/molecule.* scratch directories
@@ -202,8 +300,9 @@ clean-local: ## "Start over" — destroys VM and cascades every clean-*. Fast; d
 	@echo "== local harness reset complete"
 
 .PHONY: reset-all
-reset-all: ## Full PLAN §19.2 reverse — terraform destroy on live workload, THEN destroy-vm + clean-molecule. Slow; exercises every destroy step.
+reset-all: ## Full PLAN §19.2 reverse — terraform destroy on live workload + pivot mgmt, THEN destroy-vm + clean-molecule. Slow; exercises every destroy step.
 	@$(MAKE) destroy-workload
+	@$(MAKE) destroy-pivot
 	@$(MAKE) destroy-vm
 	@$(MAKE) clean-molecule
 	@echo "== full destroy chain complete"

@@ -60,9 +60,6 @@ SCENARIOS := \
 	bootstrap-clusterctl \
 	bootstrap-capn-secret \
 	export-artifacts \
-	bootstrap-cluster \
-	cluster-addons-helm \
-	pivot \
 	cleanup-bootstrap \
 	e2e-local
 

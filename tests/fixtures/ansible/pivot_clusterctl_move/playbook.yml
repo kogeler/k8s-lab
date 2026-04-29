@@ -1,0 +1,94 @@
+---
+# PLAN §18 — Phase 6 pivot driver playbook.
+#
+# Companion to `tests/fixtures/terraform/management-clusters/mgmt-1/`:
+# the TF fixture stands up the target mgmt cluster (CAPI topology +
+# CNI + MetalLB) on the bootstrap k3s; this playbook then pivots
+# CAPI ownership onto it and removes the now-redundant bootstrap LXC.
+#
+# Order of operations (single play, two roles):
+#
+#   1. `pivot_clusterctl_move`  → materialise runner-reachable mgmt
+#      kubeconfig from the bootstrap-side `<cluster>-kubeconfig` Secret,
+#      `clusterctl init --infrastructure incus:<ver>` on the target,
+#      `clusterctl move --to-kubeconfig` to relocate every CAPI CR from
+#      bootstrap to target. The role's own healthchecks
+#      (tasks/healthchecks.yml) re-assert the post-pivot end state —
+#      providers Available on target, Cluster CR moved, bootstrap source
+#      flushed — as a mandatory part of its work, so no separate
+#      Molecule scenario is needed.
+#
+#   2. `cleanup_bootstrap`     → delete the bootstrap LXC container
+#      (the LXD proxy device publishing the bootstrap k3s API is an
+#      instance property — LXD removes it with the container, so
+#      "bootstrap API publication" in PLAN §18.2 acceptance is covered
+#      by this same step). Runner-side `.artifacts/` is intentionally
+#      NOT wiped here: post-pivot the operator may still want to keep
+#      the mgmt-1 kubeconfig (rendered by the TF fixture, available via
+#      `terraform output -raw kubeconfig`) — the bootstrap-tied files
+#      it leaves behind (`bootstrap.kubeconfig`,
+#      `bootstrap.auto.tfvars.json`) point at the now-deleted endpoint
+#      and should be cleaned up by the caller, not by this playbook.
+#
+# Inventory layout (this directory):
+#   * `hosts.yml`   — single-host static inventory (k8slab-host →
+#     group k8slab_host).
+#   * shared `group_vars/` from `tests/molecule/shared/inventory/`
+#     are picked up via a second `-i <shared-dir>` Ansible argument
+#     so both Molecule scenarios and this fixture playbook share the
+#     same substrate vars contract (one source of truth).
+#
+# Caller (`make deploy-pivot` recipe in the root Makefile) populates
+# `K8SLAB_HOST_*` env vars from `vagrant ssh-config` and exports
+# `ANSIBLE_ROLES_PATH` / `ANSIBLE_COLLECTIONS_PATH` before invoking
+# ansible-playbook — mirrors what `scripts/molecule_run.py` does for
+# Molecule scenarios. The shared `group_vars/k8slab_host.yml` reads
+# the env vars straight into `ansible_*`.
+
+- name: "Phase 6 — pivot bootstrap k3s onto self-hosted mgmt-1 + retire bootstrap"
+  hosts: k8slab_host
+  gather_facts: true
+  become: true
+  vars:
+    # Hard-flip the global mode flag for this play. Default §3.1 is
+    # `false` (MVP path); the playbook only makes sense in Stage 2
+    # pivot mode, so we force it on at the play scope rather than
+    # relying on a `-e` override every time.
+    k8s_lab_pivot_enabled: true
+
+    # Runner-reachable LXD host address — the rewritten target
+    # kubeconfig points its `server:` URL here. Same env var the
+    # shared inventory uses for ansible_host, exported by the Make
+    # target wrapper from `vagrant ssh-config`.
+    k8s_lab_lxd_host_address: "{{ lookup('env', 'K8SLAB_HOST_ADDR') }}"
+
+    # Phase 6 runs AFTER Phase 0..4 — by this point the LXD storage
+    # pool has claimed the dedicated disk (lxd_storage_pools wipes its
+    # signature first; LXD then formats it as the pool backing
+    # device). The shared default
+    # `base_system_btrfs_pool_required: true` from
+    # tests/molecule/shared/inventory/group_vars/k8slab_host.yml
+    # asserts a btrfs mount at /var/lib/k8slab/lxd-pool, which has
+    # been gone since lxd_storage_pools created the pool. Override
+    # to `false` here for the same reason every Molecule scenario
+    # downstream of lxd-storage-pools does — see the override block
+    # in tests/molecule/lxd-storage-pools/host_vars/k8slab-host.yml
+    # and its siblings.
+    base_system_btrfs_pool_required: false
+
+    # Keep the runner-side artefacts dir intact post-pivot. Operator
+    # decides separately when to wipe stale bootstrap.* files.
+    cleanup_bootstrap_remove_artifacts: false
+  roles:
+    # pivot_clusterctl_move's meta-chain pulls in the full Phase 0..4
+    # substrate (host setup → LXD → bootstrap k3s → bootstrap_clusterctl).
+    # On a clean re-converge against an already-pivoted host every step
+    # is a no-op via the role's own probes (init skip if CAPN already
+    # on target; move skip if bootstrap already flushed).
+    - role: pivot_clusterctl_move
+
+    # No meta-deps by design (cleanup is reverse-motion). The substrate
+    # is already up from the previous role's chain, so the LXD socket
+    # probe inside cleanup_bootstrap finds the bootstrap container,
+    # deletes it, and reports `changed=false` on subsequent runs.
+    - role: cleanup_bootstrap

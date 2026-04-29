@@ -19,50 +19,242 @@ PLAN-stage1-7.md ................. §20..§22 (Stage 1 meta: out-of-scope, self-
 
 ---
 
-# 18. Phases 6 + 7 — Optional pivot + workload cluster creation
+# 18. Phases 6 + 7 — Optional pivot + post-pivot workload creation
 
-Этот раздел группирует pivot-specific role (§18.1), phase 6 (actual
-`clusterctl move` на target mgmt) и phase 7 (post-pivot workload
-cluster creation через self-hosted mgmt cluster).
+Этот раздел группирует:
 
-## 18.1. Role: `pivot_clusterctl_move`
+* §18.1 — TF fixture `tests/fixtures/terraform/management-clusters/mgmt-1/`
+  (создаёт target mgmt cluster CR на bootstrap k3s через тот же §16.4
+  `workload_cluster` module);
+* §18.2 — role `pivot_clusterctl_move` + Ansible playbook
+  `tests/fixtures/ansible/pivot_clusterctl_move/playbook.yml`
+  (`clusterctl init` на target + `clusterctl move` + retire
+  bootstrap через `cleanup_bootstrap`);
+* §18.3 — Make-target `deploy-pivot` + Phase 7 (workload clusters
+  от self-hosted mgmt после pivot).
 
-Только если `k8s_lab_pivot_enabled=true`:
+Phase 6 является **opt-in**: глобал `k8s_lab_pivot_enabled` (§8) по
+умолчанию `false` (MVP path §3.1). Make-target `deploy-pivot`
+форсит его в `true` через playbook-scope `vars:` — оператор просто
+вызывает `make deploy-pivot` после Phase 4, без `-e` overrides.
 
-* wait target mgmt cluster
-* get kubeconfig
-* `clusterctl init` on target
-* `clusterctl move`
+## 18.1. TF fixture: `management-clusters/mgmt-1/`
 
-Cluster API docs требуют именно такой порядок, а также наличие хотя бы одного worker node в target management cluster. ([Cluster API][8])
+**Статус: выполнено в Step 18 (2026-04-29).**
 
-## 18.2. Phase 6 — Pivot (optional)
+`tests/fixtures/terraform/management-clusters/mgmt-1/` — TF root,
+зеркало `workload-clusters/lab-default/` с другими input'ами:
 
-Only when `k8s_lab_pivot_enabled=true`:
+* `cluster_name = "mgmt-1"` (из §8 `k8s_lab_management_cluster_name`);
+* `controlplane_count = 1`, `worker_count = 2` (§8 +
+  §2.12 mgmt-side replica policy + chart-required floor — см. ниже);
+* `class_prefix = "capn-mgmt"` — отдельный ClusterClass-нэйм
+  (`capn-mgmt-<chart-version-slug>`), позволяет mgmt и workload
+  Cluster CR'ам сосуществовать в одном `capi-clusters` namespace
+  до момента clusterctl move;
+* `metallb_vip_range_v6 = 2001:db8:42:100::300-::3ff` — disjoint от
+  workload range `::200-::2ff`, исключает MetalLB speaker
+  collision если mgmt + workload coexist на одном external L2 segment'е.
 
-* `clusterctl init` on target mgmt
-* `clusterctl move`
-* delete bootstrap container
+Module внутри fixture'а — тот же generic `workload_cluster` (§16.4),
+который ставит ClusterClass + Cluster CR + CNI + MetalLB + Gate A/B
+helm tests одним `terraform apply`'ем. К моменту запуска
+pivot-роли (§18.2) target mgmt-1 cluster уже **полностью функционален**:
+CAPI controllers ещё нет (их установит `clusterctl init` в pivot роли),
+но Kubernetes API + CNI + node-level готовности — на месте.
 
-Acceptance:
+**Worker count floor = 2.** `cni-calico` chart (§17.2) helm test
+включает phase 6 «live pod-to-pod ICMP4+ICMP6 across workers» с
+`requiredDuringScheduling pod-anti-affinity` — probe-a и probe-b
+обязаны попасть на разные worker-ноды. На mgmt с 1 worker probe-b
+застревает в `Pending` → TF apply падает на gate. Поэтому §8
+`k8s_lab_management_worker_count` default = `2` (chart-required
+floor для любого кластера, идущего через workload_cluster module);
+оператор может поднимать до 3+ если нужен HA, но не ниже 2.
 
-* providers alive in target mgmt
-* bootstrap deleted
+Параметризация — через тот же `.artifacts/bootstrap.auto.tfvars.json`
+handoff (§13.12), что и workload fixture использует. Значения
+§8 globals (`k8s_lab_management_*`) экспортируются `export_artifacts`
+ролью.
 
-## 18.3. Phase 7 — Workload clusters from self-hosted mgmt
+## 18.2. Role + playbook: `pivot_clusterctl_move`
 
-После Phase 6 (pivot) — повторный вызов `make deploy-workload`
-(§16.6) с tfvar override `mgmt_kubeconfig_path =
-.artifacts/mgmt.kubeconfig` поднимает workload-кластер от
-self-hosted mgmt тем же §16.4 module'ом. Отдельных artefacts (новых
-Makefile targets, новых TF root'ов, новых module'ей) Phase 7 не
-вводит — это просто другой input для уже существующего пайплайна.
+**Статус: выполнено в Step 18 (2026-04-29).**
 
-Acceptance:
+Role lives at `ansible/roles/pivot_clusterctl_move/`.
 
-* `terraform apply` зелёный против self-hosted mgmt kubeconfig'а;
-* chart-side helm test'ы (Gate A + Gate B) внутри module'а зелёные
-  (см. §17.1 invocation contract).
+Public contract (full role README — `ansible/roles/pivot_clusterctl_move/README.md`):
+
+* `pivot_clusterctl_move_target_cluster_name` (default
+  `{{ k8s_lab_management_cluster_name }}`) — Cluster CR name to
+  pivot. Substrate-required cluster-namespace = `capi-clusters`
+  (matches §8 `k8s_lab_capn_identity_namespaces` default).
+* `pivot_clusterctl_move_target_api_address` (default
+  `{{ k8s_lab_lxd_host_address }}`) — runner-reachable LXD host;
+  rewritten into target kubeconfig server URL alongside per-cluster
+  proxy port from Cluster CR's `k8s-lab.io/api-proxy-port` annotation.
+* CAPN provider URL + version pulled from §8 globals — same release
+  bootstrap cluster runs.
+
+Substrate-required values (memory `feedback_required_values_hardcoded.md`)
+in `vars/main.yml`:
+
+* CAPN provider name `incus` — registered upstream;
+* `tls-server-name: kubernetes.default.svc` — pinned in rewritten
+  kubeconfig so TLS verification works regardless of `server:` URL
+  vantage point;
+* api-proxy-port annotation key `k8s-lab.io/api-proxy-port` — single
+  source of truth shared with `capi-workload-cluster` chart's
+  `_helpers.tpl apiProxyPort` helper;
+* required Deployment list for post-init Available poll (cert-manager
+  + 4 CAPI/CAPN providers) — mirrors `bootstrap_clusterctl`'s set.
+
+Task layout (`tasks/main.yml` dispatcher):
+
+1. `preflight.yml` — validate inputs + clusterctl binary stat +
+   bootstrap kubeconfig stat. Always runs (catches misconfiguration
+   in MVP mode too).
+2. `target_kubeconfig.yml` — probe bootstrap for target Cluster CR;
+   if present, poll for `<cluster>-kubeconfig` Secret + read
+   api-proxy-port annotation, rewrite server URL +
+   `tls-server-name`, write to
+   `/opt/capi-lab/etc/pivot_clusterctl_move/mgmt.kubeconfig`
+   (mode 0600). If absent, fall back to existing on-disk kubeconfig
+   (post-pivot re-converge path).
+3. `config.yml` — render `clusterctl.yaml` with CAPN provider URL.
+4. `init.yml` — probe target for `capn-controller-manager` Deployment;
+   skip when present (clusterctl init is all-or-nothing). Otherwise
+   run `clusterctl init --infrastructure incus:<ver> --wait-providers`
+   with `CLUSTER_TOPOLOGY=true` env (async/poll).
+5. `move.yml` — guarded by the `target_kubeconfig.yml` probe fact
+   `_pivot_clusterctl_move_target_on_bootstrap`. When `false`, move
+   already happened, skip. Otherwise run
+   `clusterctl move --kubeconfig=<bootstrap> --to-kubeconfig=<target>
+    --namespace=capi-clusters` (async/poll).
+6. `healthchecks.yml` — re-assert post-pivot end state from a
+   separate process: cert-manager + 4 provider Deployments
+   Available on target, 4 Provider CRs present, target Cluster CR on
+   target, **bootstrap source flushed** (no Cluster CRs in target
+   namespace on bootstrap).
+
+Idempotence: every mutating step is gated on a read-only probe
+(plan §2.6.1). Re-running on an already-pivoted host is reliably
+`changed=false` end-to-end.
+
+Meta-deps (single, with `# why` comment per §2.6.5):
+
+* `bootstrap_clusterctl` — transitively pulls
+  `bootstrap_k3s → binary_fetch → lxd_bootstrap_instance → …` so
+  `clusterctl` binary + bootstrap kubeconfig are guaranteed by the
+  time the role's tasks run.
+
+The role hard-gates everything below `preflight` on
+`k8s_lab_pivot_enabled | bool` AND `pivot_clusterctl_move_enabled`
+(coarse-grained per §2.6.3) — calling the role with the default mode
+is a documented no-op.
+
+### Bootstrap retirement: `cleanup_bootstrap`
+
+Phase 6 acceptance "bootstrap deleted" is owned by the existing
+`cleanup_bootstrap` role (§19.1), not by `pivot_clusterctl_move`.
+The pivot fixture playbook chains them in one play:
+
+```yaml
+roles:
+  - role: pivot_clusterctl_move    # init + move + healthchecks
+  - role: cleanup_bootstrap        # delete bootstrap LXC + proxy
+```
+
+`cleanup_bootstrap` has no meta-deps by design (reverse-motion);
+the substrate it needs (LXD daemon, `capi-lab` project) is already
+up from `pivot_clusterctl_move`'s meta-chain. Runner-side
+`.artifacts/` is **not** wiped here (`cleanup_bootstrap_remove_artifacts:
+false` set in playbook scope) — operator decides separately when to
+clean stale `bootstrap.kubeconfig` / `bootstrap.auto.tfvars.json`.
+
+### No separate Molecule scenario
+
+The role's own healthchecks (`tasks/healthchecks.yml`) re-assert the
+post-pivot end state — providers Available on target, Cluster CR
+moved, bootstrap source flushed — as a **mandatory part of every run**
+(no `flow_control` toggle for healthchecks). Acceptance is therefore
+covered by the role itself, not by an external Molecule verify play.
+A dedicated `tests/molecule/pivot/` scenario is **not** part of this
+repo.
+
+## 18.3. Phase 6 + Phase 7 execution
+
+### Phase 6 — `make deploy-pivot`
+
+**Статус: выполнено в Step 18 (2026-04-29 e2e on the local Vagrant
+harness — 275 ok / 6 changed / 0 failed; 4 CAPI providers Available
+on mgmt-1; Cluster CR moved bootstrap → target; capi-bootstrap-0
+container absent post-cleanup).**
+
+Single Make-target `deploy-pivot` (root Makefile) chains three
+stages:
+
+1. **Stage 0/2** — `make -C tests/vagrant/debian13 up` (idempotent
+   VM check).
+2. **Stage 1/2** — `terraform init -upgrade` + `terraform apply
+   -auto-approve -var-file=.artifacts/bootstrap.auto.tfvars.json` on
+   `tests/fixtures/terraform/management-clusters/mgmt-1/`. Stands up
+   mgmt-1 cluster on the bootstrap k3s (CAPI topology + CNI + MetalLB
+   + Gate A/B helm tests pass inline, same as §16.6 workload flow).
+3. **Stage 2/2** — `vagrant ssh-config host` parsed once into
+   `K8SLAB_HOST_*` env vars; `ANSIBLE_ROLES_PATH` /
+   `ANSIBLE_COLLECTIONS_PATH` exported; `ansible-playbook -i
+   tests/fixtures/ansible/pivot_clusterctl_move/hosts.yml -i
+   tests/molecule/shared/inventory <playbook>`. Same shared
+   substrate `group_vars` Molecule scenarios use are picked up
+   through the second `-i` argument.
+
+Inline shell in the Make recipe — no Python wrapper around
+ansible-playbook (the wiring is 4 env exports + one awk pass over
+`vagrant ssh-config`).
+
+Phase 6 acceptance:
+
+* TF apply on mgmt-1 fixture exits 0 (Gate A external L2 + Gate B CNI
+  helm tests pass on the target cluster — §17.2 / §17.3);
+* `pivot_clusterctl_move` healthchecks all pass (4 providers
+  Available + Cluster CR moved + bootstrap flushed);
+* `cleanup_bootstrap` healthchecks pass (bootstrap container absent
+  via LXD REST probe).
+
+### Phase 7 — Workload clusters from self-hosted mgmt
+
+After Phase 6 the bootstrap k3s is gone; subsequent workload
+deploys consume the mgmt-1 kubeconfig instead of the bootstrap one.
+Mechanically Phase 7 is a re-run of `make deploy-workload` (§16.6)
+with one tfvar override:
+
+```bash
+# Materialise target mgmt kubeconfig once (TF output → file)
+make mgmt-kubeconfig
+# Then deploy workload against it
+cd tests/fixtures/terraform/workload-clusters/lab-default \
+  && terraform apply -auto-approve \
+       -var-file=../../../../.artifacts/bootstrap.auto.tfvars.json \
+       -var=mgmt_kubeconfig_path=../../../../.artifacts/clusters/mgmt-1.kubeconfig
+```
+
+The `mgmt_kubeconfig_path` variable on the workload fixture
+(§16.5) accepts this override; the `workload_cluster` module
+itself (§16.4) is mgmt-agnostic — it just talks to whichever
+kubeconfig you point its `helm.mgmt` provider alias at. No new
+Makefile target / TF root / module is introduced for Phase 7.
+
+Phase 7 acceptance:
+
+* `terraform apply` green against the self-hosted mgmt-1 kubeconfig;
+* chart-side helm tests (Gate A + Gate B) inside the module green
+  (see §17.1 invocation contract).
+
+Cluster API docs cover the full bootstrap-and-pivot flow (init →
+move → retire bootstrap; target mgmt must already have at least one
+worker before move — satisfied by §18.1's worker_count=2 default).
+([Cluster API][8])
 
 [1]: https://capn.linuxcontainers.org/?utm_source=chatgpt.com "Introduction - The cluster-api-provider-incus book"
 [2]: https://documentation.ubuntu.com/lxd/latest/reference/network_bridge/?utm_source=chatgpt.com "Bridge network - LXD documentation"

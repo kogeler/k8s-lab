@@ -1,0 +1,18 @@
+{{ ansible_managed | comment }}
+# clusterctl config consumed via `clusterctl init --config <this file>`
+# on the TARGET management cluster (plan §18.1). Declares the CAPN
+# infrastructure provider URL — same release the bootstrap cluster
+# already runs, just installed on the new home.
+#
+# Provider list reference:
+# https://main.cluster-api.sigs.k8s.io/clusterctl/configuration
+---
+providers:
+  - name: "{{ _pivot_clusterctl_move_required_provider_name }}"
+    url:  "{{ pivot_clusterctl_move_capn_provider_url }}"
+    type: "InfrastructureProvider"
+{% for entry in pivot_clusterctl_move_extra_providers %}
+  - name: "{{ entry.name }}"
+    url:  "{{ entry.url }}"
+    type: "{{ entry.type }}"
+{% endfor %}

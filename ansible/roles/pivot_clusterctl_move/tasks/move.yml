@@ -1,0 +1,39 @@
+---
+# Run `clusterctl move --to-kubeconfig` from bootstrap → target (plan §18.1).
+#
+# Idempotence model (plan §2.6.1): `clusterctl move` deletes objects
+# from the source cluster after creating them on the target, so a
+# successful move leaves bootstrap with NO Cluster CRs in the
+# target's namespace. The probe in target_kubeconfig.yml has already
+# recorded `_pivot_clusterctl_move_target_on_bootstrap` (set by
+# `set_fact` from the same `k8s_info` query): if `false`, move is
+# already done, this task is a no-op.
+
+- name: "pivot-clusterctl-move | move | compose clusterctl move argv"
+  ansible.builtin.set_fact:
+    _pivot_clusterctl_move_move_argv: >-
+      {{
+        [
+          pivot_clusterctl_move_clusterctl_path,
+          'move',
+          '--kubeconfig=' ~ pivot_clusterctl_move_bootstrap_kubeconfig_path,
+          '--to-kubeconfig=' ~ pivot_clusterctl_move_target_kubeconfig_path,
+          '--namespace=' ~ pivot_clusterctl_move_target_cluster_namespace,
+        ]
+      }}
+
+- name: "pivot-clusterctl-move | move | run clusterctl move (bootstrap → target)"
+  # async/poll: clusterctl move blocks on source-side reconcile
+  # quiescence (it waits for every CAPI controller to stop mutating
+  # its CRs before snapshotting them), then performs a synchronised
+  # create-on-target / delete-on-source cycle. Object copies are fast,
+  # but the upstream timeout for a controller-busy source can exceed
+  # 5-10 min on a cold lab host. async/poll keeps the SSH session
+  # alive past the foreground default.
+  ansible.builtin.command:
+    argv: "{{ _pivot_clusterctl_move_move_argv }}"
+  register: _pivot_clusterctl_move_move_register
+  changed_when: _pivot_clusterctl_move_move_register.rc == 0
+  when: _pivot_clusterctl_move_target_on_bootstrap
+  async: "{{ pivot_clusterctl_move_move_timeout | int }}"
+  poll: 5

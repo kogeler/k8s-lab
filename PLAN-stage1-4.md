@@ -207,8 +207,11 @@ kube-proxy ConfigMap содержит `mode: nftables` +
 `conntrack.{maxPerCore: 0, min: 0}` напрямую от kubeadm init (без
 ConfigMap patch'ей), все 5 kube-proxy Pods Running 0 restarts.
 
-TF module §16.4 ещё не реализован; chart-side acceptance закрыт,
-TF wrapper integration — Step 15+.
+TF module §16.4 wrapper integration shipped в Step 16 (2026-04-28 —
+см. §16.4 / §16.6) — `null_resource.helm_test_cni_calico` invokes
+этот hook через `helm test` `local-exec` provisioner внутри того же
+`terraform apply`'я, что и `helm_release.cni_calico`. Failure
+hook'а валит TF apply (PLAN §17.1 invocation contract).
 
 ## 17.3. Gate A — External L2 viability acceptance
 
@@ -346,8 +349,13 @@ Memory rules применённые в Step 14:
   PLAN был прав в исходном two-release дизайне; повторно
   подтверждено через runtime evidence.
 
-TF module §16.4 ещё не реализован; chart-side + verify-side
-acceptance закрыт, TF wrapper integration — Step 15+.
+TF module §16.4 wrapper integration shipped в Step 16 (2026-04-28 —
+см. §16.4 / §16.6) — `null_resource.helm_test_metallb_config` invokes
+chart-side hook через `helm test` `local-exec` provisioner внутри
+того же `terraform apply`'я, что и `helm_release.metallb_config`.
+verify-side external curl от Vagrant VM к MetalLB-allocated VIP
+через `ext6-ra-peer` живёт в `tests/molecule/e2e-local/verify.yml`
+и выполняется при e2e-local прогоне (§14.7 Step 16 acceptance).
 
 [1]: https://capn.linuxcontainers.org/?utm_source=chatgpt.com "Introduction - The cluster-api-provider-incus book"
 [2]: https://documentation.ubuntu.com/lxd/latest/reference/network_bridge/?utm_source=chatgpt.com "Bridge network - LXD documentation"

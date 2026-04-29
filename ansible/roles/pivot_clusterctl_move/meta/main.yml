@@ -1,0 +1,41 @@
+---
+galaxy_info:
+  role_name: pivot_clusterctl_move
+  namespace: k8slab
+  author: k8s-lab contributors
+  description: >-
+    Pivot the bootstrap k3s management cluster onto a self-hosted
+    target management cluster (plan §18.1). Materialises a
+    runner-reachable kubeconfig for the target, runs
+    `clusterctl init --infrastructure incus:<ver>` on the target,
+    then runs `clusterctl move --to-kubeconfig` to relocate every
+    CAPI CR from bootstrap to target. Out of scope: target mgmt
+    cluster CREATION (owned by capi-cluster-class +
+    capi-workload-cluster Helm charts driven by the §16.4 TF module
+    or an equivalent caller), CNI install on the target (same
+    delivery model, charts/cni-calico), and bootstrap deletion
+    (`cleanup_bootstrap`, plan §19.1). The role is hard-gated on the
+    global `k8s_lab_pivot_enabled` mode flag — default `false` per
+    §3.1, the role is a documented no-op in MVP mode.
+  license: MIT
+  min_ansible_version: "2.16"
+  platforms:
+    - name: Debian
+      versions:
+        - trixie
+  galaxy_tags:
+    - kubernetes
+    - clusterapi
+    - clusterctl
+    - pivot
+
+dependencies:
+  # bootstrap_clusterctl transitively pulls bootstrap_k3s + binary_fetch
+  # + lxd_bootstrap_instance + the full LXD substrate. We rely on its
+  # healthcheck having already proven the bootstrap cluster is up,
+  # initialised, and reachable through the rewritten kubeconfig at
+  # `bootstrap_clusterctl_kubeconfig_path` — the same path this role
+  # reads through its own `pivot_clusterctl_move_bootstrap_kubeconfig_path`
+  # default (cross-role coupling by VALUE, not by var-prefix import,
+  # per plan §2.6.5).
+  - role: bootstrap_clusterctl

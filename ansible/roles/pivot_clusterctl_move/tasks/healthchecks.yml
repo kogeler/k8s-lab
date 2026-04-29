@@ -1,0 +1,116 @@
+---
+# Re-assert pivot end state from a separate process (plan §18.2 acceptance):
+#   * cert-manager + every CAPI/CAPN controller Deployment Available
+#     on the TARGET (proves init landed cleanly);
+#   * the target Cluster CR is now on the TARGET (proves move
+#     succeeded);
+#   * bootstrap holds no CAPI Cluster CRs in the target namespace
+#     (proves move flushed the source).
+#
+# Bootstrap-deletion-after-pivot (the second half of §18.2 acceptance)
+# is OWNED BY `cleanup_bootstrap` (plan §19.1) and not asserted here —
+# this role's contract stops at the move boundary.
+
+- name: "pivot-clusterctl-move | healthchecks | poll required deployments on target"
+  kubernetes.core.k8s_info:
+    kubeconfig:  "{{ pivot_clusterctl_move_target_kubeconfig_path }}"
+    api_version: "apps/v1"
+    kind:        "Deployment"
+    namespace:   "{{ item.namespace }}"
+    name:        "{{ item.deployment }}"
+  loop: >-
+    {{
+      _pivot_clusterctl_move_required_cert_manager_deployments
+      + _pivot_clusterctl_move_required_deployments
+      + pivot_clusterctl_move_extra_wait_deployments
+    }}
+  loop_control:
+    label: "{{ item.namespace }}/{{ item.deployment }}"
+  register: _pivot_clusterctl_move_wait_register
+  retries: "{{ pivot_clusterctl_move_wait_retries | int }}"
+  delay:   "{{ pivot_clusterctl_move_wait_delay | int }}"
+  until: >-
+    (_pivot_clusterctl_move_wait_register.resources | default([]) | length) > 0
+    and (
+      _pivot_clusterctl_move_wait_register.resources[0].status.conditions | default([])
+      | selectattr('type', 'equalto', item.condition | default('Available'))
+      | selectattr('status', 'equalto', 'True')
+      | list | length > 0
+    )
+  changed_when: false
+
+- name: "pivot-clusterctl-move | healthchecks | list installed Provider CRs on target"
+  kubernetes.core.k8s_info:
+    kubeconfig:  "{{ pivot_clusterctl_move_target_kubeconfig_path }}"
+    api_version: "clusterctl.cluster.x-k8s.io/v1alpha3"
+    kind:        "Provider"
+  register: _pivot_clusterctl_move_providers_register
+  changed_when: false
+
+- name: "pivot-clusterctl-move | healthchecks | assert all four providers present on target"
+  # Top-level `type` and `providerName` (NOT under .spec) per CAPI
+  # Provider CR schema — same shape bootstrap_clusterctl asserts.
+  ansible.builtin.assert:
+    that:
+      - >-
+        _pivot_clusterctl_move_providers_register.resources
+        | selectattr('type', 'equalto', 'CoreProvider')
+        | selectattr('providerName', 'equalto', 'cluster-api')
+        | list | length == 1
+      - >-
+        _pivot_clusterctl_move_providers_register.resources
+        | selectattr('type', 'equalto', 'BootstrapProvider')
+        | selectattr('providerName', 'equalto', 'kubeadm')
+        | list | length == 1
+      - >-
+        _pivot_clusterctl_move_providers_register.resources
+        | selectattr('type', 'equalto', 'ControlPlaneProvider')
+        | selectattr('providerName', 'equalto', 'kubeadm')
+        | list | length == 1
+      - >-
+        _pivot_clusterctl_move_providers_register.resources
+        | selectattr('type', 'equalto', 'InfrastructureProvider')
+        | selectattr('providerName', 'equalto', _pivot_clusterctl_move_required_provider_name)
+        | list | length == 1
+    fail_msg: >-
+      pivot_clusterctl_move healthcheck failed: target Provider CR
+      list missing one or more required entries.
+      provider_resources=
+      {{ _pivot_clusterctl_move_providers_register.resources
+         | map(attribute='type') | list }}
+      /
+      {{ _pivot_clusterctl_move_providers_register.resources
+         | map(attribute='providerName') | list }}
+
+- name: "pivot-clusterctl-move | healthchecks | assert target Cluster CR is on target"
+  kubernetes.core.k8s_info:
+    kubeconfig:  "{{ pivot_clusterctl_move_target_kubeconfig_path }}"
+    api_version: "{{ _pivot_clusterctl_move_required_cluster_api_version }}"
+    kind:        "Cluster"
+    namespace:   "{{ pivot_clusterctl_move_target_cluster_namespace }}"
+    name:        "{{ pivot_clusterctl_move_target_cluster_name }}"
+  register: _pivot_clusterctl_move_target_cluster_register
+  retries: "{{ pivot_clusterctl_move_wait_retries | int }}"
+  delay:   "{{ pivot_clusterctl_move_wait_delay | int }}"
+  until: (_pivot_clusterctl_move_target_cluster_register.resources | default([]) | length) == 1
+  changed_when: false
+
+- name: "pivot-clusterctl-move | healthchecks | assert bootstrap holds no Cluster CRs in target namespace"
+  kubernetes.core.k8s_info:
+    kubeconfig:  "{{ pivot_clusterctl_move_bootstrap_kubeconfig_path }}"
+    api_version: "{{ _pivot_clusterctl_move_required_cluster_api_version }}"
+    kind:        "Cluster"
+    namespace:   "{{ pivot_clusterctl_move_target_cluster_namespace }}"
+  register: _pivot_clusterctl_move_bootstrap_clusters_register
+  changed_when: false
+
+- name: "pivot-clusterctl-move | healthchecks | bootstrap source is flushed"
+  ansible.builtin.assert:
+    that:
+      - (_pivot_clusterctl_move_bootstrap_clusters_register.resources | default([])) | length == 0
+    fail_msg: >-
+      pivot_clusterctl_move healthcheck failed: bootstrap still owns
+      Cluster CRs in {{ pivot_clusterctl_move_target_cluster_namespace }}
+      after move:
+      {{ _pivot_clusterctl_move_bootstrap_clusters_register.resources
+         | default([]) | map(attribute='metadata.name') | list }}

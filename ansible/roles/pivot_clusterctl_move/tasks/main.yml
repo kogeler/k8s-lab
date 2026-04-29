@@ -1,0 +1,72 @@
+---
+# Dispatcher-only (plan §2.6.2). Each include file covers one concern.
+#
+# Hard gate: every mutating step is conditioned on BOTH the global
+# `k8s_lab_pivot_enabled` mode flag (§3.1 — default `false`, MVP path)
+# AND the role-level `pivot_clusterctl_move_enabled` toggle. Preflight
+# is the only step that ALSO runs in MVP mode — it surfaces
+# misconfiguration early without mutating anything (assert-only +
+# read-only stat probes), which is consistent with the rest of this
+# repo's role contract (e.g. bootstrap_clusterctl's preflight always
+# runs even when its `_enabled` flag is `false`).
+
+- name: "pivot-clusterctl-move | preflight"
+  ansible.builtin.include_tasks:
+    file: preflight.yml
+    apply:
+      tags: [pivot_clusterctl_move, pivot-clusterctl-move, pivot_clusterctl_move_preflight]
+  tags: [pivot_clusterctl_move, pivot-clusterctl-move, pivot_clusterctl_move_preflight]
+
+- name: "pivot-clusterctl-move | target_kubeconfig"
+  ansible.builtin.include_tasks:
+    file: target_kubeconfig.yml
+    apply:
+      tags: [pivot_clusterctl_move, pivot-clusterctl-move, pivot_clusterctl_move_target_kubeconfig]
+  when:
+    - k8s_lab_pivot_enabled | bool
+    - pivot_clusterctl_move_enabled
+    - pivot_clusterctl_move_flow_control_target_kubeconfig
+  tags: [pivot_clusterctl_move, pivot-clusterctl-move, pivot_clusterctl_move_target_kubeconfig]
+
+- name: "pivot-clusterctl-move | config"
+  ansible.builtin.include_tasks:
+    file: config.yml
+    apply:
+      tags: [pivot_clusterctl_move, pivot-clusterctl-move, pivot_clusterctl_move_config]
+  when:
+    - k8s_lab_pivot_enabled | bool
+    - pivot_clusterctl_move_enabled
+    - pivot_clusterctl_move_flow_control_config
+  tags: [pivot_clusterctl_move, pivot-clusterctl-move, pivot_clusterctl_move_config]
+
+- name: "pivot-clusterctl-move | init"
+  ansible.builtin.include_tasks:
+    file: init.yml
+    apply:
+      tags: [pivot_clusterctl_move, pivot-clusterctl-move, pivot_clusterctl_move_init]
+  when:
+    - k8s_lab_pivot_enabled | bool
+    - pivot_clusterctl_move_enabled
+    - pivot_clusterctl_move_flow_control_init
+  tags: [pivot_clusterctl_move, pivot-clusterctl-move, pivot_clusterctl_move_init]
+
+- name: "pivot-clusterctl-move | move"
+  ansible.builtin.include_tasks:
+    file: move.yml
+    apply:
+      tags: [pivot_clusterctl_move, pivot-clusterctl-move, pivot_clusterctl_move_move]
+  when:
+    - k8s_lab_pivot_enabled | bool
+    - pivot_clusterctl_move_enabled
+    - pivot_clusterctl_move_flow_control_move
+  tags: [pivot_clusterctl_move, pivot-clusterctl-move, pivot_clusterctl_move_move]
+
+- name: "pivot-clusterctl-move | healthchecks"
+  ansible.builtin.include_tasks:
+    file: healthchecks.yml
+    apply:
+      tags: [pivot_clusterctl_move, pivot-clusterctl-move, pivot_clusterctl_move_healthchecks]
+  when:
+    - k8s_lab_pivot_enabled | bool
+    - pivot_clusterctl_move_enabled
+  tags: [pivot_clusterctl_move, pivot-clusterctl-move, pivot_clusterctl_move_healthchecks]

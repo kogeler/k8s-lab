@@ -1,0 +1,20 @@
+---
+# Render the clusterctl config file consumed via `--config <path>` on
+# the TARGET init invocation.
+#
+# Same shape as bootstrap_clusterctl/templates/clusterctl.yaml.j2
+# (deliberately not shared via vendored file: cross-role coupling is by
+# value here, plan §2.6.5). Declares the CAPN provider URL only; the
+# core / kubeadm-bootstrap / kubeadm-control-plane providers resolve
+# from clusterctl's built-in registry without an entry.
+#
+# Format reference:
+# https://main.cluster-api.sigs.k8s.io/clusterctl/configuration
+
+- name: "pivot-clusterctl-move | config | render clusterctl.yaml"
+  ansible.builtin.template:
+    src:   "clusterctl.yaml.j2"
+    dest:  "{{ pivot_clusterctl_move_config_path }}"
+    owner: "root"
+    group: "root"
+    mode:  "{{ pivot_clusterctl_move_staging_mode_config }}"

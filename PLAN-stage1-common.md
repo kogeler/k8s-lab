@@ -74,14 +74,17 @@ PLAN-stage1-7.md ................. §20..§22 (Stage 1 meta: out-of-scope, self-
   - §13.9. `bootstrap_k3s` (Step 4)
   - §13.10. `bootstrap_clusterctl` (Step 6)
   - §13.11. `bootstrap_capn_secret` (Step 6)
-  - §13.12. `export_artifacts` (Step 8 — Molecule pending)
+  - §13.12. `export_artifacts` (Step 8)
+  - §13.13. `pivot_clusterctl_move` (Step 18)
 - §14. Выполненные phases
   - §14.1. Phase 0 — repo skeleton и local harness
   - §14.2. Phase 1 — host bootstrap
   - §14.3. Phase 2 — LXD substrate
   - §14.4. Phase 3 — bootstrap instance
   - §14.5. Phase 3.5 — `binary_fetch` (Step 4)
-  - §14.6. Phase 4 — bootstrap management cluster (Step 4 partial)
+  - §14.6. Phase 4 — bootstrap management cluster (Steps 4 + 6 + 8)
+  - §14.7. Phase 5 — workload cluster delivery via Terraform module (Step 16)
+  - §14.8. Phase 6 — Pivot bootstrap → self-hosted mgmt (Step 18)
 
 ### PLAN-stage1-2.md — §15 (Phases 3.5 + 4 bootstrap management cluster)
 
@@ -115,10 +118,10 @@ PLAN-stage1-7.md ................. §20..§22 (Stage 1 meta: out-of-scope, self-
 
 ### PLAN-stage1-5.md — §18 (Phases 6 + 7 pivot + workload clusters)
 
-- §18. Phases 6 + 7 — Optional pivot + workload cluster creation
-  - §18.1. Role: `pivot_clusterctl_move`
-  - §18.2. Phase 6 execution
-  - §18.3. Phase 7 execution
+- §18. Phases 6 + 7 — Optional pivot + post-pivot workload creation
+  - §18.1. TF fixture: `management-clusters/mgmt-1/`
+  - §18.2. Role + playbook: `pivot_clusterctl_move`
+  - §18.3. Phase 6 + Phase 7 execution
 
 ### PLAN-stage1-6.md — §19 (Phase 8 destroy)
 
@@ -774,10 +777,14 @@ pass:
   * leader-elected компоненты имеют ровно одного активного
     leader'а и второй pod в standby.
 * **Распространение на mgmt cluster.** Mgmt cluster в default-
-  топологии — `1+1`, поэтому HA-контракт там НЕ применяется
-  автоматически. Если оператор поднимает mgmt с
-  `k8s_lab_management_worker_count >= 2`, тот же replica-contract
-  активируется через Terraform-условие на `var.worker_count >= 2`.
+  топологии — `1+2` (worker count 2 is a chart-required floor for
+  Gate B, see §18.1; CP остаётся 1 потому что etcd quorum HA не
+  даётся одним bare-metal хостом). Replica-contract на mgmt
+  активируется автоматически через тот же Terraform-condition
+  `var.worker_count >= 2`. CP-стороннюю HA на mgmt оператор включает
+  поднятием `k8s_lab_management_controlplane_count` до `3` (CAPI
+  webhook отбивает чётные значения под stacked etcd) — это
+  legitimate, но не требуется для базового pivot.
 
 Этот контракт документируется и enforce'ится в §16.6 acceptance, и
 зеркалится конкретными assertion'ами в §9.4 Integration / Full E2E
@@ -1478,11 +1485,20 @@ k8s_lab_kubernetes_version: {type: string, default: "v1.35.0"}           # verif
 # anyway. Bumping mgmt to 3 is operator's call once Stage 2 pivot lands.
 #
 # Worker counts are unconstrained by the etcd quorum rule; defaults
-# track v1.0 lab footprint (1 worker mgmt, 2 workers workload). All
+# track v1.0 lab footprint (2 workers mgmt, 2 workers workload). All
 # four counts are tunable via Terraform vars on the corresponding
-# fixture roots (§16.6).
+# fixture roots (§16.6, §18.1).
+#
+# Mgmt worker floor = 2: this is a CHART-REQUIRED minimum, not a
+# production HA preference. The cni-calico chart's helm test phase 6
+# ("live pod-to-pod ICMP4+ICMP6 across workers" — §17.2) uses
+# `requiredDuringScheduling pod-anti-affinity` to ensure probe-a and
+# probe-b land on distinct worker nodes; with worker_count=1 probe-b
+# stays Pending and TF apply fails on the gate. Any cluster going
+# through the workload_cluster TF module (§16.4) — which
+# unconditionally drives Gate B — therefore requires ≥2 workers.
 k8s_lab_management_controlplane_count: {type: int, default: 1}
-k8s_lab_management_worker_count:       {type: int, default: 1}
+k8s_lab_management_worker_count:       {type: int, default: 2}   # chart-required floor (Gate B) — see comment above
 k8s_lab_workload_controlplane_count:   {type: int, default: 3}   # CAPI invariant: must be odd
 k8s_lab_workload_worker_count:         {type: int, default: 2}
 
@@ -1840,22 +1856,40 @@ Vagrant VM, не libvirt-сеть):
 
 ### Integration-level
 
-* `bootstrap_cluster`
-* `workload_cluster` (TF module + Molecule e2e-local) — помимо
-  проверки факта установки Helm releases, отвечает за прогон
-  **chart-side helm test hook'ов** (§6, §17.1 invocation contract),
-  реализующих Gate A (§17.3, external L2) и Gate B (§17.2, CNI
-  viability). Также ассертит **HA pair contract §2.12** для каждого
-  workload-cluster компонента с `replicas >= 2`:
-  * `kubectl get deploy <X> -o jsonpath='{.status.readyReplicas}'`
-    и `availableReplicas` равны `.status.replicas`
-    (condition=Available недостаточен — см. §2.12 Test contract);
-  * `kubectl get pods -l <selector> -o jsonpath='{range .items[*]}{.spec.nodeName}{"\n"}{end}' | sort -u | wc -l`
-    == 2 (реплики на разных worker-нодах);
-  * для leader-elected компонентов — ровно один holder lease,
-    второй pod в standby (механизм проверяется по типу компонента:
-    логи, lease object, leader-election config map — см. §2.12).
-* `pivot` (optional)
+End-to-end Phase 0..5 покрытие живёт в `tests/molecule/e2e-local/`
+(§9.4 Full E2E ниже + §14.7) — отдельные integration-only scenarios
+(в прошлых ревизиях плана числились `bootstrap_cluster` и
+`cluster_addons_helm`) **не shipped** и не планируются: их acceptance
+полностью subsume'ится прогоном `e2e-local` (Phase 0..4 substrate +
+Phase 5 workload_cluster module + chart-side helm tests Gate A/B +
+runner-side workload Nodes Ready через rewritten kubeconfig).
+
+`workload_cluster` acceptance (TF module §16.4 + Molecule e2e-local) —
+помимо проверки факта установки Helm releases, отвечает за прогон
+**chart-side helm test hook'ов** (§6, §17.1 invocation contract),
+реализующих Gate A (§17.3, external L2) и Gate B (§17.2, CNI
+viability). Также ассертит **HA pair contract §2.12** для каждого
+workload-cluster компонента с `replicas >= 2`:
+
+* `kubectl get deploy <X> -o jsonpath='{.status.readyReplicas}'`
+  и `availableReplicas` равны `.status.replicas`
+  (condition=Available недостаточен — см. §2.12 Test contract);
+* `kubectl get pods -l <selector> -o jsonpath='{range .items[*]}{.spec.nodeName}{"\n"}{end}' | sort -u | wc -l`
+  == 2 (реплики на разных worker-нодах);
+* для leader-elected компонентов — ровно один holder lease,
+  второй pod в standby (механизм проверяется по типу компонента:
+  логи, lease object, leader-election config map — см. §2.12).
+
+Pivot acceptance is **not** a Molecule scenario in this repo — it is
+exercised through `make deploy-pivot` (§18.3), which runs the
+`pivot_clusterctl_move` role's own healthchecks
+(`tasks/healthchecks.yml`) as a mandatory part of every play. Those
+healthchecks ARE the acceptance: 4 CAPI/CAPN provider Deployments
+Available on target, 4 Provider CRs present, target Cluster CR on
+target, bootstrap source flushed (zero Cluster CRs in target
+namespace on bootstrap). Phase 6 playbook chains
+`pivot_clusterctl_move` → `cleanup_bootstrap` so post-pivot
+end-state is closed in one play.
 
 ### Full E2E
 
@@ -1892,8 +1926,20 @@ Vagrant VM, не libvirt-сеть):
   pattern'ом; verify добавляет `helm test metallb-config`
   (8-фазный chart-level acceptance) + verify-side curl от VM на
   MetalLB-allocated VIP через `ext6-ra-peer` (closes Gate A
-  external L2 path). HA pair assertions §2.12 + pivot — последующие
-  Step'ы.
+  external L2 path).
+* `e2e_local` covers `k8s_lab_pivot_enabled=false` (MVP) path only —
+  Stage 2 pivot path lives in a separate `make deploy-pivot` flow
+  (§18.3) with its own role-side healthchecks; no Molecule scenario
+  drives pivot.
+
+**Outstanding e2e_local extension (not yet shipped):** explicit
+leader-elected lease-holder + standby-pod assertions for
+`metallb-controller` (single-leader, by upstream design — see §2.12
+deviation) and `calico-kube-controllers` (HA-eligible). Replica-pair
+assertions for `replicas >= 2` Deployments / DaemonSets per §2.12
+are likewise an unwritten extension. Tracked under §2.12 but NOT
+gating Stage 1 acceptance — workload health is currently verified
+via Helm tests + runner-side `kubectl get nodes` only.
 
 ### Molecule harness style contract
 

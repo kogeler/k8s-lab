@@ -1,0 +1,95 @@
+---
+# ==========================================================================
+# pivot_clusterctl_move — substrate-required baseline
+# ==========================================================================
+#
+# Role-internal. Holds invariants the lab contract REQUIRES on every
+# pivot. Rationale (memory `feedback_required_values_hardcoded.md`): if a
+# value missing here would silently leave the pivot broken end-to-end
+# (clusterctl init fails on unknown provider, kubeconfig rewrite points
+# at the wrong port, healthchecks pass against the wrong resources), it
+# does not belong in `defaults/main.yml`.
+
+# ---- CAPN provider name registered in clusterctl --------------------
+
+# `clusterctl init --infrastructure <name>:<ver>` resolves <name>
+# against either clusterctl's built-in registry or the providers list
+# in clusterctl.yaml. CAPN registers as `incus` upstream — the name is
+# hardcoded across the Cluster API book and the CAPN release
+# manifests. A consumer override would make init fail with `provider
+# <X> does not exist`. The provider URL stays tunable in defaults for
+# airgap mirror cases.
+_pivot_clusterctl_move_required_provider_name: "incus"
+
+# ---- TLS identity for the rewritten target kubeconfig ---------------
+#
+# `tls-server-name` pinned in `clusters[].cluster` decouples cert
+# verification from the connection URL — clients match the server
+# cert's SAN against this string, not against the host portion of
+# `server:`. That lets the same kubeconfig work both from inside the
+# LXD substrate (where the original URL would have pointed) and from
+# the runner / LXD host (where we point it via the
+# `k8s-lab.io/api-proxy-port` proxy). Substrate-locked: changing it
+# to a non-SAN string would silently break TLS verification on every
+# rewritten kubeconfig.
+_pivot_clusterctl_move_required_tls_server_name: "kubernetes.default.svc"
+
+# ---- Cluster CR annotation carrying the api-proxy port -------------
+#
+# Single source of truth for the per-workload LXD-host port that
+# forwards to the workload's kube-apiserver — written by the
+# `capi-workload-cluster` chart's `_helpers.tpl
+# apiProxyPort` helper as `k8s-lab.io/api-proxy-port` on the Cluster
+# CR (templates/cluster.yaml). Substrate-locked because the chart's
+# helper IS the contract; renaming the key on either side silently
+# breaks the kubeconfig rewrite (operator gets a kubeconfig that
+# points at the in-cluster IPv6 endpoint and is unreachable from the
+# runner).
+_pivot_clusterctl_move_required_api_proxy_port_annotation: "k8s-lab.io/api-proxy-port"
+
+# ---- Required Deployments waited on after init + move --------------
+
+# Same provider Deployment list bootstrap_clusterctl waits on after
+# `clusterctl init`. Mirrored here rather than imported from the
+# other role's vars (plan §2.6.5 forbids reading another role's
+# `<other>_*` prefix). If a future CAPN release renames its namespace,
+# the public extras knob (`pivot_clusterctl_move_extra_wait_deployments`)
+# carries the addition until the substrate baseline is bumped.
+_pivot_clusterctl_move_required_deployments:
+  - namespace:  "capi-system"
+    deployment: "capi-controller-manager"
+    condition:  "Available"
+  - namespace:  "capi-kubeadm-bootstrap-system"
+    deployment: "capi-kubeadm-bootstrap-controller-manager"
+    condition:  "Available"
+  - namespace:  "capi-kubeadm-control-plane-system"
+    deployment: "capi-kubeadm-control-plane-controller-manager"
+    condition:  "Available"
+  - namespace:  "capn-system"
+    deployment: "capn-controller-manager"
+    condition:  "Available"
+
+# cert-manager Deployments. clusterctl init installs cert-manager (a
+# hard prerequisite for CAPI webhooks) before the providers themselves;
+# we wait on these too because their absence would mask provider-init
+# failures with cryptic webhook errors downstream.
+_pivot_clusterctl_move_required_cert_manager_deployments:
+  - namespace:  "cert-manager"
+    deployment: "cert-manager"
+    condition:  "Available"
+  - namespace:  "cert-manager"
+    deployment: "cert-manager-cainjector"
+    condition:  "Available"
+  - namespace:  "cert-manager"
+    deployment: "cert-manager-webhook"
+    condition:  "Available"
+
+# ---- CAPI Cluster CR APIs -------------------------------------------
+#
+# We probe the bootstrap cluster for any `Cluster.cluster.x-k8s.io`
+# resources to decide whether `clusterctl move` still has work to do.
+# CAPI's Cluster CR has been promoted through several apiVersions; we
+# pin to v1beta2 (the version the rest of the repo uses — see
+# charts/capi-workload-cluster/templates/cluster.yaml + e2e-local
+# verify) so the probe surfaces only the CRs we actually own.
+_pivot_clusterctl_move_required_cluster_api_version: "cluster.x-k8s.io/v1beta2"

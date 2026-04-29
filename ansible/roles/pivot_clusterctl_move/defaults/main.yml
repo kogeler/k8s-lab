@@ -1,0 +1,178 @@
+---
+# ==========================================================================
+# pivot_clusterctl_move — role defaults
+# ==========================================================================
+#
+# Purpose (plan §18.1): turn an already-running CAPI workload cluster
+# (`mgmt-1` by default, deployed via charts/capi-cluster-class +
+# charts/capi-workload-cluster against the bootstrap k3s cluster) into a
+# self-hosted CAPI management cluster by:
+#
+#   1) materialising a host-side kubeconfig for the target mgmt cluster
+#      (read the `<cluster>-kubeconfig` Secret from bootstrap, rewrite
+#      `clusters[].cluster.server` to the runner-reachable LXD-host
+#      proxy listener port published in the Cluster CR's
+#      `k8s-lab.io/api-proxy-port` annotation, pin
+#      `tls-server-name: kubernetes.default.svc`);
+#   2) running `clusterctl init --infrastructure incus:<ver>` against
+#      the target kubeconfig — same provider set the bootstrap cluster
+#      already runs, just installed on the new home;
+#   3) running `clusterctl move --to-kubeconfig` to relocate every
+#      CAPI CR (Cluster, ClusterClass, *Templates, KubeadmControlPlane,
+#      MachineDeployment, owned Machines + Secrets) from the bootstrap
+#      cluster onto the target.
+#
+# Ownership boundaries (plan §3.2 + §18):
+#   * Target mgmt cluster CREATION (Cluster CR + ClusterClass +
+#     Templates + LB instance + CNI) is OUT OF SCOPE for this role.
+#     Bringing it up is the orchestrator's job (TF module §16.4 / Helm
+#     install of charts/capi-cluster-class + charts/capi-workload-cluster
+#     with mgmt topology values, and CNI install on the result).
+#   * BOOTSTRAP DELETION (§18.2 acceptance) is owned by
+#     `cleanup_bootstrap` (plan §19.1), invoked separately by the
+#     Phase 6 wrapper after this role completes.
+#   * This role only runs the two `clusterctl` commands plus the
+#     before/after probes that make them idempotent.
+#
+# Pivot mode toggle: §3.1 default is `k8s_lab_pivot_enabled=false`. The
+# role's dispatcher hard-gates everything below preflight on the global
+# being `true`; calling the role with the default mode is a documented
+# no-op (preflight still validates inputs to surface misconfiguration
+# early, no mutating task runs).
+#
+# Public contract (plan §2.6.2): callers touch only
+# `pivot_clusterctl_move_*` variables. Internal / derived facts use
+# `_pivot_clusterctl_move_*` and stay inside the role.
+#
+# Substrate-required values (memory `feedback_required_values_hardcoded.md`):
+# anything whose empty / wrong override would silently break the pivot
+# (CAPN provider name, TLS server name, api-proxy-port annotation key,
+# in-cluster post-init readiness deployment list) lives in
+# `vars/main.yml` under `_pivot_clusterctl_move_required_*`.
+
+# -- General ---------------------------------------------------------------
+
+# Coarse-grained role toggle. Independent of the global
+# `k8s_lab_pivot_enabled` mode flag — the dispatcher AND-gates on both,
+# so disabling either short-circuits the role. Default `true` so a
+# consumer that has flipped the global mode knob does not need a second
+# opt-in.
+pivot_clusterctl_move_enabled: true
+
+# Bootstrap (source) kubeconfig — same artefact bootstrap_clusterctl
+# materialised. Cross-role coupling is by VALUE (plan §2.6.5 forbids
+# reading `bootstrap_clusterctl_*` directly here), so the path is
+# stated explicitly with the same default the upstream role uses.
+pivot_clusterctl_move_bootstrap_kubeconfig_path: >-
+  {{ k8s_lab_opt_root | default('/opt/capi-lab') }}/etc/bootstrap_clusterctl/bootstrap.kubeconfig
+
+# Target (destination) management cluster identity. Must match the
+# Cluster CR created on the bootstrap cluster via
+# charts/capi-workload-cluster (with mgmt-cluster topology values).
+# Default tracks `k8s_lab_management_cluster_name` from §8.
+pivot_clusterctl_move_target_cluster_name: "{{ k8s_lab_management_cluster_name | default('mgmt-1') }}"
+pivot_clusterctl_move_target_cluster_namespace: "capi-clusters"
+
+# -- Host binary location -------------------------------------------------
+
+# Host-side bin dir owned by binary_fetch. Same `clusterctl` binary the
+# bootstrap_clusterctl role used; we never re-fetch.
+pivot_clusterctl_move_host_bin_dir:    "/opt/capi-lab/bin"
+pivot_clusterctl_move_clusterctl_path: "{{ pivot_clusterctl_move_host_bin_dir }}/clusterctl"
+
+# -- Staging artefacts -----------------------------------------------------
+#
+# Persistent staging dir under /opt/capi-lab/etc (owned by base_system),
+# kept separate from bootstrap_clusterctl_staging_dir so a destroy of one
+# does not affect the other.
+pivot_clusterctl_move_staging_dir: >-
+  {{ k8s_lab_opt_root | default('/opt/capi-lab') }}/etc/pivot_clusterctl_move
+
+# Materialised host-side kubeconfig for the target mgmt cluster, with
+# the in-cluster CP VIP rewritten to the runner-reachable LXD-host
+# api-proxy listener (port = `k8s-lab.io/api-proxy-port` annotation on
+# the Cluster CR; written by capi-workload-cluster).
+pivot_clusterctl_move_target_kubeconfig_path: "{{ pivot_clusterctl_move_staging_dir }}/mgmt.kubeconfig"
+
+# Rendered clusterctl config consumed via `--config <path>` on the
+# target init invocation. Same shape as bootstrap_clusterctl's config:
+# declares the CAPN infrastructure provider URL; core / kubeadm-bootstrap /
+# kubeadm-control-plane resolve from clusterctl's built-in registry.
+pivot_clusterctl_move_config_path: "{{ pivot_clusterctl_move_staging_dir }}/clusterctl.yaml"
+
+pivot_clusterctl_move_staging_mode_dir:        "0750"
+pivot_clusterctl_move_staging_mode_kubeconfig: "0600"
+pivot_clusterctl_move_staging_mode_config:     "0600"
+
+# -- Endpoint rewrite ------------------------------------------------------
+#
+# Address the rewritten target kubeconfig points its `server:` URL at.
+# Default tracks the global `k8s_lab_lxd_host_address` (§8) — the
+# runner-reachable LXD host. Per-workload port comes from the Cluster
+# CR annotation, not a separate variable.
+pivot_clusterctl_move_target_api_address: "{{ k8s_lab_lxd_host_address | default('') }}"
+
+# -- CAPN provider pinning ------------------------------------------------
+
+# Same release the bootstrap cluster runs. Default tracks the
+# project-wide pin so a single bump in shared group_vars rolls into
+# both bootstrap and target.
+pivot_clusterctl_move_capn_version: "{{ k8s_lab_capn_provider_version | default('v0.8.5') }}"
+
+# Upstream release manifest URL — clusterctl init fetches and applies
+# it. Tunable for airgap mirror cases. Provider NAME (`incus`) stays
+# substrate-locked in vars/main.yml.
+pivot_clusterctl_move_capn_provider_url: >-
+  https://github.com/lxc/cluster-api-provider-incus/releases/{{ pivot_clusterctl_move_capn_version }}/infrastructure-components.yaml
+
+# Enable the ClusterClass / managed topology workflow on the target
+# (CLUSTER_TOPOLOGY=true env on the init invocation). Disabling this
+# breaks the §16.x / Phase 5+ Cluster CR shape — left tunable only for
+# consumers running their own non-topology Cluster CRs on the target.
+pivot_clusterctl_move_cluster_topology_enabled: true
+
+# Optional extra providers — appended on top of the CAPN baseline.
+# Each entry: {name, url, type}.
+pivot_clusterctl_move_extra_providers: []
+
+# Optional extra `clusterctl init --<kind>=<provider>:<version>` flags,
+# appended verbatim. Same shape as bootstrap_clusterctl_extra_init_flags.
+pivot_clusterctl_move_extra_init_flags: []
+
+# Optional extra Deployments to wait on after init / move (consumer-
+# installed providers). Each entry: {namespace, deployment, condition?}.
+pivot_clusterctl_move_extra_wait_deployments: []
+
+# -- Wait + retry budgets --------------------------------------------------
+
+# Polling the bootstrap cluster for the target mgmt's
+# `<cluster>-kubeconfig` Secret — capi-workload-cluster's post-install
+# hook already proves the LB instance is up + apiserver /livez green
+# by the time `helm install` returns, so this poll only covers the
+# orchestrator publishing the result asynchronously between Phase 5
+# and Phase 6. 90 * 10 s = 15 min ceiling.
+pivot_clusterctl_move_wait_target_kubeconfig_retries: 90
+pivot_clusterctl_move_wait_target_kubeconfig_delay:   10
+
+# Wall-clock budget for `clusterctl init` on the target. Cold-cache
+# image pulls (cert-manager + 4 providers) push this to ~3 minutes.
+pivot_clusterctl_move_init_timeout: 600
+
+# Wall-clock budget for `clusterctl move`. Move is mostly object
+# copies — fast on small CR sets — but the timeout has to cover any
+# in-flight reconcile on the source side that move waits to settle
+# before snapshotting the CR graph. 20 min is a comfortable buffer.
+pivot_clusterctl_move_move_timeout: 1200
+
+# Healthcheck readiness poll: same shape as bootstrap_clusterctl's
+# wait/retry pair — kubernetes.core.k8s_info + retries/until.
+pivot_clusterctl_move_wait_retries: 90
+pivot_clusterctl_move_wait_delay:   5
+
+# -- Flow control (plan §2.6.3) -------------------------------------------
+#
+# Coarse-grained only — no per-task switches.
+pivot_clusterctl_move_flow_control_target_kubeconfig: true
+pivot_clusterctl_move_flow_control_config:            true
+pivot_clusterctl_move_flow_control_init:              true
+pivot_clusterctl_move_flow_control_move:              true

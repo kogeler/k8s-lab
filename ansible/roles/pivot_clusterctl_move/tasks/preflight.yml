@@ -1,0 +1,148 @@
+---
+# Input validation + substrate assertions (plan §2.6.2). Cheap,
+# idempotent and side-effect free; safe to gate downstream tasks on.
+
+- name: "pivot-clusterctl-move | preflight | gather facts"
+  ansible.builtin.setup:
+    gather_subset:
+      - "!all"
+      - "!any"
+      - min
+  when: ansible_facts['os_family'] is not defined
+
+- name: "pivot-clusterctl-move | preflight | target OS is Debian 13+"
+  ansible.builtin.assert:
+    that:
+      - ansible_facts['os_family'] == 'Debian'
+      - ansible_facts['distribution'] == 'Debian'
+      - (ansible_facts['distribution_major_version'] | int) >= 13
+    fail_msg: >-
+      pivot_clusterctl_move targets Debian 13 Trixie or newer on the
+      LXD host (the bootstrap container OS is independent).
+
+- name: "pivot-clusterctl-move | preflight | validate identifiers"
+  ansible.builtin.assert:
+    that:
+      - pivot_clusterctl_move_target_cluster_name is string
+      - pivot_clusterctl_move_target_cluster_name is match('^[a-z][a-z0-9-]{0,62}$')
+      - pivot_clusterctl_move_target_cluster_namespace is string
+      - pivot_clusterctl_move_target_cluster_namespace is match('^[a-z][a-z0-9-]{0,62}$')
+    fail_msg: >-
+      pivot_clusterctl_move: cluster name / namespace must be lowercase
+      alnum (+ '-'), start with a letter, ≤63 chars (DNS-1123).
+
+- name: "pivot-clusterctl-move | preflight | validate paths + modes"
+  ansible.builtin.assert:
+    that:
+      - pivot_clusterctl_move_host_bin_dir is match('^/')
+      - pivot_clusterctl_move_clusterctl_path is match('^/')
+      - pivot_clusterctl_move_staging_dir is match('^/')
+      - pivot_clusterctl_move_target_kubeconfig_path is match('^/')
+      - pivot_clusterctl_move_config_path is match('^/')
+      - pivot_clusterctl_move_bootstrap_kubeconfig_path is match('^/')
+      - pivot_clusterctl_move_staging_mode_dir is match('^0[0-7]{3}$')
+      - pivot_clusterctl_move_staging_mode_kubeconfig is match('^0[0-7]{3}$')
+      - pivot_clusterctl_move_staging_mode_config is match('^0[0-7]{3}$')
+    fail_msg: >-
+      pivot_clusterctl_move: paths must be absolute, modes must be
+      4-digit octal strings.
+
+- name: "pivot-clusterctl-move | preflight | validate version + flags"
+  ansible.builtin.assert:
+    that:
+      - pivot_clusterctl_move_capn_version is string
+      - pivot_clusterctl_move_capn_version is match('^v[0-9]+\\.[0-9]+\\.[0-9]+')
+      - pivot_clusterctl_move_extra_providers is sequence
+      - pivot_clusterctl_move_extra_init_flags is sequence
+      - pivot_clusterctl_move_extra_wait_deployments is sequence
+      - pivot_clusterctl_move_init_timeout | int > 0
+      - pivot_clusterctl_move_move_timeout | int > 0
+      - pivot_clusterctl_move_wait_retries | int > 0
+      - pivot_clusterctl_move_wait_delay | int > 0
+      - pivot_clusterctl_move_wait_target_kubeconfig_retries | int > 0
+      - pivot_clusterctl_move_wait_target_kubeconfig_delay | int > 0
+      - pivot_clusterctl_move_cluster_topology_enabled in [true, false]
+    fail_msg: >-
+      pivot_clusterctl_move: capn_version must look like vX.Y.Z;
+      extra_* must be sequences; timeouts must be positive ints.
+
+# The MVP-mode short-circuit relies on this assertion existing as a
+# hard error if a consumer overrides the global to something
+# non-boolean. We do NOT assert it must be `true` — the dispatcher
+# treats `false` as a documented no-op (§3.1).
+- name: "pivot-clusterctl-move | preflight | validate pivot mode flag is boolean"
+  ansible.builtin.assert:
+    that:
+      - k8s_lab_pivot_enabled is defined
+      - (k8s_lab_pivot_enabled | string) | lower in ['true', 'false']
+    fail_msg: >-
+      pivot_clusterctl_move: k8s_lab_pivot_enabled must be a boolean
+      (true/false). MVP mode (§3.1) defaults to false; in that mode the
+      role is a documented no-op below preflight.
+
+# Steps below this point only matter if the role is going to actually
+# run something. When pivot is disabled or the role is disabled, skip
+# the host-side checks — preflight should not fail on an empty
+# kubeconfig path that nobody is going to use.
+- name: "pivot-clusterctl-move | preflight | assert runtime endpoint set"
+  ansible.builtin.assert:
+    that:
+      - pivot_clusterctl_move_target_api_address is string
+      - pivot_clusterctl_move_target_api_address | length > 0
+    fail_msg: >-
+      pivot_clusterctl_move_target_api_address is empty. Pivot mode is
+      enabled (k8s_lab_pivot_enabled=true) but no runner-reachable LXD
+      host address has been provided — set k8s_lab_lxd_host_address in
+      shared host_vars or override the per-role default explicitly.
+  when:
+    - k8s_lab_pivot_enabled | bool
+    - pivot_clusterctl_move_enabled
+
+- name: "pivot-clusterctl-move | preflight | stat clusterctl on host"
+  ansible.builtin.stat:
+    path: "{{ pivot_clusterctl_move_clusterctl_path }}"
+  register: _pivot_clusterctl_move_clusterctl_stat
+  changed_when: false
+  when:
+    - k8s_lab_pivot_enabled | bool
+    - pivot_clusterctl_move_enabled
+
+- name: "pivot-clusterctl-move | preflight | clusterctl is executable"
+  ansible.builtin.assert:
+    that:
+      - _pivot_clusterctl_move_clusterctl_stat.stat.exists
+      - _pivot_clusterctl_move_clusterctl_stat.stat.executable
+      - not _pivot_clusterctl_move_clusterctl_stat.stat.isdir
+    fail_msg: >-
+      pivot_clusterctl_move: clusterctl
+      ({{ pivot_clusterctl_move_clusterctl_path }}) must exist as an
+      executable regular file. Normally delivered by binary_fetch — if
+      it's missing here, the meta-dep chain (bootstrap_clusterctl →
+      bootstrap_k3s → binary_fetch) failed earlier or the path was
+      overridden.
+  when:
+    - k8s_lab_pivot_enabled | bool
+    - pivot_clusterctl_move_enabled
+
+- name: "pivot-clusterctl-move | preflight | stat bootstrap kubeconfig"
+  ansible.builtin.stat:
+    path: "{{ pivot_clusterctl_move_bootstrap_kubeconfig_path }}"
+  register: _pivot_clusterctl_move_bootstrap_kc_stat
+  changed_when: false
+  when:
+    - k8s_lab_pivot_enabled | bool
+    - pivot_clusterctl_move_enabled
+
+- name: "pivot-clusterctl-move | preflight | bootstrap kubeconfig is a regular file"
+  ansible.builtin.assert:
+    that:
+      - _pivot_clusterctl_move_bootstrap_kc_stat.stat.exists
+      - _pivot_clusterctl_move_bootstrap_kc_stat.stat.isreg
+    fail_msg: >-
+      pivot_clusterctl_move: bootstrap kubeconfig
+      ({{ pivot_clusterctl_move_bootstrap_kubeconfig_path }}) must
+      exist. Normally produced by bootstrap_clusterctl (`kubeconfig.yml`
+      task) — if absent, the meta-dep chain failed earlier.
+  when:
+    - k8s_lab_pivot_enabled | bool
+    - pivot_clusterctl_move_enabled
