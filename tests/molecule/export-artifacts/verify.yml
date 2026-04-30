@@ -12,8 +12,8 @@
   vars:
     _artifacts_root: >-
       {{ lookup('env', 'MOLECULE_PROJECT_DIRECTORY') | dirname | dirname }}/.artifacts
-    _kubeconfig: "{{ _artifacts_root }}/bootstrap.kubeconfig"
-    _tfvars:     "{{ _artifacts_root }}/bootstrap.auto.tfvars.json"
+    _kubeconfig: "{{ _artifacts_root }}/mgmt.kubeconfig"
+    _tfvars:     "{{ _artifacts_root }}/mgmt.auto.tfvars.json"
     _clusters_dir: "{{ _artifacts_root }}/clusters"
   tasks:
     # ---- runner artefacts exist + permissions sane ------------------
@@ -31,7 +31,7 @@
           - _verify_kubeconfig_stat.stat.size > 100
           - (_verify_kubeconfig_stat.stat.mode | string) in ['0600', '600']
         fail_msg: >-
-          runner-side bootstrap.kubeconfig missing or wrong mode at
+          runner-side mgmt.kubeconfig missing or wrong mode at
           {{ _kubeconfig }}.
       run_once: true
 
@@ -49,7 +49,7 @@
           - _verify_tfvars_stat.stat.size > 10
           - (_verify_tfvars_stat.stat.mode | string) in ['0600', '600']
         fail_msg: >-
-          runner-side bootstrap.auto.tfvars.json missing or wrong mode
+          runner-side mgmt.auto.tfvars.json missing or wrong mode
           at {{ _tfvars }}.
       run_once: true
 
@@ -60,14 +60,14 @@
       delegate_to: localhost
       run_once: true
 
-    - name: "Verify | export_artifacts | clusters/ reserved for Phase 5.05 exists"
+    - name: "Verify | export_artifacts | clusters/ reserved for per-workload debug copies exists"
       ansible.builtin.assert:
         that:
           - _verify_clusters_stat.stat.exists
           - _verify_clusters_stat.stat.isdir
         fail_msg: >-
-          clusters/ subdir missing at {{ _clusters_dir }} — Phase 5.05
-          handoff would have nowhere to write.
+          clusters/ subdir missing at {{ _clusters_dir }} — Molecule
+          e2e-local debug copies would have nowhere to land.
       run_once: true
 
     # ---- kubeconfig body: server URL already rewritten away from 127.0.0.1
@@ -136,7 +136,6 @@
           - "'k8s_lab_project_name' in _verify_tfvars_json"
           - "'k8s_lab_infrastructure_secret_name' in _verify_tfvars_json"
           - "'k8s_lab_cluster_topology_enabled' in _verify_tfvars_json"
-          - "'k8s_lab_pivot_enabled' in _verify_tfvars_json"
           - "'k8s_lab_management_cluster_name' in _verify_tfvars_json"
           - "'k8s_lab_workload_cluster_name' in _verify_tfvars_json"
           - "'k8s_lab_kubernetes_version' in _verify_tfvars_json"
@@ -145,8 +144,8 @@
           - "'k8s_lab_workload_controlplane_count' in _verify_tfvars_json"
           - "'k8s_lab_workload_worker_count' in _verify_tfvars_json"
           - "'k8s_lab_capn_provider_version' in _verify_tfvars_json"
-          - "'k8s_lab_bootstrap_kubeconfig_path' in _verify_tfvars_json"
-          - "'k8s_lab_bootstrap_api_server_url' in _verify_tfvars_json"
+          - "'k8s_lab_mgmt_kubeconfig_path' in _verify_tfvars_json"
+          - "'k8s_lab_mgmt_api_server_url' in _verify_tfvars_json"
         fail_msg: >-
           tfvars JSON missing baseline keys. got =
           {{ _verify_tfvars_json.keys() | list }}.
@@ -162,13 +161,13 @@
           - _verify_tfvars_json.k8s_lab_workload_cluster_name == k8s_lab_workload_cluster_name
           - _verify_tfvars_json.k8s_lab_kubernetes_version == k8s_lab_kubernetes_version
           - _verify_tfvars_json.k8s_lab_capn_provider_version == k8s_lab_capn_provider_version
-          # bootstrap endpoint derived from the shipped kubeconfig.
-          - _verify_tfvars_json.k8s_lab_bootstrap_api_server_url ==
+          # Mgmt endpoint derived from the shipped kubeconfig.
+          - _verify_tfvars_json.k8s_lab_mgmt_api_server_url ==
             _verify_kubeconfig_yaml.clusters[0].cluster.server
           # Path must equal the scenario's export_artifacts_root +
           # canonical filename — no `..` segments (preflight rejects them).
-          - _verify_tfvars_json.k8s_lab_bootstrap_kubeconfig_path ==
-            _artifacts_root ~ '/bootstrap.kubeconfig'
+          - _verify_tfvars_json.k8s_lab_mgmt_kubeconfig_path ==
+            _artifacts_root ~ '/mgmt.kubeconfig'
         fail_msg: >-
           tfvars baseline values drift against §8 globals or shipped
           kubeconfig.

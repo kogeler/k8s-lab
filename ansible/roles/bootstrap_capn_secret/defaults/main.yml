@@ -16,8 +16,9 @@
 #   3) Kubernetes Secret in `capn-system` — keys per CAPN identity-
 #      secret format: `server`, `server-crt`, `client-crt`,
 #      `client-key`, `project` (+ optional `clusterctl.cluster.x-k8s.io/move`
-#      label when `k8s_lab_pivot_enabled=true` so `clusterctl move` carries it
-#      across).
+#      label so `clusterctl move` carries it across to the post-pivot
+#      management cluster — pivot is mandatory in the canonical k8s-lab
+#      flow, plan §3 + §10).
 #
 # Public contract (plan §2.6.2): every variable exposed to callers is
 # prefixed `bootstrap_capn_secret_*`. Internal / derived facts use the
@@ -107,13 +108,12 @@ bootstrap_capn_secret_trust_name: "k8slab-capn"
 bootstrap_capn_secret_name: "{{ k8s_lab_infrastructure_secret_name | default('incus-identity') }}"
 
 # Whether `clusterctl.cluster.x-k8s.io/move: "true"` label is added.
-# Sources from the project-wide `k8s_lab_pivot_enabled` (plan §8) so a
-# single global flag flip propagates: pivot ON → label present →
+# Default `true` — pivot is mandatory in the canonical k8s-lab flow
+# (plan §3 + §10), so the move label must always be present so
 # `clusterctl move` (plan §18) carries the Secret across to the
-# post-pivot management cluster. For MVP default (k8s_lab_pivot_enabled=false)
-# the label is omitted; flipping the global and re-running the role
-# adds the label idempotently via server-side apply.
-bootstrap_capn_secret_pivot_enabled: "{{ k8s_lab_pivot_enabled | default(false) }}"
+# post-pivot management cluster. Override to `false` only for ad-hoc
+# substrate-only test runs that intentionally skip pivot.
+bootstrap_capn_secret_pivot_enabled: true
 
 # Target namespaces where the CAPN identity Secret must be materialised
 # (plan §13.11 + §16.3). CAPN v1alpha2 `LXCCluster.spec.secretRef` does

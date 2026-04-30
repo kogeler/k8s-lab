@@ -15,21 +15,23 @@
 
 # ---- Artefact filename conventions ------------------------------------
 
-# Phase 5 Terraform fixtures reference `bootstrap.kubeconfig` by that
+# Phase 5 Terraform fixtures reference `mgmt.kubeconfig` by that
 # exact name (plan §16.7 uses the `.artifacts/` subtree as an opaque
 # data handoff). Changing this filename would orphan every fixture that
-# hardcodes it.
-_export_artifacts_required_bootstrap_kubeconfig_filename: "bootstrap.kubeconfig"
+# hardcodes it. The single mgmt kubeconfig is overwritten in place by
+# `pivot_clusterctl_move` after `clusterctl move` (plan §3.1 + §18) —
+# pre- and post-pivot consumers point at the same path.
+_export_artifacts_required_mgmt_kubeconfig_filename: "mgmt.kubeconfig"
 
 # Terraform auto-loads any `*.auto.tfvars.json` in the root module
-# directory at plan/apply time. The `bootstrap.` prefix disambiguates
-# this Phase 4 handoff from Phase 5.05's `target.auto.tfvars.json`
-# (management/workload kubeconfig handoff, not yet implemented).
-_export_artifacts_required_tfvars_filename: "bootstrap.auto.tfvars.json"
+# directory at plan/apply time. The `mgmt.` prefix matches the
+# kubeconfig sibling above so the whole runner-side handoff bundle
+# carries one consistent name.
+_export_artifacts_required_tfvars_filename: "mgmt.auto.tfvars.json"
 
-# Subdirectory for per-cluster kubeconfigs (plan §11.1, populated by
-# Phase 5.05 `export_target_kubeconfig` — still a stub). We create it
-# here so downstream phases can write into it without having to
+# Subdirectory for per-cluster kubeconfigs (plan §11.1). Created here
+# so downstream phases (Molecule e2e-local debug copies, future
+# per-workload kubeconfig exports) can write into it without having to
 # bootstrap the dir structure themselves.
 _export_artifacts_required_clusters_subdir: "clusters"
 

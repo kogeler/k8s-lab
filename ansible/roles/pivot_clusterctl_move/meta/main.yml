@@ -14,9 +14,9 @@ galaxy_info:
     capi-workload-cluster Helm charts driven by the §16.4 TF module
     or an equivalent caller), CNI install on the target (same
     delivery model, charts/cni-calico), and bootstrap deletion
-    (`cleanup_bootstrap`, plan §19.1). The role is hard-gated on the
-    global `k8s_lab_pivot_enabled` mode flag — default `false` per
-    §3.1, the role is a documented no-op in MVP mode.
+    (`cleanup_bootstrap`, plan §19.1). Pivot is mandatory in the
+    canonical k8s-lab flow (plan §3 + §10) — the role gates only on
+    `pivot_clusterctl_move_enabled` (default `true`).
   license: MIT
   min_ansible_version: "2.16"
   platforms:

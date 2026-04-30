@@ -1,55 +1,42 @@
-Этот файл владеет §20..§22: Stage-1-wide meta — out-of-scope fence
-(§20), self-review против исходного контракта (§21) и финальная
-рекомендация execution order'а (§22). Нумерация §N сквозная по всем
-plan-файлам; перекрёстные ссылки вида `§<номер>` валидны без указания
-имени файла — см. `PLAN-stage1-common.md` header для полного file
-lineup. Атомарный scope этого шарда — framing, которое применяется ко
-**всему Stage 1** независимо от того, какой implementation-chunk
-(§15..§19) сейчас в работе, поэтому coding-agent'у удобно держать эти
-три секции отдельно от выполненной работы (§13..§14) и от ещё не
-реализованных phases.
+Этот файл владеет §20..§22: Stage 1 closure — финальный статус
+(§20), self-review против исходного контракта (§21) и итоговая
+рекомендация execution order'а для consumer'ов (§22). Нумерация §N
+сквозная по всем plan-файлам; перекрёстные ссылки вида `§<номер>`
+валидны без указания имени файла — см. `PLAN-stage1-common.md` header
+для полного file lineup.
 
 ```
 PLAN-stage1-common.md ............ §1..§12  (project contract, architecture, test harness, risk catalog)
 PLAN-stage1-1.md ................. §13..§14 (completed roles + phases)
 PLAN-stage1-2.md ................. §15      (Phases 3.5 + 4 bootstrap management cluster)
-PLAN-stage1-3.md ................. §16      (Phases 5 + 5.05 CAPI topology via Helm)
-PLAN-stage1-4.md ................. §17      (Phases 5.1 + 5.2 + 5.3 Helm add-ons + in-cluster tests)
-PLAN-stage1-5.md ................. §18      (Phases 6 + 7 pivot + workload clusters)
+PLAN-stage1-3.md ................. §16      (workload_cluster TF module)
+PLAN-stage1-4.md ................. §17      (Helm test contracts — Gate A + Gate B chart-side specs)
+PLAN-stage1-5.md ................. §18      (pivot mgmt-1 → self-hosted)
 PLAN-stage1-6.md ................. §19      (Phase 8 destroy)
-PLAN-stage1-7.md ................. §20..§22 (Stage 1 meta: out-of-scope, self-review, recommendation)  <-- этот файл
+PLAN-stage1-7.md ................. §20..§22 (Stage 1 closure + self-review + recommendation)  <-- этот файл
 ```
 
 ---
 
-# 20. Stage 1 — Explicitly out of scope for v1.0
+# 20. Stage 1 — Closure
 
-Чтобы self-review был честным, это **не входит в v1.0**:
+Stage 1 v1.0 — **закрыт**. Все §22 acceptance criteria выполнены
+end-to-end; canonical flow §3 прогоняется зелёным через единый
+Molecule scenario `tests/molecule/e2e-local/` (`make test-local-e2e`).
 
-* inventories / host_vars / group_vars для реальных окружений;
-* root orchestration/playbooks для deploy/destroy реальных окружений;
-* environment-specific Terraform root modules;
-* реальные secrets, tfvars, FQDN, IP allocations и LXD trust materials;
-* remote Terraform backend;
-* hosted CI path without local runner;
-* backup/restore of etcd;
-* automated Kubernetes upgrades through CAPI rollout;
-* full day-1 addon suite beyond MetalLB/CNI;
-* privileged CAPN container fallback as supported implementation;
-* ingress controller selection;
-* storage provisioner selection;
-* cert-manager / public TLS;
-* BGP/routed external design;
-* production-grade observability;
-* Stage 2 pivot as mandatory default.
+Repo-boundary (concrete environment composition — inventories,
+host_vars, secrets, FQDN, env-specific TF root modules, TF backends
+для реальных площадок) **по дизайну вне scope этого repo** — это
+обязанность отдельных private consumer repos. См. §2.5 как
+authoritative source contract границы.
 
 ---
 
 # 21. Stage 1 — Саморевью контракта
 
-Ниже — полный контрольный список.
+Финальный контрольный список против исходного замысла.
 
-## Учтено из исходного плана
+## Реализовано
 
 * один bare metal host;
 * LXC/LXD containers as Kubernetes nodes;
@@ -61,14 +48,17 @@ PLAN-stage1-7.md ................. §20..§22 (Stage 1 meta: out-of-scope, self-
 * modular roles/modules;
 * локальное тестирование через Vagrant + Libvirt + Molecule;
 * граница shared repo vs private consumer repos;
-* жёсткий ownership split: Ansible = host/bootstrap/harness, Terraform = cluster objects/add-ons/guest networking, fixtures = thin wrappers;
-* unprivileged CAPN container path fixed for v1.0;
+* жёсткий ownership split: Ansible = host/bootstrap/harness,
+  Terraform = cluster objects/add-ons/guest networking, fixtures =
+  thin wrappers;
+* unprivileged CAPN container path — substrate-инвариант (см. §2.8);
 * bootstrap cluster inside isolated LXC;
 * no Docker on host;
 * no long-lived host-level k8s;
 * binaries downloaded by roles into `/opt`;
 * Debian 13;
-* Btrfs pool on a dedicated block device (см. §13.4 deviation — Step 3 отказался от path-based source из-за snap-confinement);
+* Btrfs pool on a dedicated block device (см. §13.4 deviation —
+  Step 3 отказался от path-based source из-за snap-confinement);
 * two-NIC network design;
 * external IPv6-only ingress NIC;
 * internal dual-stack default-route NIC;
@@ -78,64 +68,83 @@ PLAN-stage1-7.md ................. §20..§22 (Stage 1 meta: out-of-scope, self-
 * policy to suppress external RA default route;
 * kubelet node identity on internal NIC;
 * explicit validation and risks;
-* accepted review fixes: external L2 validation через Helm test hook, CNI validation через Helm test hook, destroy contract, secrets story, LXD API path, CAPN profile baseline, optional pivot, typed vars, out-of-scope section, snap refresh policy.
+* canonical CAPI bootstrap-and-pivot flow (§3) — pivot mandatory,
+  workload-cluster создаётся ТОЛЬКО на self-hosted mgmt-1
+  post-pivot;
+* helm-first delivery (§2.9): все K8s-объекты через Terraform
+  `helm_release` или Molecule `kubernetes.core.helm`, никаких
+  raw manifests;
+* validation gates через chart-side `helm.sh/hook: test` Pod'ы
+  (Gate A external L2 + Gate B CNI viability), invoked в e2e-local
+  converge перед pivot и в verify post-workload;
+* dual-stack networking (IPv4 + IPv6 pod/service CIDR'ы) с Calico
+  VXLAN encap, kube-proxy в nftables mode, MetalLB IPv6 VIP'ы.
 
-## Добавлено по новому требованию
+## Local harness
 
-* local libvirt mock external IPv6 /64 network;
-* mocked DHCPv6/RA delivery on second NIC in local VM;
-* probe endpoint on same mocked external network for NodePort/MetalLB tests.
-* shared repo contains only roles/modules/charts/scripts/test harness;
-* real environment composition moved to separate private repos;
-* Terraform root modules in this repo exist only as test fixtures under `tests/fixtures`.
-* validation gates (CNI, external L2) встроены в Helm test hooks на соответствующих chart release'ах и выполняются на реальном data plane, а не через research spikes.
-* cluster add-ons are delivered through Terraform `helm_release` with pinned official/provider versions.
+* libvirt mock external IPv6 /64 segment через in-VM radvd на
+  veth-паре `ext6-ra` ↔ `ext6-ra-peer` (§9.2 Step 9 pivot);
+* mocked DHCPv6/RA delivery на eth1 контейнерных нод через тот же
+  in-VM radvd source (cloud-init applies sysctl + systemd-networkd
+  drop-in через `KubeadmConfigSpec.files`);
+* probe endpoint для NodePort/MetalLB external curl tests'ов — сам
+  `ext6-ra-peer` (имеет global IPv6 в external prefix, Gate A
+  out-of-cluster acceptance ходит через него).
 
-Libvirt network XML officially supports IPv6 virtual networks, DHCPv6 ranges and Router Advertisement–based default route behavior, which makes it suitable to emulate the future provider-facing external segment in the local lab. ([Libvirt][23])
+## Repo policy
 
-## Осознанно не включено
+* shared repo содержит только roles / modules / charts / scripts /
+  test harness;
+* real environment composition уехал в private consumer repos;
+* Terraform root modules в этом repo существуют только как test
+  fixtures под `tests/fixtures/`.
 
-* full day-1 app stack
-* remote CI/backends
-* backup/recovery/upgrades
-* BGP/routed redesign
+## Validation
+
+* Gate A external L2 (`charts/metallb-config/templates/tests/...`) +
+  Gate B CNI viability (`charts/cni-calico/templates/tests/...`) —
+  in-cluster acceptance драйверы на live data plane, не research
+  spikes.
+* Gate A external curl out-of-cluster proof — ходит из VM через
+  `ext6-ra-peer` на MetalLB-allocated VIP.
+
+## Cluster add-ons
+
+* Cluster add-ons делают Helm `helm_release` (TF route) или
+  `kubernetes.core.helm` (Molecule e2e) с pinned official/wrapper
+  versions (§8a verified version log).
 
 ---
 
-# 22. Stage 1 — Финальная рекомендация
+# 22. Stage 1 — Финальная рекомендация для consumer'ов
 
-Для coding agents я рекомендую именно такой execution order:
+Для consumer'а, который собирает свою concrete-environment composition
+поверх этого reusable repo:
 
-1. **не кодить весь мир сразу**;
-2. сначала поднять **local libvirt harness**;
-3. затем сделать **host bootstrap** и **LXD substrate** (включая
-   `lxd_profiles` cloud-init baseline для worker/controlplane
-   профилей — §13.6);
-4. собрать **bootstrap cluster**, применить **`make deploy-workload`**
-   (единственный TF apply на §16.5 fixture — поднимает workload-кластер
-   целиком: CAPI topology + CNI + MetalLB + chart-side helm test
-   hooks Gate A/B внутри того же apply, §17.2 / §17.3);
-5. только потом идти в optional pivot / post-pivot workload path
-   (§18.3 — повторный `make deploy-workload` с
-   `mgmt_kubeconfig_path=.artifacts/mgmt.kubeconfig`);
-6. MVP считать готовым, когда:
+1. подключить `ansible/roles/`, `terraform/modules/workload_cluster/`,
+   `charts/*` как git submodule / ansible-collection / vendored
+   Terraform module — НЕ копировать содержимое, чтобы можно было
+   pull bug fixes из upstream;
+2. написать concrete inventory + host_vars / group_vars в private
+   repo (§2.5);
+3. подключить `make test-local-e2e` flow (если consumer сохраняет
+   Vagrant harness) или эквивалент с реальным Debian 13 host'ом
+   (CI runner / dedicated lab box) для regression testing на каждый
+   bump charts / role versions;
+4. для production deploy реального workload'а:
+   * single deploy = bootstrap → mgmt-1 helm install → pivot →
+     workload helm install. Canonical sequence §3.1; в скрипте
+     consumer'а это playbook поверх ролей этого repo (или прямой
+     copy `tests/molecule/e2e-local/converge.yml` под consumer'ские
+     vars);
+   * additional workload'ы поверх уже-self-hosted mgmt-1 — через
+     `tests/fixtures/terraform/workload-clusters/lab-default/`
+     fixture root style (TF apply на existing mgmt.kubeconfig).
 
-   * bootstrap cluster живёт в LXC;
-   * workload cluster создаётся одним `make deploy-workload` (CAPI +
-     add-ons + acceptance в одном apply);
-   * two-NIC contract соблюдается;
-   * MetalLB VIP reachable externally (Gate A зелёный);
-   * `make clean-local` возвращает local harness в чистое состояние.
-
-Это уже **полный рабочий план**, а не патч и не намерение.
-
-Следующим сообщением я могу сделать уже **scaffold для реализации**:
-
-* skeleton `Makefile`,
-* skeleton `defaults/main.yml` по ролям,
-* skeleton Terraform `modules/*` и `tests/fixtures/*`,
-* skeleton Molecule scenarios / Vagrant harness / scripts,
-* и список файлов в том порядке, в каком агент должен начать кодить.
+Stage 1 v1.0 — **полный рабочий substrate** для Kubernetes-в-LXC
+лаба с canonical CAPI bootstrap-and-pivot flow, dual-stack networking
+и helm-first delivery model. Готов к copy-and-customize в consumer
+repo's.
 
 [1]: https://capn.linuxcontainers.org/?utm_source=chatgpt.com "Introduction - The cluster-api-provider-incus book"
 [2]: https://documentation.ubuntu.com/lxd/latest/reference/network_bridge/?utm_source=chatgpt.com "Bridge network - LXD documentation"

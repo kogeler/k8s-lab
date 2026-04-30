@@ -5,10 +5,10 @@ galaxy_info:
   author: k8s-lab contributors
   description: >-
     Materialise Phase 4 handoff artefacts on the runner (plan §15.6):
-    `.artifacts/bootstrap.kubeconfig` pulled from the LXD host, and
-    `.artifacts/bootstrap.auto.tfvars.json` carrying the facts Phase 5
+    `.artifacts/mgmt.kubeconfig` pulled from the LXD host, and
+    `.artifacts/mgmt.auto.tfvars.json` carrying the facts Phase 5
     Terraform fixtures consume (cluster identity, CAPN version,
-    topology toggles, bootstrap API endpoint).
+    topology toggles, mgmt API endpoint).
   license: MIT
   min_ansible_version: "2.16"
   platforms:
@@ -28,4 +28,16 @@ dependencies:
   # kubeconfig under `/opt/capi-lab/etc/bootstrap_clusterctl/` is ready
   # to be shipped to the runner. The chain transitively pulls every
   # earlier substrate role.
+  #
+  # Conditional via `export_artifacts_run_meta_chain` (default true):
+  # the canonical e2e flow re-invokes this role POST-pivot to ship the
+  # target mgmt cluster's kubeconfig (overwriting `.artifacts/mgmt.kubeconfig`
+  # in place — see plan §13.12). At that point the bootstrap LXC has
+  # not yet been deleted but Phase 4 substrate is fully reconciled
+  # already; re-running bootstrap_capn_secret on the second invocation
+  # would be wasted work, and after `cleanup_bootstrap` deletes the
+  # bootstrap container the chain can no longer reach the bootstrap
+  # API at all. Caller sets `export_artifacts_run_meta_chain: false`
+  # for the post-pivot re-emit invocation.
   - role: bootstrap_capn_secret
+    when: export_artifacts_run_meta_chain | default(true) | bool

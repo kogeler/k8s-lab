@@ -183,5 +183,5 @@ export_artifacts_root: >-
 # `vagrant ssh-config`. Runner-side Terraform (Phase 5+) will consume
 # the shipped kubeconfig via this URL + `tls-server-name:
 # kubernetes.default.svc` baked by bootstrap_clusterctl.
-export_artifacts_bootstrap_api_server_url: >-
+export_artifacts_mgmt_api_server_url: >-
   https://{{ lookup('env', 'K8SLAB_HOST_ADDR') }}:16443

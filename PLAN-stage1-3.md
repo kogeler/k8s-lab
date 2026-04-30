@@ -1,28 +1,30 @@
-Этот файл владеет §16: Phase 5 — единый workload cluster delivery
-module. Нумерация §N сквозная по всем plan-файлам; перекрёстные
-ссылки вида `§<номер>` валидны без указания имени файла — см.
+Этот файл владеет §16: единый workload cluster delivery module.
+Нумерация §N сквозная по всем plan-файлам; перекрёстные ссылки
+вида `§<номер>` валидны без указания имени файла — см.
 `PLAN-stage1-common.md` header для полного file lineup. Атомарный
 scope этого шарда — два уже shipped Helm-чарта
 (`charts/capi-cluster-class/` + `charts/capi-workload-cluster/`),
 один Terraform module `workload_cluster/` который ставит весь
 functional workload-кластер от ClusterClass до cluster add-ons +
 acceptance helm test'ов одним `terraform apply`, один test fixture
-root и Makefile target.
+root и Makefile target. TF route — операторская / production-
+ориентированная альтернатива e2e-local Molecule converge'у (§10.2);
+оба используют одни и те же чарты, разные delivery механизмы.
 
 ```
 PLAN-stage1-common.md ............ §1..§12  (project contract, architecture, test harness, risk catalog)
 PLAN-stage1-1.md ................. §13..§14 (completed roles + phases)
 PLAN-stage1-2.md ................. §15      (Phases 3.5 + 4 bootstrap management cluster)
-PLAN-stage1-3.md ................. §16      (Phase 5 — workload_cluster TF module: CAPI topology + add-ons + acceptance) <-- этот файл
+PLAN-stage1-3.md ................. §16      (workload_cluster TF module: CAPI topology + add-ons + acceptance) <-- этот файл
 PLAN-stage1-4.md ................. §17      (Helm test contracts — Gate A + Gate B chart-side specs)
-PLAN-stage1-5.md ................. §18      (Phase 6 + 7 — optional pivot)
+PLAN-stage1-5.md ................. §18      (pivot mgmt-1 → self-hosted)
 PLAN-stage1-6.md ................. §19      (Phase 8 destroy)
-PLAN-stage1-7.md ................. §20..§22 (Stage 1 meta: out-of-scope, self-review, recommendation)
+PLAN-stage1-7.md ................. §20..§22 (Stage 1 closure + self-review + recommendation)
 ```
 
 ---
 
-# 16. Phase 5 — workload cluster delivery via single Terraform module
+# 16. Workload cluster delivery via single Terraform module
 
 ## 16.1. Ownership и delivery model
 
@@ -85,8 +87,10 @@ Ownership разделение:
 * **Controllers** (CAPI core + CABPK + KubeadmControlPlane + CAPN
   infrastructure + cert-manager на mgmt cluster) — принесены
   `bootstrap_clusterctl` через `clusterctl init --infrastructure
-  incus` (§13.10). Phase 4 закрыта; Phase 5 controllers не трогает и
-  сама их не переустанавливает.
+  incus` (§13.10). На bootstrap'е они существуют только до pivot'а;
+  на mgmt-1 (после canonical flow §3 / §18) их ставит
+  `pivot_clusterctl_move`'s `clusterctl init`. Module §16.4
+  controllers не трогает и сам их не переустанавливает.
 * **CRDs** (ClusterClass, Cluster, KubeadmControlPlaneTemplate,
   KubeadmConfigTemplate, LXCClusterTemplate, LXCMachineTemplate) —
   тоже принесены `clusterctl init`. Чарты §16.2/§16.3 **не содержат
@@ -415,8 +419,7 @@ verified CRD schemas CAPI v1.12.5 / CAPN v0.8.5):**
 
 * `unprivileged: true`, `skipDefaultKubeadmProfile: true`,
   `cloudProviderNodePatch: false`, `instanceType: container`,
-  `format: cloud-config` — по substrate- и MVP-policy (§2.8 / §3.1 /
-  §13.6).
+  `format: cloud-config` — substrate policy (§2.8 / §13.6).
 * LXD profile baseline для трёх типов instance'ов CAPN спавнит:
   * **CP machine** = `capi-base` + `capi-controlplane` + consumer
     `profilesExtra.controlplane`;
@@ -495,8 +498,8 @@ verified CRD schemas CAPI v1.12.5 / CAPN v0.8.5):**
   `converge ok=298 changed=3 failed=0`,
   `idempotence ok=298 changed=0 failed=0`,
   `verify ok=16 changed=0 failed=0`;
-  `.artifacts/bootstrap.kubeconfig` +
-  `.artifacts/bootstrap.auto.tfvars.json` материализованы на runner'е.
+  `.artifacts/mgmt.kubeconfig` +
+  `.artifacts/mgmt.auto.tfvars.json` материализованы на runner'е.
 * Workload-side E2E (реальный Cluster CR + LXC-ноды на substrate'е)
   остаётся scope §16.3 + §16.4 + §16.5 + §16.6 — в Step 10
   не прогонялся.
@@ -671,7 +674,7 @@ kubernetes:
   version: "v1.35.0"               # chart's own latest-stable pin
                                    # (verified upstream stable.txt
                                    # 2026-04-25; §8 k8s_lab_kubernetes_version
-                                   # переопределяет через Phase 5 fixture)
+                                   # переопределяет через workload fixture)
 topology:
   controlPlane:
     replicas: 3                    # §8 k8s_lab_workload_controlplane_count
@@ -710,16 +713,16 @@ exposed в values per memory `feedback_chart_required_values_hardcoded`):
   совпадать с тем, что §16.2 ClusterClass запекает в
   `workers.machineDeployments[].class`. Совпадение — chart-level
   invariant, не consumer-tunable;
-* `spec.topology.workers.machineDeployments[0].name: md-0` — для
-  single-MD MVP. Multi-MD scenario — out of scope для v1.0.
+* `spec.topology.workers.machineDeployments[0].name: md-0` —
+  single-MD topology зашит в шаблоне как chart-level invariant.
 
 ### Namespace ownership: ВНЕ scope чарта
 
 Workload Cluster CR живёт в `.Release.Namespace` (`metadata.namespace`
 рендерится из `helm install --namespace ...`). **Сам namespace чарт НЕ
-поставляет.** Owner namespace lifecycle — Phase 5 Terraform fixture
-через `helm_release.create_namespace = true` (или operator руками
-для chart-level smoke).
+поставляет.** Owner namespace lifecycle — workload Terraform
+fixture (§16.5) через `helm_release.create_namespace = true` (или
+operator руками для chart-level smoke).
 
 Причины архитектурного выбора (verified Step 11):
 
@@ -748,9 +751,11 @@ pattern). Set explicitly (e.g. `"capi-system"`) для cross-namespace
 ClusterClass reference — CAPI v1beta2 поддерживает это нативно через
 `ClusterClassRef.namespace`.
 
-Phase 5 reference deployment: ClusterClass installed в `capi-system`,
-workload Cluster CR — в `capi-clusters` → `clusterClass.namespace:
-"capi-system"`.
+Reference deployment в этом репо: ClusterClass installed в
+`capi-clusters`, workload Cluster CR — в том же `capi-clusters` →
+`clusterClass.namespace: ""` (same-namespace, CAPI defaults).
+Cross-namespace вариант (e.g. ClusterClass в `capi-system`) валиден
+для consumer'а с multi-cluster-class deployment'ами.
 
 ### CAPN identity Secret prerequisite
 
@@ -963,11 +968,11 @@ Module не принимает substrate-required CR-поля (они hardcoded 
 чартах §16.2 / §16.3 / §17 charts). Сюда приходят только tunables:
 
 * **Mgmt-side connection**:
-  * `mgmt_kubeconfig_path` (string, required) — path до kubeconfig'а
-    mgmt cluster'а. Pre-pivot = `.artifacts/bootstrap.kubeconfig`,
-    post-pivot = `.artifacts/mgmt.kubeconfig`. Module не выбирает
-    между ними — это decision callsite (см. §16.5 fixture, §18
-    Phase 7);
+  * `mgmt_kubeconfig_path` (string, required) — path до единственного
+    runner-side mgmt kubeconfig'а (`.artifacts/mgmt.kubeconfig`). Тот
+    же файл pre- и post-pivot — `pivot_clusterctl_move` overwrite'ит
+    его in place после `clusterctl move` (§3.1 / §18). Module ничего
+    про pivot не знает — он просто читает файл по путю;
 
 * **Cluster identity + sizing**:
   * `cluster_name` (string, required) — bind на §8
@@ -1145,8 +1150,8 @@ default keeps each workload self-contained.
   Workload kubeconfig живёт только в TF state (sensitive=true) и
   inline в helm provider config'е.
 * **TF module не читает файлы из `.artifacts/`** (за исключением
-  `var.mgmt_kubeconfig_path` который указывает на bootstrap
-  kubeconfig — но это input, не assumption о Molecule pipeline).
+  `var.mgmt_kubeconfig_path` который указывает на mgmt kubeconfig
+  — но это input, не assumption о Molecule pipeline).
 * **Molecule e2e-local artefacts в `.artifacts/clusters/<cluster>.kubeconfig`**
   — debug-копия workload kubeconfig (raw Secret content, internal
   capi-int IPv6 endpoint — НЕ rewritten) для operator inspection.
@@ -1185,18 +1190,18 @@ target'ы `deploy-workload` / `workload-kubeconfig` / `destroy-workload`
 `required_providers` без provider configs — module owns aliases),
 `variables.tf` (defaults матчат §8 reference deployment + 7 unused
 declared vars для silently consuming mgmt-side keys из auto-tfvars),
-`main.tf` (derives `lxd_host_address` из `k8s_lab_bootstrap_api_server_url`
+`main.tf` (derives `lxd_host_address` из `k8s_lab_mgmt_api_server_url`
 host component через regex с двумя capture groups + `coalesce` —
 поддерживает оба `[ipv6]:port` и `host:port` формы), `outputs.tf`
 (passthrough всех module outputs).**
 
-**Step 16 deviation от исходного §16.5 design'а: `.artifacts/bootstrap.auto.tfvars.json`
+**Step 16 deviation от исходного §16.5 design'а: `.artifacts/mgmt.auto.tfvars.json`
 **не auto-load'ится** Terraform-ом из cwd фикстуры.** TF auto-loads
 `*.auto.tfvars.json` только из своего working directory; репозиторий
 держит handoff bundle на repo-root (`.artifacts/`), а fixture cwd —
 `tests/fixtures/terraform/workload-clusters/lab-default/`. Makefile
 target `deploy-workload` threading'ит файл явно через
-`-var-file=$(REPO_ROOT)/.artifacts/bootstrap.auto.tfvars.json` +
+`-var-file=$(REPO_ROOT)/.artifacts/mgmt.auto.tfvars.json` +
 preflight check на наличие файла. Альтернативный путь — committed
 symlink в фикстуре — отвергнут как hidden filesystem coupling.
 
@@ -1244,16 +1249,16 @@ aliases), fixture их не переопределяет.
 
 ### variables.tf
 
-Принимает `k8s_lab_*` ключи из §8. `.artifacts/bootstrap.auto.tfvars.json`
-(emitted `export_artifacts` §13.12) auto-load'ится Terraform-ом и
-заполняет их без ручного tfvars. Поверх §8 fixture добавляет:
+Принимает `k8s_lab_*` ключи из §8. `.artifacts/mgmt.auto.tfvars.json`
+(emitted `export_artifacts` §13.12) thread'ится через
+`-var-file=...` (см. Step 16 deviation выше) и заполняет их без
+ручного tfvars. Поверх §8 fixture добавляет:
 
-* `mgmt_kubeconfig_path` (default `${path.module}/../../../../../.artifacts/bootstrap.kubeconfig`)
-  — pre-pivot path к bootstrap k3s kubeconfig'у. Post-pivot (см.
-  §18.3) consumer переключает на `.artifacts/mgmt.kubeconfig`
-  через tfvar override. Это **input** module'у, не assumption о
-  Molecule pipeline — fixture default просто tracks reference
-  layout `export_artifacts` role'а;
+* `mgmt_kubeconfig_path` (default `${path.module}/../../../../../.artifacts/mgmt.kubeconfig`)
+  — единственный runner-side mgmt kubeconfig path. Тот же файл pre-
+  и post-pivot — `pivot_clusterctl_move` overwrite'ит его in place
+  после `clusterctl move` (§3.1 / §18). Fixture default просто
+  tracks reference layout `export_artifacts` role'а;
 * `cluster_class_chart_version` (default tracks §8
   `k8s_lab_capi_cluster_class_chart_version`);
 * `cluster_workload_chart_version` (default tracks §8
@@ -1325,7 +1330,7 @@ module "workload_cluster" {
   (например, kubectl wrapper'ов с `--server` override);
 * `helm_releases` — passthrough (smoke-check fixture).
 
-## 16.6. Phase 5 — Apply workload cluster
+## 16.6. Apply workload cluster
 
 Orchestration — `make deploy-workload` (target в корневом
 `Makefile`):
@@ -1342,8 +1347,8 @@ deploy-workload:
 * `terraform` предполагается **уже установленным** на runner'е (dev
   машина или CI-агент); Ansible/Phase 4 его не ставят;
 * оператор / агент вызывает target вручную после того, как Phase 4
-  зелёная и `.artifacts/bootstrap.kubeconfig` +
-  `.artifacts/bootstrap.auto.tfvars.json` материализованы;
+  зелёная и `.artifacts/mgmt.kubeconfig` +
+  `.artifacts/mgmt.auto.tfvars.json` материализованы;
 * `helm` CLI — нужен на runner'е для helm test'ов внутри module
   (`null_resource` + `local-exec`); версия pinned chart-providers
   совместимая (Helm 3.20+);
@@ -1494,7 +1499,7 @@ server` любой family.
 
 (4) **зелёный** — Cluster.status.phase = Provisioned (на
 CNI-less кластере не выйдет в Ready без CNI; это by design —
-Phase 5.1 деливерит Calico как отдельный Helm release), `helm
+CNI деливерится отдельным Helm release'ом — §17.1), `helm
 test` (10-фазная dual-stack acceptance драйвер из §16.3)
 проходит до конца: `cp=3/3 worker=2/2 ALL TOPOLOGY CHECKS
 PASSED`. Acceptance evidence: `make -C tests/molecule

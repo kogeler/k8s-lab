@@ -3,7 +3,7 @@
 # ----------------------------------------------------------------------------
 
 variable "mgmt_kubeconfig_path" {
-  description = "Path to the management-cluster kubeconfig (pre-pivot: bootstrap.kubeconfig; post-pivot: mgmt.kubeconfig). PLAN §16.4."
+  description = "Path to the management-cluster kubeconfig. Always points at .artifacts/mgmt.kubeconfig — the same file pre- and post-pivot (pivot_clusterctl_move overwrites it in place after clusterctl move). PLAN §16.4."
   type        = string
 }
 
@@ -247,7 +247,7 @@ variable "lxd_host_address" {
 
   validation {
     condition     = length(var.lxd_host_address) > 0
-    error_message = "lxd_host_address must be non-empty. For the local Vagrant flow it is derived from k8s_lab_bootstrap_api_server_url in the fixture; ensure .artifacts/bootstrap.auto.tfvars.json is present (Phase 4 export_artifacts must have run)."
+    error_message = "lxd_host_address must be non-empty. For the local Vagrant flow it is derived from k8s_lab_mgmt_api_server_url in the fixture; ensure .artifacts/mgmt.auto.tfvars.json is present (Phase 4 export_artifacts must have run)."
   }
 }
 

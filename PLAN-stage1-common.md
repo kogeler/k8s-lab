@@ -11,15 +11,14 @@ workflows, secrets policy и risk catalog.
 PLAN-stage1-common.md ............ §1..§12  (project contract, architecture, test harness, risk catalog)
 PLAN-stage1-1.md ................. §13..§14 (completed roles + phases)
 PLAN-stage1-2.md ................. §15      (Phases 3.5 + 4 bootstrap management cluster)
-PLAN-stage1-3.md ................. §16      (Phases 5 + 5.05 CAPI topology via Helm)
-PLAN-stage1-4.md ................. §17      (Phases 5.1 + 5.2 + 5.3 Helm add-ons + in-cluster tests)
-PLAN-stage1-5.md ................. §18      (Phases 6 + 7 pivot + workload clusters)
+PLAN-stage1-3.md ................. §16      (workload_cluster TF module)
+PLAN-stage1-4.md ................. §17      (Helm test contracts — Gate A + Gate B chart-side specs)
+PLAN-stage1-5.md ................. §18      (pivot mgmt-1 → self-hosted)
 PLAN-stage1-6.md ................. §19      (Phase 8 destroy)
-PLAN-stage1-7.md ................. §20..§22 (Stage 1 meta: out-of-scope, self-review, recommendation)
+PLAN-stage1-7.md ................. §20..§22 (Stage 1 closure + self-review + recommendation)
 ```
 
-Будущие stage-файлы подцепляются к этой же сквозной нумерации как
-следующие §N+ блоки.
+Stage 1 v1.0 — закрыт.
 
 ## Оглавление
 
@@ -46,9 +45,10 @@ PLAN-stage1-7.md ................. §20..§22 (Stage 1 meta: out-of-scope, self-
   - §2.11a. Политика «тестируй до коммита»
   - §2.11. Политика по версиям зависимостей
   - §2.11b. Политика «план — live-документ; отдельного progress-файла нет»
-- §3. Архитектурная модель: два режима
-  - §3.1. MVP / v1.0
-  - §3.2. Stage 2 / advanced
+- §3. Архитектурная модель — единый canonical flow
+  - §3.1. Sequence
+  - §3.2. Driver
+  - §3.3. Why pivot is mandatory
 - §4. Итоговая сетевая архитектура
 - §5. Networking contract
 - §6. Gate-фазы
@@ -83,8 +83,8 @@ PLAN-stage1-7.md ................. §20..§22 (Stage 1 meta: out-of-scope, self-
   - §14.4. Phase 3 — bootstrap instance
   - §14.5. Phase 3.5 — `binary_fetch` (Step 4)
   - §14.6. Phase 4 — bootstrap management cluster (Steps 4 + 6 + 8)
-  - §14.7. Phase 5 — workload cluster delivery via Terraform module (Step 16)
-  - §14.8. Phase 6 — Pivot bootstrap → self-hosted mgmt (Step 18)
+  - §14.7. Workload cluster delivery via Terraform module (Step 16)
+  - §14.8. Pivot mgmt-1 → self-hosted (Step 18)
 
 ### PLAN-stage1-2.md — §15 (Phases 3.5 + 4 bootstrap management cluster)
 
@@ -98,15 +98,15 @@ PLAN-stage1-7.md ................. §20..§22 (Stage 1 meta: out-of-scope, self-
   - §15.7. Phase 3.5 execution
   - §15.8. Phase 4 execution
 
-### PLAN-stage1-3.md — §16 (Phases 5 + 5.05 CAPI topology via Helm)
+### PLAN-stage1-3.md — §16 (workload_cluster TF module: CAPI topology + add-ons + acceptance)
 
-- §16. Phase 5 — workload cluster delivery via single Terraform module
+- §16. Workload cluster delivery via single Terraform module
   - §16.1. Ownership и delivery model (single module, helm test inside apply)
   - §16.2. Chart: `charts/capi-cluster-class/`
   - §16.3. Chart: `charts/capi-workload-cluster/`
   - §16.4. Module: `terraform/modules/workload_cluster/` (CAPI + add-ons + acceptance в одном apply)
   - §16.5. Test fixture: `tests/fixtures/terraform/workload-clusters/lab-default/`
-  - §16.6. Phase 5 — Apply workload cluster (`make deploy-workload`)
+  - §16.6. Apply workload cluster (`make deploy-workload`)
   - §16.7. Workload kubeconfig export (internal step §16.4 module'а)
 
 ### PLAN-stage1-4.md — §17 (Helm test acceptance contracts — Gate A + Gate B chart-side specs)
@@ -116,12 +116,12 @@ PLAN-stage1-7.md ................. §20..§22 (Stage 1 meta: out-of-scope, self-
   - §17.2. Gate B — CNI viability acceptance (chart-side spec + Step 13 status)
   - §17.3. Gate A — External L2 viability acceptance (chart-side spec + Step 14 status)
 
-### PLAN-stage1-5.md — §18 (Phases 6 + 7 pivot + workload clusters)
+### PLAN-stage1-5.md — §18 (pivot mgmt-1 → self-hosted)
 
-- §18. Phases 6 + 7 — Optional pivot + post-pivot workload creation
-  - §18.1. TF fixture: `management-clusters/mgmt-1/`
-  - §18.2. Role + playbook: `pivot_clusterctl_move`
-  - §18.3. Phase 6 + Phase 7 execution
+- §18. Pivot mgmt-1 → self-hosted (mandatory step in canonical flow)
+  - §18.1. mgmt-1 helm install — на bootstrap'е
+  - §18.2. Role: `pivot_clusterctl_move`
+  - §18.3. Post-pivot workload creation
 
 ### PLAN-stage1-6.md — §19 (Phase 8 destroy)
 
@@ -129,11 +129,11 @@ PLAN-stage1-7.md ................. §20..§22 (Stage 1 meta: out-of-scope, self-
   - §19.1. Role: `cleanup_bootstrap`
   - §19.2. Phase 8 execution
 
-### PLAN-stage1-7.md — §20..§22 (Stage 1 meta)
+### PLAN-stage1-7.md — §20..§22 (Stage 1 closure)
 
-- §20. Stage 1 — Explicitly out of scope for v1.0
+- §20. Stage 1 — Closure
 - §21. Stage 1 — Саморевью контракта
-- §22. Stage 1 — Финальная рекомендация
+- §22. Stage 1 — Финальная рекомендация для consumer'ов
 
 ---
 
@@ -143,8 +143,8 @@ PLAN-stage1-7.md ................. §20..§22 (Stage 1 meta: out-of-scope, self-
 * учитывает сетевую двухинтерфейсную архитектуру;
 * учитывает все принятые замечания из ревью;
 * выстроен в **правильной последовательности реализации**;
-* содержит **MVP path** и **Stage 2 path**;
-* добавляет **локальную разработку и тестирование через Molecule + Vagrant + Libvirt**, включая **mock DHCPv6/RA с /64 для второго интерфейса**;
+* фиксирует **единый canonical flow** (substrate → mgmt-1 helm install → pivot → workload helm install — §3) без dispatch-веток;
+* добавляет **локальную разработку и тестирование через Molecule + Vagrant + Libvirt**, включая **in-VM RA source (radvd на ext6-ra-peer veth) для внешнего IPv6 segment'а**;
 * отделяет **обязательные gate-проверки** от основной реализации;
 * фиксирует, что именно делается **Ansible**, что именно делает **Terraform**, и что считается **out of scope**.
 
@@ -433,10 +433,19 @@ Phase 2):
 
 ## 2.8. Политика по режиму LXC-нód
 
-Для `v1.0` и для всего local harness зафиксирован **единственный поддерживаемый path**:
+Проект **исключительно unprivileged-only** — это substrate-инвариант,
+не v1.0-specific decision и не переключаемая опция:
 
-* control-plane и worker nodes запускаются как **unprivileged LXC containers**;
-* `privileged` path не является частью поддерживаемого implementation scope для `v1.0` и не считается допустимым fallback.
+* control-plane и worker nodes (а также bootstrap k3s LXC) запускаются
+  как **unprivileged LXC containers**;
+* privileged path **не является и не станет** частью поддерживаемого
+  implementation scope: ни как fallback, ни как opt-in toggle, ни как
+  consumer override. Любой PR / proposal, поднимающий privileged
+  containers как опцию, отвергается на review без обсуждения.
+
+Это закрытый архитектурный пункт. Если consumer'у нужны
+privileged-equivalent capabilities, путь — **VM-based nodes** (вне
+scope этого repo), не privileged LXC.
 
 Причины:
 
@@ -447,7 +456,7 @@ Phase 2):
 
 Следствие:
 
-* `lxd_profiles` для `capi-controlplane` и `capi-worker` в `v1.0` строятся от **CAPN Canonical LXD unprivileged kubeadm baseline**, а не от privileged profile;
+* `lxd_profiles` для `capi-controlplane` и `capi-worker` строятся от **CAPN Canonical LXD unprivileged kubeadm baseline**, а не от privileged profile;
 * для Kubernetes node containers надо включать `security.idmap.isolated=true`, если этому не мешает конкретный verified workload contract;
 * `security.nesting=true` допускается только на тех profiles, где это действительно нужно для Kubernetes node/CRI path, а не как project-wide default;
 * privileged LXC не должен использоваться как “быстрый обход” для проблем с kubelet, containerd, CNI или add-ons;
@@ -577,7 +586,7 @@ reconciliation.
 Следствие:
 
 * в этом repo agent должен строить код вокруг prebuilt kubeadm image path;
-* install-kubeadm-at-runtime режим не является CR-полем в CAPN v1alpha2 API — он моделируется добавлением `preKubeadmCommands` в KCPT/KCT (chart §16.2 принимает их через `controlPlane.preKubeadmCommands` / `worker.preKubeadmCommands`, consumer-facing default — пустой список). Substrate-required `preKubeadmCommand` (dual-stack `node-ip` patch для kubeadm config'а — см. §16.2) рендерится всегда отдельно от consumer values, consumer'у его трогать не нужно. MVP path использует prebuilt образы и пустой consumer-список;
+* install-kubeadm-at-runtime режим не является CR-полем в CAPN v1alpha2 API — он моделируется добавлением `preKubeadmCommands` в KCPT/KCT (chart §16.2 принимает их через `controlPlane.preKubeadmCommands` / `worker.preKubeadmCommands`, consumer-facing default — пустой список). Substrate-required `preKubeadmCommand` (dual-stack `node-ip` patch для kubeadm config'а — см. §16.2) рендерится всегда отдельно от consumer values, consumer'у его трогать не нужно. Default lab-deployment использует prebuilt образы и пустой consumer-список;
 * риск использования evaluation-oriented CAPN images должен быть явно отмечен и не маскироваться под production-ready supply path;
 * **cloud-init-capability — substrate-required для любого образа**,
   идущего в `k8s_lab_images_controlplane` / `k8s_lab_images_worker`.
@@ -792,51 +801,134 @@ test scope.
 
 ---
 
-# 3. Архитектурная модель: два режима
+# 3. Архитектурная модель — единый canonical flow
 
-После ревью архитектура фиксируется как **два поддерживаемых режима**.
+Архитектура фиксирована как **один линейный путь**, моделирующий
+canonical Cluster API bootstrap-and-pivot pattern. Нет режимов /
+переключателей / dispatch-веток: bootstrap k3s — это **transient
+scaffolding**, единственная задача которого — захостить mgmt-1
+Cluster CR ровно столько, сколько нужно `clusterctl init` + `clusterctl
+move` чтобы превратить mgmt-1 в self-hosted CAPI management cluster.
 
-## 3.1. MVP / v1.0
+## 3.1. Sequence
 
-`k8s_lab_pivot_enabled = false` по умолчанию.
+1. **Substrate + bootstrap k3s.** Ansible-цепочка ролей (Phase 0..4)
+   поднимает host substrate (LXD, networks, profiles), bootstrap LXC
+   container, и внутри него `k3s server`; `clusterctl init` (через
+   роль `bootstrap_clusterctl`) делает bootstrap k3s temporary CAPI
+   management cluster. `bootstrap_capn_secret` материализует CAPN
+   identity Secret с `clusterctl.cluster.x-k8s.io/move: "true"`
+   label'ом (label всегда присутствует — pivot mandatory).
+2. **mgmt-1 Cluster CR на bootstrap.** Helm releases
+   `capi-cluster-class` + `capi-workload-cluster` с mgmt-topology
+   values (по дефолту 1 CP / 2 worker, `class_prefix=capn-mgmt`)
+   создают Cluster CR `mgmt-1` в `capi-clusters` namespace на
+   bootstrap'е. CAPN провижнит LXC ноды + haproxy LB instance.
+3. **CNI + MetalLB на mgmt-1.** Helm releases `cni-calico` +
+   `metallb` + `metallb-config` против runner-reachable mgmt-1
+   kubeconfig. Между CNI install и MetalLB install — explicit
+   `kubernetes.core.k8s_info` polling-task на все Nodes
+   `Ready=True`: `helm install cni-calico --wait` блокируется
+   только до tigera-operator Available, а Installation CR +
+   calico-node DS reconciliate'ятся async; без поллинга
+   следующий MetalLB install'у Pods Pending'ятся на NotReady
+   Nodes и `--wait` тайм-аутится.
+4. **Gate A/B helm tests на mgmt-1.** `helm test` на трёх chart'ах
+   (`capi-workload-cluster` cluster-ready hook, `cni-calico` Gate B,
+   `metallb-config` Gate A) — гейт перед pivot'ом. Если mgmt-1
+   data plane сломан, останавливаемся здесь, не на failed pivot'е.
+5. **clusterctl init + move bootstrap → mgmt-1.** Роль
+   `pivot_clusterctl_move` ставит CAPI controllers на mgmt-1 и
+   перевозит все CAPI CR'ы из `capi-clusters` namespace bootstrap'а
+   на mgmt-1 (включая mgmt-1 Cluster CR, ClusterClass, *Templates,
+   Machines, KCP, MachineDeployment, owned Secrets — `move-label`
+   тащит CAPN identity Secret вместе).
+6. **Re-emit `.artifacts/mgmt.kubeconfig`.** Второй include роли
+   `export_artifacts` с `export_artifacts_run_meta_chain: false` +
+   `export_artifacts_mgmt_kubeconfig_source` = host-side staging
+   pivot'а. Тот же runner-side файл, что был bootstrap creds,
+   перезаписывается на mgmt-1 creds.
+7. **`cleanup_bootstrap`.** Bootstrap LXC удаляется. mgmt-1 теперь
+   self-hosted, CAPI controllers крутятся на нём.
+8. **Workload Cluster + add-ons на mgmt-1.** Helm releases
+   `capi-cluster-class` + `capi-workload-cluster` с workload-topology
+   values (3 CP / 2 worker, `class_prefix=capn-default`,
+   `name=lab-default`) против только что обновлённого
+   `.artifacts/mgmt.kubeconfig`. Затем `cni-calico` → poll Nodes
+   Ready (тот же Calico-async-reconcile гейт что в шаге 3) →
+   `metallb` + `metallb-config` на workload kubeconfig.
+9. **Gate A/B helm tests на workload.** Final acceptance — `helm
+   test` на трёх chart'ах + external curl на MetalLB VIP через
+   `ext6-ra-peer` (Gate A out-of-cluster proof).
 
-Схема:
+После Phase 9: bootstrap k3s gone, mgmt-1 self-hosted с CAPI
+controllers + CNI + MetalLB, workload `lab-default` запущен и
+помещаем под управлением mgmt-1.
 
-* Ansible поднимает bootstrap LXC;
-* внутри него запускается `k3s server`;
-* `clusterctl init --infrastructure incus` превращает его в management cluster;
-* Terraform pass A из runner подключается к bootstrap cluster API и декларативно создаёт **workload cluster** через Cluster API CRDs;
-* после появления target kubeconfig Ansible/scripts экспортируют его в `.artifacts/clusters/<cluster>.kubeconfig`;
-* Terraform pass B подключается уже к target cluster и ставит cluster add-ons через `helm_release`;
-* bootstrap cluster остаётся постоянным management cluster для lab.
+## 3.2. Driver
 
-Это даёт:
+End-to-end flow реализован как `tests/molecule/e2e-local/converge.yml`
++ `verify.yml` (Molecule scenario), запускается через `make
+test-local-e2e`. Никаких standalone Make-target'ов для отдельных
+фаз pivot/mgmt нет — каждая стадия — это включение существующей
+роли (`export_artifacts`, `pivot_clusterctl_move`, `cleanup_bootstrap`)
+или нативный `kubernetes.core.helm` install в плейбуке.
 
-* меньше moving parts;
-* проще destroy path;
-* меньше phase coupling;
-* уже настоящий CAPI lifecycle для workload clusters.
-  `clusterctl init` официально превращает Kubernetes cluster в management cluster и автоматически ставит core provider + kubeadm bootstrap/control-plane providers, если вы инициализируете infrastructure provider. ([main.cluster-api.sigs.k8s.io][7])
+`make deploy-workload` остаётся как Terraform-route для оператора,
+который хочет добавить **дополнительный** workload Cluster CR
+(второй, третий…) на уже-self-hosted mgmt-1 через TF module
+`workload_cluster` + fixture `tests/fixtures/terraform/workload-clusters/lab-default/`.
+Эта же TF-route реализует «production prod-like» путь deployment'а
+workload'ов в реальные окружения. Bootstrap → mgmt-1 → cleanup
+никогда не делается через Make — это сценарий e2e-local Molecule.
 
-## 3.2. Stage 2 / advanced
+## 3.3. Why pivot is mandatory
 
-`k8s_lab_pivot_enabled = true`.
+Helm-release secrets (`sh.helm.release.v1.<release>.v1` в
+namespace релиза) хранятся как Kubernetes Secrets, а не как CAPI
+CR'ы. `clusterctl move` следует только object reference graph
+ClusterClass + Cluster CR'ов и не трогает helm-storage. Если
+workload Cluster CR создан на bootstrap'е, его helm-release
+storage остаётся на bootstrap'е и улетает с `cleanup_bootstrap`,
+оставляя на target mgmt-1 «orphaned Cluster CR без owning helm
+release». Любой `terraform destroy` / `helm uninstall` на этом CR
+после pivot'а падает с `release not found`.
 
-Схема:
+Решение — никогда не создавать workload Cluster CR'ы на bootstrap'е.
+mgmt-1 — единственный «помощник» bootstrap'а, и pivot — единственный
+способ корректно его освободить от scaffolding. После pivot'а все
+последующие workload'ы создаются уже на mgmt-1. Поэтому pivot
+mandatory + workload-on-bootstrap не существует как путь.
 
-* bootstrap cluster временный;
-* Terraform pass A создаёт **target self-hosted management cluster**;
-* после появления target kubeconfig Terraform pass B ставит add-ons в target management cluster;
-* Ansible делает `clusterctl init` на target;
-* Ansible делает `clusterctl move`;
-* bootstrap container удаляется.
+`clusterctl init` + `clusterctl move` — официальный CAPI
+bootstrap-and-pivot flow ([Cluster API][7], [Cluster API][8]).
 
-Важно: **pivot здесь не про HA**. На одном физическом хосте отказоустойчивости он не даёт. Он нужен только для:
+### Network surface asymmetry между bootstrap и self-hosted
 
-* lifecycle symmetry;
-* тренировки canonical bootstrap-and-pivot flow Cluster API;
-* self-hosted management plane как learning goal.
-  Cluster API docs прямо описывают `clusterctl move` как bootstrap & pivot механизм и отдельно предупреждают, что target management cluster должен уже иметь providers и минимум один worker node, иначе controllers некуда будет расписать. ([Cluster API][8])
+bootstrap k3s крутится в обычном LXC (single binary) — k3s server +
+все CAPI/CAPN controllers работают в **host-network mode** прямо на
+bootstrap LXC instance'е. Source IP их трафика — это `eth0` IPv6
+самого bootstrap container'а в `capi-int` subnet (`fd42:77:1::xxx`).
+
+Self-hosted mgmt-1 это полноценный Kubernetes — те же CAPI/CAPN
+controllers крутятся как Pods, source IP их трафика — это Pod
+IPv6 в `fd42:77:2::/56` (Calico-managed Pod CIDR).
+
+Эта смена network surface — bootstrap host-network ↔ self-hosted
+Pod-network — **разный routing context** для исходящих connection'ов
+к substrate (capi-int LXD bridge, host LXD daemon HTTPS, haproxy LB
+instances). Любая фича, которая работает на bootstrap (например,
+CAPI cluster-cache reach к LB IPv6), должна явно проверяться в
+self-hosted Pod-network mode, потому что pre-pivot успех **не**
+гарантирует post-pivot успех.
+
+Concrete пример: Pod→substrate IPv6 SNAT через Calico
+`natOutgoing: Enabled` (§17.2) — невидим pre-pivot потому что
+host-network bootstrap не маршрутизирует Pod IPv6 вообще. Post-pivot
+обязателен, иначе CAPI controllers не могут достучаться до workload
+LB. Поэтому canonical flow §3.1 включает pivot **как обязательный
+шаг внутри e2e-local converge** — это и есть форма «мы прогоняем
+self-hosted path в каждом end-to-end тесте».
 
 ---
 
@@ -1318,7 +1410,6 @@ single identifier, not `k8s_lab.storage.pool_name`).
 # ---- global ----
 k8s_lab_opt_root: {type: string, default: "/opt/capi-lab"}
 k8s_lab_project_name: {type: string, default: "capi-lab"}
-k8s_lab_pivot_enabled: {type: bool, default: false}
 
 # ---- capi ----
 k8s_lab_infrastructure_secret_name: {type: string, default: "incus-identity"}  # matches CAPN upstream identity-secret default name
@@ -1481,13 +1572,16 @@ k8s_lab_kubernetes_version: {type: string, default: "v1.35.0"}           # verif
 # be odd: 1 (no HA), 3 (minimum HA), 5 (HA with maintenance margin).
 # Workload default = 3 → real multi-CP kubeadm reconciliation +
 # Calico/MetalLB failover paths get exercised in §17.x.
-# Mgmt default = 1 → small footprint, add-ons + TF state live on runner
-# anyway. Bumping mgmt to 3 is operator's call once Stage 2 pivot lands.
+# Mgmt default = 1 → small footprint; mgmt is self-hosted post-pivot
+# (canonical flow §3) and runs CAPI controllers, but no user
+# workloads land on it. Bumping mgmt CP to 3 is the operator's call
+# when CAPI controller HA is desired.
 #
 # Worker counts are unconstrained by the etcd quorum rule; defaults
-# track v1.0 lab footprint (2 workers mgmt, 2 workers workload). All
-# four counts are tunable via Terraform vars on the corresponding
-# fixture roots (§16.6, §18.1).
+# track v1.0 lab footprint (2 workers mgmt, 2 workers workload).
+# Workload counts are tunable via Terraform vars on the workload
+# fixture root (§16.6); mgmt counts are consumed via §8 globals by
+# the e2e-local converge play (§10.2).
 #
 # Mgmt worker floor = 2: this is a CHART-REQUIRED minimum, not a
 # production HA preference. The cni-calico chart's helm test phase 6
@@ -1842,15 +1936,16 @@ Vagrant VM, не libvirt-сеть):
   cert в trust store с restricted=true + projects=[capi-lab], Secret
   с 5 правильными data keys (server URL = `https://10.77.x.x:8443`,
   project=capi-lab, корректные PEM bodies), `server-crt` byte-equal
-  с live `/var/snap/lxd/common/lxd/server.crt`, отсутствие pivot
-  label при `k8s_lab_pivot_enabled=false` (default).
-* `export_artifacts` — Step 8 §13.12 (Molecule-цикл ещё не прогон).
-  Прогон поднимает всю Phase 4 цепочку через meta-deps (включая
-  bootstrap_capn_secret), затем применяет роль и verify-ит
-  runner-side: `.artifacts/bootstrap.kubeconfig` + `.auto.tfvars.json`
-  present с mode 0600, kubeconfig server не 127.0.0.1,
-  tfvars содержит baseline `k8s_lab_*` ключи, API server URL в
-  tfvars совпадает с cluster[].server в shipped kubeconfig,
+  с live `/var/snap/lxd/common/lxd/server.crt`, наличие pivot
+  move-label `clusterctl.cluster.x-k8s.io/move=true` (default —
+  pivot mandatory, §3 + §10).
+* `export_artifacts` — Step 8 §13.12. Прогон поднимает всю Phase 4
+  цепочку через meta-deps (включая bootstrap_capn_secret), затем
+  применяет роль и verify-ит runner-side:
+  `.artifacts/mgmt.kubeconfig` + `.artifacts/mgmt.auto.tfvars.json`
+  present с mode 0600, kubeconfig server не 127.0.0.1, tfvars
+  содержит baseline `k8s_lab_*` ключи, API server URL в tfvars
+  совпадает с cluster[].server в shipped kubeconfig,
   `kubernetes.core.k8s_info kind=Node` через shipped kubeconfig
   видит Ready ноду (Phase 5 smoke-тест).
 
@@ -1880,66 +1975,35 @@ workload-cluster компонента с `replicas >= 2`:
   второй pod в standby (механизм проверяется по типу компонента:
   логи, lease object, leader-election config map — см. §2.12).
 
-Pivot acceptance is **not** a Molecule scenario in this repo — it is
-exercised through `make deploy-pivot` (§18.3), which runs the
-`pivot_clusterctl_move` role's own healthchecks
-(`tasks/healthchecks.yml`) as a mandatory part of every play. Those
-healthchecks ARE the acceptance: 4 CAPI/CAPN provider Deployments
-Available on target, 4 Provider CRs present, target Cluster CR on
-target, bootstrap source flushed (zero Cluster CRs in target
-namespace on bootstrap). Phase 6 playbook chains
-`pivot_clusterctl_move` → `cleanup_bootstrap` so post-pivot
-end-state is closed in one play.
+Pivot acceptance is exercised inside the same `e2e-local` Molecule
+scenario as a mandatory step in the canonical sequence (§3 + §10) —
+no standalone Make-target / playbook orchestrates pivot separately.
+The `pivot_clusterctl_move` role's own healthchecks
+(`tasks/healthchecks.yml`) ARE the acceptance: 4 CAPI/CAPN provider
+Deployments Available on target, 4 Provider CRs present, target
+Cluster CR on target, bootstrap source flushed (zero Cluster CRs in
+target namespace on bootstrap). The e2e-local converge.yml chains
+`pivot_clusterctl_move` → second `export_artifacts` (re-emit) →
+`cleanup_bootstrap` so post-pivot end-state is closed in one play.
 
 ### Full E2E
 
-* `e2e_local` — полный путь, включая повторение HA pair assertions
-  §2.12 на финальном workload cluster после pivot (если
-  `k8s_lab_pivot_enabled=true`). **Статус: первая итерация
-  выполнена в Step 12 (2026-04-26)** — covers Phase 0..5
-  (substrate → bootstrap k3s → CAPI ClusterClass + workload
-  Cluster) на одной VM. `converge.yml` инклюдит роль
-  `export_artifacts` (вся Phase 0..4 цепочка через её meta-deps)
-  и устанавливает оба chart'а через `kubernetes.core.helm`;
-  `verify.yml` гоняет `helm test` workload chart'а (10-фазная
-  dual-stack acceptance драйвер из §16.3), снимает CAPI
-  snapshot через `kubernetes.core.k8s_info`, материализует
-  workload kubeconfig из bootstrap Secret через `k8s_info` +
-  `ansible.builtin.copy`, и снимает `kubectl get nodes` с
-  workload-стороны через короткоживущий Pod в bootstrap
-  cluster'е (`kubernetes.core.k8s` → `k8s_info` polling →
-  `k8s_log` → `k8s state: absent`); workload API endpoint
-  живёт на LXD-bridge IPv6, недоступном с runner'а, поэтому
-  in-cluster jump-pod единственный путь. Единственный shell
-  fallback — `helm test` (нет нативного эквивалента в
-  `kubernetes.core`). **Step 13 (2026-04-26) расширил сценарий
-  до CNI** (см. §17.2 Step 13 acceptance): converge ставит helm CLI
-  на VM, пакетирует `charts/cni-calico/` на runner'е (`helm dep
-  update` + `helm package`), copy .tgz на VM, polling и
-  материализация workload kubeconfig в
-  `/opt/capi-lab/etc/<cluster>.kubeconfig`, install Calico через
-  `kubernetes.core.helm` на VM (workload API runner-нереachable,
-  helm обязан запускаться на VM); verify добавляет `helm test
-  cni-calico` (6-фазный chart-level acceptance). **Step 14
-  (2026-04-27) расширил до MetalLB + Gate A** (§17.3): converge
-  ставит metallb wrapper + metallb-config wrapper тем же
-  pattern'ом; verify добавляет `helm test metallb-config`
-  (8-фазный chart-level acceptance) + verify-side curl от VM на
-  MetalLB-allocated VIP через `ext6-ra-peer` (closes Gate A
-  external L2 path).
-* `e2e_local` covers `k8s_lab_pivot_enabled=false` (MVP) path only —
-  Stage 2 pivot path lives in a separate `make deploy-pivot` flow
-  (§18.3) with its own role-side healthchecks; no Molecule scenario
-  drives pivot.
-
-**Outstanding e2e_local extension (not yet shipped):** explicit
-leader-elected lease-holder + standby-pod assertions for
-`metallb-controller` (single-leader, by upstream design — see §2.12
-deviation) and `calico-kube-controllers` (HA-eligible). Replica-pair
-assertions for `replicas >= 2` Deployments / DaemonSets per §2.12
-are likewise an unwritten extension. Tracked under §2.12 but NOT
-gating Stage 1 acceptance — workload health is currently verified
-via Helm tests + runner-side `kubectl get nodes` only.
+* `e2e_local` исполняет canonical sequence из §3.1 целиком в одном
+  Molecule плейбуке — substrate → mgmt-1 helm install → mgmt-1 Gate
+  A/B helm tests → pivot → re-emit `mgmt.kubeconfig` →
+  cleanup_bootstrap → workload helm install → workload Gate A/B
+  helm tests + external curl. Никаких dispatch-веток на
+  `pivot_enabled` или подобное; pivot — обязательная стадия.
+  converge.yml инклюдит роль `export_artifacts` (Phase 0..4
+  меточка), затем `kubernetes.core.helm` × N для mgmt-1 chart'ов,
+  затем три `helm test` shell-fallback'а (нет нативного эквивалента
+  в `kubernetes.core`), затем `pivot_clusterctl_move` →
+  `export_artifacts` (re-emit с `run_meta_chain: false`) →
+  `cleanup_bootstrap`, затем `kubernetes.core.helm` × N для
+  workload chart'ов. verify.yml — три `helm test` workload
+  chart'ов + external curl на MetalLB VIP с VM (через
+  `ext6-ra-peer`) + workload Nodes Ready=True через rewritten
+  kubeconfig + CAPI snapshot self-hosted mgmt-1.
 
 ### Molecule harness style contract
 
@@ -1974,22 +2038,37 @@ via Helm tests + runner-side `kubectl get nodes` only.
 * сценарий считается недостаточным, если он проверяет только `converge + idempotence`, но не проверяет полезное поведение роли;
 * `command`/`shell` в `verify` разрешён только как явно документированное исключение, когда нужно проверить конкретный runtime path без адекватного module-equivalent.
 
-Порядок:
+Порядок (canonical flow §3, всё инлайн в e2e-local Molecule
+плейбуке — никаких standalone Make-target'ов между стадиями):
 
 1. `vagrant up`
-2. host bootstrap
-3. LXD substrate (включая расширенный `lxd_profiles` cloud-init
-   baseline для worker/controlplane профилей — §13.6)
-4. bootstrap cluster
-5. `make deploy-workload` — единственный TF apply поднимает
-   workload-кластер целиком через §16.4 module: CAPI topology +
-   workload kubeconfig wait + CNI chart + MetalLB pair + chart-side
-   helm test hooks (Gate A + Gate B — §17.2 / §17.3) внутри того
-   же apply
-6. optional pivot / post-pivot — `make deploy-workload` повторно с
-   `mgmt_kubeconfig_path=.artifacts/mgmt.kubeconfig` (§18.3)
-7. verify
-8. destroy
+2. base substrate + bootstrap k3s (Phase 0..4 через
+   `include_role: export_artifacts` + meta-chain)
+3. mgmt-1 helm install на bootstrap'е (`capi-cluster-class` +
+   `capi-workload-cluster` через `kubernetes.core.helm` с
+   mgmt-topology values, §18.1)
+4. CNI Calico → poll mgmt-1 Nodes Ready (Calico operator async
+   reconcile gate — без него MetalLB install'у Pods Pending'ятся
+   на NotReady Nodes) → MetalLB на mgmt-1
+5. helm tests на mgmt-1 (`capi-workload-cluster` cluster-ready +
+   `cni-calico` Gate B + `metallb-config` Gate A) — гейт перед
+   pivot'ом. Все три shell-fallback `command: helm test` task'и
+   выполняются с `become: false` (delegate_to: localhost против
+   play-уровня `become: true` на VM, без override уйдёт sudo на
+   runner — runner user не sudo-able без пароля)
+6. pivot — `include_role: pivot_clusterctl_move` (§18.2)
+7. re-emit `.artifacts/mgmt.kubeconfig` на mgmt-1 creds —
+   `include_role: export_artifacts` с `run_meta_chain: false`
+   (§13.12)
+8. `include_role: cleanup_bootstrap` — bootstrap LXC удалён
+9. workload helm install на self-hosted mgmt-1
+   (`capi-cluster-class` + `capi-workload-cluster` с
+   workload-topology values)
+10. CNI Calico → poll workload Nodes Ready (тот же Calico-async
+    gate что в шаге 4) → MetalLB на workload
+11. verify.yml — helm tests на workload + Gate A external curl +
+    Nodes Ready=True + CAPI snapshot self-hosted mgmt-1
+12. destroy
 
 ## 9.5. Shared inventory architecture
 
@@ -2031,7 +2110,7 @@ tests/molecule/<scenario>/
 * `bootstrap_clusterctl_init_timeout` / `wait_retries` / `wait_delay`;
 * `base_system_btrfs_pool_required: true` (prod-like default —
   installer provisions btrfs mount);
-* `export_artifacts_root` + `export_artifacts_bootstrap_api_server_url`
+* `export_artifacts_root` + `export_artifacts_mgmt_api_server_url`
   (runner-path + publish URL — derivatives of scenario env vars).
 
 ### §9.5.2. Scenario wiring
@@ -2114,26 +2193,29 @@ make test-local-harness
 make test-local-e2e
 ```
 
-Должно делать:
+Запускает Molecule scenario `tests/molecule/e2e-local/` который
+исполняет canonical sequence из §3.1 целиком в одном плейбуке:
 
-1. `vagrant up --provider=libvirt`
-2. Molecule delegated create/prepare
-3. host/bootstrap/substrate phases through local VM (Phases 0..4)
-4. `make deploy-workload` — `terraform apply` на §16.5 fixture,
-   единственный TF apply поднимает workload-кластер целиком: CAPI
-   topology + CNI + MetalLB; chart-side helm test hook'и (Gate B
-   + Gate A) запускаются в том же apply через `null_resource` +
-   `local-exec helm test` (§17.1) и закрывают acceptance из §6
-5. workload kubeconfig доступен через `terraform output -raw kubeconfig`
-   с rewritten endpoint (`https://<lxd-host>:<api-proxy-port>` +
-   `tls-server-name`); module держит kubeconfig только в state и не
-   пишет файлы (§16.4 architectural fence). Molecule e2e-local
-   verify.yml пишет debug-копию в `.artifacts/clusters/<cluster>.kubeconfig`
-   (raw, internal endpoint) для operator inspection отдельно
-6. optional pivot / post-pivot — `make deploy-workload` повторно с
-   tfvar override `mgmt_kubeconfig_path=.artifacts/mgmt.kubeconfig`
-   (если `k8s_lab_pivot_enabled=true`, §18.3)
-7. destroy
+1. `vagrant up --provider=libvirt` (если VM ещё нет);
+2. Molecule create / prepare;
+3. converge.yml — substrate (Phase 0..4) → mgmt-1 helm install на
+   bootstrap'е → CNI Calico → poll mgmt-1 Nodes Ready (Calico
+   async reconcile gate) → MetalLB → mgmt-1 Gate A/B helm tests
+   (гейт перед pivot'ом) → `clusterctl init + move` через роль
+   `pivot_clusterctl_move` → re-emit `.artifacts/mgmt.kubeconfig`
+   (второй include `export_artifacts` с `run_meta_chain: false`)
+   → `cleanup_bootstrap` → workload helm install на mgmt-1 → CNI
+   Calico → poll workload Nodes Ready → MetalLB;
+4. verify.yml — workload Gate A/B helm tests + external curl на
+   MetalLB VIP через `ext6-ra-peer` + workload Nodes Ready=True
+   через runner-side kubeconfig + CAPI snapshot self-hosted mgmt-1.
+
+Дополнительный workload (второй, третий…) на уже-self-hosted mgmt-1
+поднимается отдельным `make deploy-workload` (TF route, §16.6) —
+этот target принимает `.artifacts/mgmt.kubeconfig` (= self-hosted
+mgmt-1 после e2e-local прогона) и `.artifacts/mgmt.auto.tfvars.json`
+как input, единственный `terraform apply` на §16.5 fixture'е поднимает
+ещё один workload Cluster + CNI + MetalLB + chart-side helm tests.
 
 ## 10.3. Local cleanup
 
@@ -2155,10 +2237,25 @@ make clean-local
 
 Содержит:
 
-* bootstrap kubeconfig для local tests
-* target mgmt kubeconfig для local tests
-* workload/target cluster kubeconfigs under `.artifacts/clusters/*.kubeconfig`
-* generated tfvars handoff для test fixtures
+* `mgmt.kubeconfig` — единственный admin kubeconfig для активного
+  management-кластера. Один и тот же файл переживает всю canonical
+  sequence (§3.1): сначала указывает на bootstrap k3s (после Phase
+  4 substrate включая `export_artifacts`), затем перезаписывается
+  in place вторым include'ом `export_artifacts` (с
+  `run_meta_chain: false` + source-override на host-side staging
+  pivot'а) уже на mgmt-1 creds. После `cleanup_bootstrap` bootstrap
+  endpoint удалён вместе с контейнером, в файле остаются только
+  валидные mgmt-1 credentials. Все runner-side consumer'ы (TF
+  workload fixtures, Molecule e2e-local verify) держат один путь
+  через всю lifecycle;
+* `mgmt.auto.tfvars.json` — Phase 5 Terraform handoff bundle
+  (TF-native `*.auto.tfvars.json` auto-load), parametrising каждый
+  fixture root от §8 globals;
+* `clusters/<cluster>.kubeconfig` — per-workload debug-копии
+  rewritten kubeconfig'ов, написанные Molecule e2e-local verify.yml
+  для operator inspection (TF module §16.4 в этот subdir не пишет;
+  он держит kubeconfig только в state и эмитит через `terraform
+  output -raw kubeconfig`).
 
 Правила:
 
@@ -2194,7 +2291,7 @@ Backend strategy для реальных окружений определяет
 В SCOPE этого repo:
 
 * **Kubernetes API mTLS / kubeconfig** — API-server k3s всегда
-  требует клиентский сертификат. `.artifacts/bootstrap.kubeconfig`
+  требует клиентский сертификат. `.artifacts/mgmt.kubeconfig`
   несёт admin-cert, доступен только runner-у (mode 0600, gitignore).
 * **LXD API auth** — отдельно, через restricted TLS secret
   (`capi-lab` project-scoped client cert). Реализует
@@ -2277,11 +2374,27 @@ Mitigation:
 * snap channel pin
 * hold or maintenance window
 
-## 12.6. Stage 2 pivot adds complexity without HA gain
+## 12.6. Helm-release storage не переезжает с `clusterctl move`
+
+`clusterctl move` следует только object reference graph CAPI CR'ов;
+helm-release secrets (`sh.helm.release.v1.<release>.v1`) хранятся как
+обычные Kubernetes Secrets и не двигаются. Если workload Cluster CR
+создан на bootstrap'е, его helm storage остаётся на bootstrap'е и
+улетает с `cleanup_bootstrap` — на target mgmt остаётся orphaned CR
+без owning helm release; `terraform destroy` / `helm uninstall`
+после этого падает с `release not found`.
 
 Mitigation:
 
-* `k8s_lab_pivot_enabled=false` by default
+* canonical sequence (§3.1) НИКОГДА не создаёт workload Cluster CR'ы
+  на bootstrap'е — единственный CAPI CR на bootstrap'е это сам
+  mgmt-1 (transient, удаляется вместе с bootstrap'ом после pivot'а
+  через cleanup_bootstrap; helm release storage в этой же
+  траектории — не остаётся orphaned'ом, потому что Cluster CR
+  ушёл с move-цепочкой);
+* workload'ы создаются ТОЛЬКО после pivot'а на уже-self-hosted
+  mgmt-1, где helm storage и Cluster CR совпадают по local-cluster
+  ownership.
 
 ## 12.7. CAPN + Canonical LXD drift risk
 
@@ -2306,7 +2419,7 @@ Mitigation:
 
 * local harness may use `capi:kubeadm/VERSION` images for reproducibility
 * consumer repos should support custom image override and pinning
-* install-kubeadm-at-runtime через `preKubeadmCommands` не становится неявным workaround path — он допустим только как осознанный выбор consumer'а, а не MVP default
+* install-kubeadm-at-runtime через `preKubeadmCommands` не становится неявным workaround path — он допустим только как осознанный выбор consumer'а, а не default lab-deployment
 
 ## 12.10. CAPI CR immutability блокирует `helm upgrade` in place
 

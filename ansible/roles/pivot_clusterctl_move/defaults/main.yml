@@ -34,11 +34,10 @@
 #   * This role only runs the two `clusterctl` commands plus the
 #     before/after probes that make them idempotent.
 #
-# Pivot mode toggle: §3.1 default is `k8s_lab_pivot_enabled=false`. The
-# role's dispatcher hard-gates everything below preflight on the global
-# being `true`; calling the role with the default mode is a documented
-# no-op (preflight still validates inputs to surface misconfiguration
-# early, no mutating task runs).
+# Pivot is mandatory in the canonical k8s-lab flow (plan §3 + §10) —
+# the role's dispatcher gates only on `pivot_clusterctl_move_enabled`
+# (default `true`). Preflight always runs to surface misconfiguration
+# early.
 #
 # Public contract (plan §2.6.2): callers touch only
 # `pivot_clusterctl_move_*` variables. Internal / derived facts use
@@ -52,11 +51,12 @@
 
 # -- General ---------------------------------------------------------------
 
-# Coarse-grained role toggle. Independent of the global
-# `k8s_lab_pivot_enabled` mode flag — the dispatcher AND-gates on both,
-# so disabling either short-circuits the role. Default `true` so a
-# consumer that has flipped the global mode knob does not need a second
-# opt-in.
+# Coarse-grained role toggle. Default `true` — pivot is mandatory in
+# the canonical k8s-lab flow (plan §3 + §10): bootstrap k3s exists
+# only as scaffolding to host the mgmt-1 Cluster CR until clusterctl
+# move relocates it onto mgmt-1 itself. Setting this to `false` skips
+# the role's mutating tasks (preflight always runs to surface
+# misconfiguration).
 pivot_clusterctl_move_enabled: true
 
 # Bootstrap (source) kubeconfig — same artefact bootstrap_clusterctl

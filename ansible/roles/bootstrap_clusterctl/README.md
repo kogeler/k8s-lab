@@ -24,8 +24,8 @@ cert-manager, the core Cluster API providers and the CAPN
   out-of-project-scope, plan §11.4;
 * creating the LXD identity Secret CAPN reads to talk to the host
   daemon (`bootstrap_capn_secret`, plan §15.4);
-* exporting `bootstrap.kubeconfig` to the runner side
-  (`export_artifacts`, plan §15.6).
+* exporting the host-side kubeconfig to the runner as
+  `.artifacts/mgmt.kubeconfig` (`export_artifacts`, plan §15.6).
 
 ## Execution model
 

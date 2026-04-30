@@ -28,9 +28,9 @@
   # export_artifacts_root is consumer-policy (plan §11.1) so it has no
   # role-level default — fail loudly rather than guess the wrong path.
   # Reject `..` segments too: the path ends up verbatim inside
-  # bootstrap.auto.tfvars.json as `k8s_lab_bootstrap_kubeconfig_path`
-  # and is consumed by Phase 5 Terraform; non-canonical paths are
-  # fragile (symlinks, relocations) and hard to read in ops logs.
+  # mgmt.auto.tfvars.json as `k8s_lab_mgmt_kubeconfig_path` and is
+  # consumed by Phase 5 Terraform; non-canonical paths are fragile
+  # (symlinks, relocations) and hard to read in ops logs.
   ansible.builtin.assert:
     that:
       - export_artifacts_root is string
@@ -47,17 +47,18 @@
 - name: "export-artifacts | preflight | validate source path"
   ansible.builtin.assert:
     that:
-      - export_artifacts_bootstrap_kubeconfig_source is string
-      - export_artifacts_bootstrap_kubeconfig_source is match('^/')
+      - export_artifacts_mgmt_kubeconfig_source is string
+      - export_artifacts_mgmt_kubeconfig_source is match('^/')
     fail_msg: >-
-      export_artifacts: bootstrap kubeconfig source must be an
-      absolute path on the LXD host.
+      export_artifacts: mgmt kubeconfig source must be an absolute
+      path on the LXD host.
 
 - name: "export-artifacts | preflight | validate toggles + extras"
   ansible.builtin.assert:
     that:
       - export_artifacts_enabled in [true, false]
-      - export_artifacts_bootstrap_kubeconfig_enabled in [true, false]
+      - export_artifacts_run_meta_chain in [true, false]
+      - export_artifacts_mgmt_kubeconfig_enabled in [true, false]
       - export_artifacts_tfvars_enabled in [true, false]
       - export_artifacts_tfvars_extra is mapping
     fail_msg: >-
@@ -70,20 +71,20 @@
   # hang or 400.
   ansible.builtin.assert:
     that:
-      - export_artifacts_bootstrap_api_server_url is string
-      - (export_artifacts_bootstrap_api_server_url | length == 0)
-        or (export_artifacts_bootstrap_api_server_url is match('^https://'))
+      - export_artifacts_mgmt_api_server_url is string
+      - (export_artifacts_mgmt_api_server_url | length == 0)
+        or (export_artifacts_mgmt_api_server_url is match('^https://'))
     fail_msg: >-
-      export_artifacts: `export_artifacts_bootstrap_api_server_url`
+      export_artifacts: `export_artifacts_mgmt_api_server_url`
       must be empty (keep source URL) or start with `https://`. Got
-      "{{ export_artifacts_bootstrap_api_server_url }}".
+      "{{ export_artifacts_mgmt_api_server_url }}".
 
 - name: "export-artifacts | preflight | stat host kubeconfig source"
   ansible.builtin.stat:
-    path: "{{ export_artifacts_bootstrap_kubeconfig_source }}"
+    path: "{{ export_artifacts_mgmt_kubeconfig_source }}"
   register: _export_artifacts_source_stat
   changed_when: false
-  when: export_artifacts_bootstrap_kubeconfig_enabled
+  when: export_artifacts_mgmt_kubeconfig_enabled
 
 - name: "export-artifacts | preflight | assert source kubeconfig present + non-empty"
   ansible.builtin.assert:
@@ -92,16 +93,16 @@
       - _export_artifacts_source_stat.stat.size > 100
     fail_msg: >-
       export_artifacts: source kubeconfig at
-      {{ export_artifacts_bootstrap_kubeconfig_source }} is missing or
+      {{ export_artifacts_mgmt_kubeconfig_source }} is missing or
       empty. The bootstrap_clusterctl meta-dep chain should have
       produced it.
-  when: export_artifacts_bootstrap_kubeconfig_enabled
+  when: export_artifacts_mgmt_kubeconfig_enabled
 
 - name: "export-artifacts | preflight | ensure runner artefact root exists"
   # The artefact dir lives on the runner; we create it (and the
-  # per-cluster subdir reserved for Phase 5.05) with 0700 so nothing
-  # we write below can race a loose default. delegate_to + become:
-  # false pins ownership to the runner user per plan §11.1.
+  # per-cluster subdir) with 0700 so nothing we write below can race
+  # a loose default. delegate_to + become: false pins ownership to the
+  # runner user per plan §11.1.
   ansible.builtin.file:
     path:  "{{ item }}"
     state: directory

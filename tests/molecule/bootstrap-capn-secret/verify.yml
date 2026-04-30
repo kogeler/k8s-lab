@@ -120,21 +120,23 @@
       loop_control:
         label: "{{ item.item }}"
 
-    - name: "Verify | bootstrap_capn_secret | assert no pivot label by default per namespace"
-      # Default `k8s_lab_pivot_enabled=false` → no `clusterctl move`
-      # label on any of the fanout Secrets. An extended scenario that
-      # flips the global flag would need to invert this assertion.
+    - name: "Verify | bootstrap_capn_secret | assert pivot move label present by default"
+      # `bootstrap_capn_secret_pivot_enabled: true` is the default (plan
+      # §3 + §10 — pivot is mandatory in the canonical k8s-lab flow), so
+      # the `clusterctl move` label MUST appear on every fanout Secret
+      # to ensure clusterctl move carries them across to mgmt-1.
       ansible.builtin.assert:
         that:
           - >-
             (
               (item.resources[0].metadata.labels | default({}))
               ['clusterctl.cluster.x-k8s.io/move'] | default('')
-            ) | length == 0
+            ) == 'true'
         fail_msg: >-
-          Secret in namespace "{{ item.item }}" unexpectedly carries
-          `clusterctl.cluster.x-k8s.io/move` label while
-          `k8s_lab_pivot_enabled` defaults to false.
+          Secret in namespace "{{ item.item }}" missing the
+          `clusterctl.cluster.x-k8s.io/move=true` label expected by the
+          mandatory pivot flow. Live labels =
+          {{ item.resources[0].metadata.labels | default({}) }}.
       loop: "{{ _verify_secret_fanout.results }}"
       loop_control:
         label: "{{ item.item }}"

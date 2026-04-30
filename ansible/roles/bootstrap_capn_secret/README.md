@@ -19,9 +19,12 @@ LXD daemon. Plan §13.11.
   [identity-secret.html][1]: `server`, `server-crt`, `client-crt`,
   `client-key`, `project`. The role also ensures each target
   namespace exists before applying the Secret;
-* attach `clusterctl.cluster.x-k8s.io/move: "true"` label only when
-  `bootstrap_capn_secret_pivot_enabled=true` so `clusterctl move`
-  carries the Secrets across to the post-pivot management cluster.
+* attach `clusterctl.cluster.x-k8s.io/move: "true"` label (default)
+  so `clusterctl move` carries the Secrets across to the post-pivot
+  management cluster. Pivot is mandatory in the canonical k8s-lab
+  flow (plan §3 + §10); flip
+  `bootstrap_capn_secret_pivot_enabled=false` only for ad-hoc
+  substrate-only test runs.
 
 The Secret is **not** placed in the CAPN controller namespace
 (`capn-system`). CAPN v1alpha2 `LXCCluster.spec.secretRef` does not
@@ -34,8 +37,8 @@ the role fans the Secret out across every workload-cluster namespace.
 * publishing the bootstrap API on a host port — opt-in LXD proxy
   device on the bootstrap instance, plan §15.5; host firewall is
   out-of-project-scope, plan §11.4;
-* exporting `bootstrap.kubeconfig` to the runner side
-  (`export_artifacts`, plan §15.6);
+* exporting the host-side kubeconfig to the runner as
+  `.artifacts/mgmt.kubeconfig` (`export_artifacts`, plan §15.6);
 * Cluster CR lifecycle (Phase 5+, plan §16).
 
 ## Idempotence
@@ -52,8 +55,8 @@ the role fans the Secret out across every workload-cluster namespace.
 * Secret apply — server-side apply with `apply: true` is reconciling
   per namespace; the rendered manifest is byte-stable for the same
   inputs so `unchanged` is the steady-state output across the entire
-  fanout. Pivot label flip via `k8s_lab_pivot_enabled` propagates
-  cleanly through every target namespace in one rerun.
+  fanout. Pivot label flip via `bootstrap_capn_secret_pivot_enabled`
+  propagates cleanly through every target namespace in one rerun.
 
 Empty `bootstrap_capn_secret_namespaces` (and equivalently
 `k8s_lab_capn_identity_namespaces: []`) is a valid configuration:
@@ -85,18 +88,14 @@ metadata (CN, country, organization, validity, key size/type),
 staging paths, the auto-resolve override
 (`bootstrap_capn_secret_lxd_https_bind_address`), and wait timing.
 
-Five public defaults source from the project-wide §8 contract so a
+Four public defaults source from the project-wide §8 contract so a
 single global flip stays coordinated with downstream consumers:
 
 * `bootstrap_capn_secret_name` ← `k8s_lab_infrastructure_secret_name`
-  — must match the Cluster CR's `identityRef.name` in Phase 5+
-  (`§16.4` / `§16.5`);
+  — must match the Cluster CR's `identityRef.name` in §16.x;
 * `bootstrap_capn_secret_namespaces` ← `k8s_lab_capn_identity_namespaces`
   — Secret fanout target list, must include every namespace where
   workload Cluster CRs (and thus LXCCluster CRs) will be created;
-* `bootstrap_capn_secret_pivot_enabled` ← `k8s_lab_pivot_enabled` —
-  drives the `clusterctl.cluster.x-k8s.io/move=true` label that
-  `clusterctl move` (`§18`) follows;
 * `bootstrap_capn_secret_lxd_project` ← `k8s_lab_project_name` —
   CAPN reads this on every Cluster reconcile to scope every
   LXCMachine call;

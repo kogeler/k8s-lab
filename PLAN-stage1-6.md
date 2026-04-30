@@ -2,18 +2,18 @@
 по всем plan-файлам; перекрёстные ссылки вида `§<номер>` валидны без
 указания имени файла — см. `PLAN-stage1-common.md` header для полного
 file lineup. Атомарный scope этого шарда — реверс всех create-paths
-Stage 1 в чистое состояние, чтобы coding-agent мог работать над
-cleanup-ролью и phase-контрактом независимо от forward-paths.
+в чистое состояние, чтобы coding-agent мог работать над cleanup-ролью
+и destroy-контрактом независимо от forward-paths.
 
 ```
 PLAN-stage1-common.md ............ §1..§12  (project contract, architecture, test harness, risk catalog)
 PLAN-stage1-1.md ................. §13..§14 (completed roles + phases)
 PLAN-stage1-2.md ................. §15      (Phases 3.5 + 4 bootstrap management cluster)
-PLAN-stage1-3.md ................. §16      (Phases 5 + 5.05 CAPI topology via Helm)
-PLAN-stage1-4.md ................. §17      (Phases 5.1 + 5.2 + 5.3 Helm add-ons + in-cluster tests)
-PLAN-stage1-5.md ................. §18      (Phases 6 + 7 pivot + workload clusters)
+PLAN-stage1-3.md ................. §16      (workload_cluster TF module)
+PLAN-stage1-4.md ................. §17      (Helm test contracts — Gate A + Gate B chart-side specs)
+PLAN-stage1-5.md ................. §18      (pivot mgmt-1 → self-hosted)
 PLAN-stage1-6.md ................. §19      (Phase 8 destroy)                             <-- этот файл
-PLAN-stage1-7.md ................. §20..§22 (Stage 1 meta: out-of-scope, self-review, recommendation)
+PLAN-stage1-7.md ................. §20..§22 (Stage 1 closure + self-review + recommendation)
 ```
 
 ---
@@ -99,36 +99,43 @@ clean-* которые он invalidate'ит, два compound supertarget'а по
 после ни одного из destroy-шагов — следующий forward target работает
 без касаний.**
 
-Reverse-ordered chain в исходной форме:
+Reverse-ordered chain (canonical flow §3 в обратную сторону):
 
-1. **`make destroy-workload`** — `terraform destroy` на §16.5
-   fixture (`tests/fixtures/terraform/workload-clusters/lab-default/`).
-   TF разворачивает helm_release цепочку §16.4 module'а в обратном
-   порядке: metallb-config → metallb → cni-calico → workload Cluster
-   CR (CAPI/CAPN delete LXC instances + workload kubeconfig Secret)
-   → per-workload ClusterClass. **Cascade: `clean-tfstate` +
+1. **`make destroy-workload`** — три ветки в одном target'е:
+   * **(a) TF state present** (workload был задеплоен через TF
+     route — `make deploy-workload`): `terraform destroy` на §16.5
+     fixture (`tests/fixtures/terraform/workload-clusters/lab-default/`).
+     TF разворачивает helm_release цепочку §16.4 module'а в
+     обратном порядке: metallb-config → metallb → cni-calico →
+     workload Cluster CR (CAPI/CAPN delete LXC instances +
+     workload kubeconfig Secret) → per-workload ClusterClass.
+   * **(b) no TF state но `.artifacts/mgmt.kubeconfig` +
+     `mgmt.auto.tfvars.json` есть** (workload был задеплоен через
+     Molecule e2e-local converge — `kubernetes.core.helm` direct,
+     никакого TF state): helm-uninstall fallback. `helm uninstall
+     <cluster-name> -n capi-clusters --wait` (workload Cluster CR
+     → CAPI cascade-deletes Machines → CAPN destroys LXC instances
+     + LB; `--wait` ждёт пока finalizers отпустят CR) + `helm
+     uninstall <cluster-name>-class` (per-cluster ClusterClass +
+     Templates). cni-calico / metallb / metallb-config жили
+     **внутри** workload cluster'а — они уходят вместе с
+     destroyed LXC instances, отдельный uninstall не нужен.
+   * **(c) ни tfstate ни mgmt.kubeconfig** — skip with informative
+     log; clean cascade всё равно отрабатывает (нет infra → нет
+     stale файлов).
+   **Cascade на всех ветках: `clean-tfstate` +
    `clean-workload-kubeconfig`** — TF state в фикстуре + любая
    материализованная workload kubeconfig копия в
    `.artifacts/clusters/` смысла не имеют после destroy.
-2. **Per-workload artefacts cleanup** — module §16.4 не пишет
-   файлы (§16.4 architectural fence). Молекулярные debug-копии в
-   `.artifacts/clusters/<name>.kubeconfig` (написанные
-   `make workload-kubeconfig` consumer-side wrapper'ом) — wiped
-   шагом 1 cascade'ом.
-3. **`pivot_clusterctl_move` reverse** (если был pivot, §18.1) —
-   опционально, scope Stage 2;
-4. **`cleanup_bootstrap` Ansible role** (§19.1) — снимает bootstrap
-   publication (LXD proxy device), удаляет bootstrap LXC instance,
-   очищает `capi-lab` project assets. **Локально на Vagrant flow
-   шаг (4) и (5) совпадают** — VM teardown subsumes bootstrap
-   cleanup; роль остаётся отдельным testable Molecule scenario
-   (`tests/molecule/cleanup-bootstrap/`) для production paths где
-   substrate persistent.
-5. **Vagrant/libvirt cleanup** — `make destroy-vm` возвращает
-   harness в чистое состояние. **Cascade: `clean-bootstrap-bundle`
+2. **Vagrant/libvirt cleanup** — `make destroy-vm` возвращает
+   harness в чистое состояние. **Cascade: `clean-mgmt-bundle`
    + `clean-workload-kubeconfig` + `clean-tfstate`** — после
-   wipe'а VM ВСЕ runner-side артефакты (handoff bundle + workload
-   kubeconfig + workload TF state) указывают на призраков.
+   wipe'а VM ВСЕ runner-side артефакты (handoff bundle + per-cluster
+   debug kubeconfigs + workload TF state) указывают на призраков.
+   `cleanup_bootstrap` отдельно не звётся в этой ветке — VM
+   teardown subsumes bootstrap cleanup транзитивно (роль остаётся
+   testable через Molecule scenario `tests/molecule/cleanup-bootstrap/`
+   для production paths где substrate persistent).
 
 ### Naming convention (Step 18)
 
@@ -157,7 +164,7 @@ Reverse-ordered chain в исходной форме:
 destroy-workload  ─→  clean-tfstate
                   └→  clean-workload-kubeconfig
 
-destroy-vm        ─→  clean-bootstrap-bundle
+destroy-vm        ─→  clean-mgmt-bundle
                   └→  clean-workload-kubeconfig
                   └→  clean-tfstate
 
@@ -165,7 +172,7 @@ clean-local       ─→  destroy-vm  (← which cascades the cleans above)
                   └→  clean-molecule
 
 reset-all         ─→  destroy-workload  (← cascades clean-tfstate + clean-workload-kubeconfig)
-                  └→  destroy-vm        (← cascades clean-bootstrap-bundle + clean-workload-kubeconfig + clean-tfstate)
+                  └→  destroy-vm        (← cascades clean-mgmt-bundle + clean-workload-kubeconfig + clean-tfstate)
                   └→  clean-molecule
 ```
 
@@ -187,10 +194,11 @@ reset-all         ─→  destroy-workload  (← cascades clean-tfstate + clean-
 
 Все три критерия зелёные (Step 18 verification, 2026-04-28):
 
-* `make destroy-workload` на 5/5 Ready cluster'е → TF destroy
-  снёс 7 ресурсов, cascade очистил `.terraform/`, `terraform.tfstate*`,
-  `.artifacts/clusters/lab-default.kubeconfig`. Сразу следом
-  `make deploy-workload` поднял свежий cluster zero-touch
+* `make destroy-workload` на Ready cluster'е → TF destroy сносит
+  все ресурсы из chain §16.4 (5 helm releases + 2 helm test
+  null_resources), cascade очищает `.terraform/`, `terraform.tfstate*`,
+  `.artifacts/clusters/<cluster>.kubeconfig`. Сразу следом
+  `make deploy-workload` поднимает свежий cluster zero-touch
   (без manual cleanup между destroy и deploy);
 * `terraform destroy` идемпотентен — повторный destroy на
   empty state'е (после первого destroy + до cascade-wipe'а) no-op'ит

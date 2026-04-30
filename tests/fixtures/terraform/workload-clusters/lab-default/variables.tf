@@ -1,25 +1,25 @@
 # Fixture-level vars. Defaults track the §8 reference deployment so
 # `terraform plan` works standalone without overrides. Phase 4's
-# export_artifacts role drops `.artifacts/bootstrap.auto.tfvars.json`
+# export_artifacts role drops `.artifacts/mgmt.auto.tfvars.json`
 # at the repo root (path discovered through path.module below); the
 # auto-tfvars file overrides only the keys it provides — anything not
 # in the bundle uses the §8 default declared here.
 #
 # `lxd_host_address` is NOT in the export_artifacts payload; the
-# fixture derives it from `k8s_lab_bootstrap_api_server_url` host
+# fixture derives it from `k8s_lab_mgmt_api_server_url` host
 # component (locals_derived.tf) so the operator never has to hand-pin
 # it for the local Vagrant flow.
 
-# ---- Source of truth: bootstrap handoff ----------------------------------
+# ---- Source of truth: mgmt handoff ---------------------------------------
 
-variable "k8s_lab_bootstrap_kubeconfig_path" {
-  description = "Path to the bootstrap k3s kubeconfig (rewritten to runner-reachable LXD-host endpoint by export_artifacts §13.12)."
+variable "k8s_lab_mgmt_kubeconfig_path" {
+  description = "Path to the management-cluster kubeconfig (rewritten to runner-reachable LXD-host endpoint by export_artifacts §13.12). Same file pre- and post-pivot — pivot_clusterctl_move overwrites it in place."
   type        = string
   default     = ""
 }
 
-variable "k8s_lab_bootstrap_api_server_url" {
-  description = "Bootstrap k3s API URL the runner can reach. Used to derive lxd_host_address."
+variable "k8s_lab_mgmt_api_server_url" {
+  description = "Management cluster API URL the runner can reach. Used to derive lxd_host_address."
   type        = string
   default     = ""
 }
@@ -150,7 +150,7 @@ variable "cluster_workload_chart_version" {
 variable "cni_calico_chart_version" {
   description = "Tracks charts/cni-calico/Chart.yaml version."
   type        = string
-  default     = "0.2.0"
+  default     = "0.2.1"
 }
 
 variable "metallb_chart_version" {
@@ -168,7 +168,7 @@ variable "metallb_config_chart_version" {
 # ---- Mgmt-side connection ------------------------------------------------
 
 variable "mgmt_kubeconfig_path" {
-  description = "Override path to the mgmt kubeconfig. Default = .artifacts/bootstrap.kubeconfig at the repo root (pre-pivot path); post-pivot consumer overrides to .artifacts/mgmt.kubeconfig."
+  description = "Override path to the mgmt kubeconfig. Default = .artifacts/mgmt.kubeconfig at the repo root — overwritten in place by pivot_clusterctl_move on Stage 2 transitions."
   type        = string
   default     = ""
 }
@@ -176,7 +176,7 @@ variable "mgmt_kubeconfig_path" {
 # ---- Auto-tfvars passthrough (silences warnings) -------------------------
 # Keys emitted by the Phase 4 export_artifacts handoff that this fixture
 # does not consume itself — declared as no-op variables so Terraform
-# does not warn about unused values in `bootstrap.auto.tfvars.json`.
+# does not warn about unused values in `mgmt.auto.tfvars.json`.
 # Future Phase 6+ fixtures (mgmt cluster pivot, multi-workload roots)
 # may consume them.
 
@@ -198,11 +198,6 @@ variable "k8s_lab_management_worker_count" {
 variable "k8s_lab_unprivileged_nodes" {
   type    = bool
   default = true
-}
-
-variable "k8s_lab_pivot_enabled" {
-  type    = bool
-  default = false
 }
 
 variable "k8s_lab_cluster_topology_enabled" {

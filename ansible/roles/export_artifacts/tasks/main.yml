@@ -8,16 +8,16 @@
       tags: [export_artifacts, export-artifacts, export_artifacts_preflight]
   tags: [export_artifacts, export-artifacts, export_artifacts_preflight]
 
-- name: "export-artifacts | bootstrap_kubeconfig"
+- name: "export-artifacts | mgmt_kubeconfig"
   ansible.builtin.include_tasks:
-    file: bootstrap_kubeconfig.yml
+    file: mgmt_kubeconfig.yml
     apply:
-      tags: [export_artifacts, export-artifacts, export_artifacts_bootstrap_kubeconfig]
+      tags: [export_artifacts, export-artifacts, export_artifacts_mgmt_kubeconfig]
   when:
     - export_artifacts_enabled
-    - export_artifacts_flow_control_bootstrap_kubeconfig
-    - export_artifacts_bootstrap_kubeconfig_enabled
-  tags: [export_artifacts, export-artifacts, export_artifacts_bootstrap_kubeconfig]
+    - export_artifacts_flow_control_mgmt_kubeconfig
+    - export_artifacts_mgmt_kubeconfig_enabled
+  tags: [export_artifacts, export-artifacts, export_artifacts_mgmt_kubeconfig]
 
 - name: "export-artifacts | tfvars"
   ansible.builtin.include_tasks:

@@ -21,10 +21,11 @@ Drives the canonical CAPI bootstrap-and-pivot flow:
    MachineDeployment, owned Machines + Secrets) from bootstrap to
    target.
 
-The role is hard-gated on the global `k8s_lab_pivot_enabled` mode flag
-(§3.1 — default `false`, MVP path). With the flag at its default, the
-role is a documented no-op below preflight; flipping it to `true`
-opts the entire repo into the Stage-2 pivot path.
+Pivot is a mandatory step in the canonical k8s-lab flow (plan §3 +
+§10) — bootstrap k3s exists only as scaffolding to host the mgmt-1
+Cluster CR until clusterctl move relocates it. The role gates only on
+`pivot_clusterctl_move_enabled` (default `true`); preflight always
+runs to surface misconfiguration early.
 
 ## Out of scope
 
@@ -43,8 +44,6 @@ opts the entire repo into the Stage-2 pivot path.
 
 ## Requirements
 
-* Pivot mode must be enabled — `k8s_lab_pivot_enabled: true` (global,
-  see plan §8). Default `false` makes this role a no-op.
 * `k8s_lab_lxd_host_address` (or the per-role default override
   `pivot_clusterctl_move_target_api_address`) must be set to a
   runner-reachable address of the LXD host — the rewritten kubeconfig
@@ -73,7 +72,7 @@ NOT consumer-tunable — see role docstring for rationale.
 
 | Variable | Default | Description |
 | --- | --- | --- |
-| `pivot_clusterctl_move_enabled` | `true` | Role-level toggle (still respects `k8s_lab_pivot_enabled`). |
+| `pivot_clusterctl_move_enabled` | `true` | Role-level toggle (preflight runs even when off). |
 | `pivot_clusterctl_move_bootstrap_kubeconfig_path` | `{{ k8s_lab_opt_root }}/etc/bootstrap_clusterctl/bootstrap.kubeconfig` | Source kubeconfig for `clusterctl move`. |
 | `pivot_clusterctl_move_target_cluster_name` | `{{ k8s_lab_management_cluster_name | default('mgmt-1') }}` | Cluster CR name on bootstrap → target. |
 | `pivot_clusterctl_move_target_cluster_namespace` | `capi-clusters` | Namespace of the target Cluster CR + kubeconfig Secret. |
@@ -128,8 +127,6 @@ Re-running the role after a successful pivot is therefore reliably
 ```yaml
 - hosts: k8slab_host
   become: true
-  vars:
-    k8s_lab_pivot_enabled: true
   roles:
     - role: pivot_clusterctl_move
       vars:

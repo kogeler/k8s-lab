@@ -1,24 +1,24 @@
 locals {
-  # `.artifacts/bootstrap.kubeconfig` lives at the repo root. Five
+  # `.artifacts/mgmt.kubeconfig` lives at the repo root. Five
   # ".." steps from this fixture climb back up to the repo root:
   # lab-default → workload-clusters → terraform → fixtures → tests → repo.
-  default_mgmt_kubeconfig_path = "${path.module}/../../../../../.artifacts/bootstrap.kubeconfig"
+  default_mgmt_kubeconfig_path = "${path.module}/../../../../../.artifacts/mgmt.kubeconfig"
 
   mgmt_kubeconfig_path = var.mgmt_kubeconfig_path != "" ? var.mgmt_kubeconfig_path : (
-    var.k8s_lab_bootstrap_kubeconfig_path != "" ? var.k8s_lab_bootstrap_kubeconfig_path : local.default_mgmt_kubeconfig_path
+    var.k8s_lab_mgmt_kubeconfig_path != "" ? var.k8s_lab_mgmt_kubeconfig_path : local.default_mgmt_kubeconfig_path
   )
 
   # lxd_host_address is not part of the export_artifacts payload.
-  # Derive it from the bootstrap server URL host component. The regex
+  # Derive it from the mgmt server URL host component. The regex
   # exposes two capture groups — [bracketed-ipv6, plain-host]; only one
   # matches per URL, the other comes back null. `coalesce` returns the
   # populated one. Skipped when the URL itself is empty (e.g. a fresh
   # `terraform plan` without the Phase 4 handoff present yet) — the
   # downstream module-side validation surfaces the missing input with a
   # clear error.
-  _lxd_addr_match = var.k8s_lab_bootstrap_api_server_url != "" ? regex(
+  _lxd_addr_match = var.k8s_lab_mgmt_api_server_url != "" ? regex(
     "^https?://(?:\\[([^\\]]+)\\]|([^:/]+))",
-    var.k8s_lab_bootstrap_api_server_url
+    var.k8s_lab_mgmt_api_server_url
   ) : [null, null]
 
   lxd_host_address = try(

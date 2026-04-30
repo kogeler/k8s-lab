@@ -7,7 +7,7 @@
 # Consumers extend the payload through `export_artifacts_tfvars_extra`
 # (merged under the baseline — baseline wins on collision).
 #
-# The bootstrap API endpoint is derived from the kubeconfig we just
+# The mgmt API endpoint is derived from the kubeconfig we just
 # shipped (kubeconfig already carries the rewritten container IPv4 —
 # no extra LXD REST probe needed).
 #
@@ -17,13 +17,13 @@
 
 - name: "export-artifacts | tfvars | read shipped kubeconfig"
   # Re-read the runner-side file we just wrote so server URL extraction
-  # does not depend on whether `bootstrap_kubeconfig` ran this pass
+  # does not depend on whether `mgmt_kubeconfig` ran this pass
   # (idempotent converge case). delegate_to: localhost because the
   # file lives there.
   ansible.builtin.slurp:
     src: >-
       {{ export_artifacts_root }}/{{
-        _export_artifacts_required_bootstrap_kubeconfig_filename
+        _export_artifacts_required_mgmt_kubeconfig_filename
       }}
   register: _export_artifacts_kubeconfig_register
   delegate_to: localhost
@@ -50,7 +50,6 @@
       k8s_lab_project_name:             "{{ k8s_lab_project_name | default('capi-lab') }}"
       k8s_lab_infrastructure_secret_name: "{{ k8s_lab_infrastructure_secret_name | default('incus-identity') }}"
       k8s_lab_cluster_topology_enabled: "{{ k8s_lab_cluster_topology_enabled | default(true) }}"
-      k8s_lab_pivot_enabled:            "{{ k8s_lab_pivot_enabled | default(false) }}"
       k8s_lab_unprivileged_nodes:       "{{ k8s_lab_unprivileged_nodes | default(true) }}"
       # --- Cluster identity ---
       k8s_lab_management_cluster_name:  "{{ k8s_lab_management_cluster_name | default('mgmt-1') }}"
@@ -68,15 +67,15 @@
       k8s_lab_workload_worker_count:         "{{ k8s_lab_workload_worker_count | default(2) | int }}"
       # --- CAPN pinning ---
       k8s_lab_capn_provider_version:   "{{ k8s_lab_capn_provider_version | default('v0.8.5') }}"
-      # --- Bootstrap endpoint handoff (derived, not a §8 global) ---
+      # --- Mgmt endpoint handoff (derived, not a §8 global) ---
       # The kubeconfig file itself is the provider input for the
       # Phase 5 `kubernetes` / `helm` providers; the URL is included
       # so fixtures can also wire the raw endpoint if they need it.
-      k8s_lab_bootstrap_kubeconfig_path: >-
+      k8s_lab_mgmt_kubeconfig_path: >-
         {{ export_artifacts_root }}/{{
-          _export_artifacts_required_bootstrap_kubeconfig_filename
+          _export_artifacts_required_mgmt_kubeconfig_filename
         }}
-      k8s_lab_bootstrap_api_server_url: "{{ _export_artifacts_api_server_url }}"
+      k8s_lab_mgmt_api_server_url: "{{ _export_artifacts_api_server_url }}"
 
 - name: "export-artifacts | tfvars | merge consumer extras under baseline"
   # Dict-merge order: extras first, baseline on top. Baseline wins

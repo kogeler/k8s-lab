@@ -11,7 +11,7 @@ type: application
 # Local wrapper version. Bump on every values/template change so the
 # chart-level traceability stays meaningful — same policy as the
 # capi-cluster-class chart (PLAN §16.2 name-versioning contract).
-version: 0.2.0
+version: 0.2.1
 
 # appVersion tracks the upstream Calico release pinned via the
 # tigera-operator dependency below.

@@ -20,8 +20,12 @@ calico:
   # Dual-stack pod CIDRs. Indices are positional: [0] = IPv4, [1] = IPv6.
   # Defaults track §8 k8s_lab_workload_pod_cidr_v4 / _v6 — same values
   # the workload Cluster CR consumes via charts/capi-workload-cluster.
-  # IPv4 uses NAT-outgoing (private RFC1918 → external); IPv6 routes
-  # natively via the LXD bridge — natOutgoing stays disabled there.
+  # Both pools have natOutgoing enabled in templates/installation.yaml:
+  # IPv4 because Pod CIDR is private RFC1918 (no upstream return route);
+  # IPv6 because Pod CIDR is ULA fd42:77:2::/56 and the capi-int LXD
+  # bridge (fd42:77:1::/64) has no route back — without SNAT, Pod→
+  # capi-int IPv6 (e.g. post-pivot CAPI cluster-cache reaching the
+  # workload haproxy LB) deadlocks on missing return path.
   pods:
     cidrBlocks:
       - "10.244.0.0/16"

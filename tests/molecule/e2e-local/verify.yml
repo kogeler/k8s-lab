@@ -1,27 +1,48 @@
 ---
-- name: "Verify | e2e-local | workload cluster Helm hook"
+# e2e-local verify — final acceptance after the canonical bootstrap →
+# pivot → workload flow (PLAN §10.2 / §16 / §18).
+#
+# At this point converge has finished:
+#   * `.artifacts/mgmt.kubeconfig`  → self-hosted mgmt-1 kube-apiserver
+#   * `.artifacts/clusters/{mgmt-1,lab-default}.kubeconfig` → debug copies
+#   * mgmt-1 helm tests (Gate A/B) already passed inside converge
+#     before pivot — we don't repeat them here
+#
+# This play asserts the workload cluster is healthy end-to-end:
+#   1) helm test capi-workload-cluster (chart-side cluster-ready hook)
+#   2) helm test cni-calico            (Gate B on workload)
+#   3) helm test metallb-config        (Gate A in-cluster on workload)
+#   4) external HTTP GET to MetalLB VIP from the VM (Gate A out-of-cluster
+#      proof through `ext6-ra-peer`)
+#   5) workload Nodes Ready=True via the runner-reachable kubeconfig
+#   6) CAPI snapshot via the now-self-hosted mgmt-1 kubeconfig
+
+- name: "Verify | e2e-local | workload helm tests + Gate A external + Nodes Ready"
   hosts: all
   gather_facts: false
   become: false
   vars:
     _repo_root: "{{ lookup('env', 'MOLECULE_PROJECT_DIRECTORY') | dirname | dirname }}"
     _artifacts_root: "{{ _repo_root }}/.artifacts"
-    _bootstrap_kubeconfig: "{{ _artifacts_root }}/bootstrap.kubeconfig"
-    _workload_namespace: "capi-clusters"
-    _workload_cluster_name: "{{ k8s_lab_workload_cluster_name }}"
-    # Runner-reachable kubeconfig minted by converge.yml after
-    # capi-workload-cluster's post-install hook attaches the LXD
-    # `proxy` device on the haproxy LB. Every helm test below talks
-    # to the workload API through this rewritten endpoint.
-    _workload_kubeconfig: "{{ _artifacts_root }}/clusters/{{ _workload_cluster_name }}.kubeconfig"
-    _kubernetes_version: "{{ k8s_lab_kubernetes_version }}"
+    _clusters_dir: "{{ _artifacts_root }}/clusters"
+
+    # mgmt.kubeconfig now points at self-hosted mgmt-1 (overwritten in
+    # converge Phase C by the second export_artifacts include with
+    # run_meta_chain=false).
+    _mgmt_kubeconfig: "{{ _artifacts_root }}/mgmt.kubeconfig"
+
+    _capi_namespace: "capi-clusters"
     _metallb_namespace: "metallb-system"
-    # MetalLB chart-side helm test deploys a demo Deployment +
-    # LoadBalancer Service named after `tests.demoName` in values.yaml;
-    # we read that Service's allocated VIP and drive an external curl
-    # against it from the VM through `ext6-ra-peer` to close Gate A.
+    _tigera_namespace: "tigera-operator"
+
+    _workload_cluster_name: "{{ k8s_lab_workload_cluster_name | default('lab-default') }}"
+    _workload_kubeconfig: "{{ _clusters_dir }}/{{ _workload_cluster_name }}.kubeconfig"
+
+    # MetalLB chart-side test deploys this Service and leaves it running
+    # for verify-side curl (hook-delete-policy: before-hook-creation).
     _metallb_demo_service: "k8s-lab-metallb-demo"
     _metallb_demo_port: 80
+
     _capi_kinds:
       - { api_version: "cluster.x-k8s.io/v1beta2", kind: "Cluster" }
       - { api_version: "controlplane.cluster.x-k8s.io/v1beta2", kind: "KubeadmControlPlane" }
@@ -30,39 +51,35 @@
       - { api_version: "infrastructure.cluster.x-k8s.io/v1alpha2", kind: "LXCCluster" }
       - { api_version: "infrastructure.cluster.x-k8s.io/v1alpha2", kind: "LXCMachine" }
   tasks:
-    # `helm test` has no equivalent in kubernetes.core; this is the
-    # only shell fallback in this play. Each chart's own
+    # ---- workload chart helm tests (Gate A in-cluster + Gate B + cluster-ready)
+    # `helm test` has no equivalent in kubernetes.core; this is the only
+    # shell fallback. Each chart's own
     # `before-hook-creation,hook-succeeded` policy makes re-runs
-    # idempotent (prior test pod is deleted on the next invocation),
-    # so we don't add a synthetic pre-check; we just don't mask the
-    # `changed: true` the run rightly emits. All `helm test` calls
-    # run on the runner — the workload API is runner-reachable
-    # through the rewritten kubeconfig.
-
-    - name: "Verify | e2e-local | run workload chart helm test"
+    # idempotent (prior test pod is deleted on the next invocation).
+    - name: "Verify | e2e-local | workload | helm test capi-workload-cluster"
       ansible.builtin.command:
         argv:
           - helm
           - test
           - "{{ _workload_cluster_name }}"
           - --namespace
-          - "{{ _workload_namespace }}"
+          - "{{ _capi_namespace }}"
           - --kubeconfig
-          - "{{ _bootstrap_kubeconfig }}"
+          - "{{ _mgmt_kubeconfig }}"
           - --logs
           - --timeout
           - 35m
       delegate_to: localhost
       register: _helm_test
 
-    - name: "Verify | e2e-local | run cni-calico helm test"
+    - name: "Verify | e2e-local | workload | helm test cni-calico (Gate B)"
       ansible.builtin.command:
         argv:
           - helm
           - test
           - cni-calico
           - --namespace
-          - tigera-operator
+          - "{{ _tigera_namespace }}"
           - --kubeconfig
           - "{{ _workload_kubeconfig }}"
           - --logs
@@ -71,13 +88,7 @@
       delegate_to: localhost
       register: _cni_helm_test
 
-    # ---- MetalLB chart-side acceptance ------------------------------
-    # In-cluster proof: controller Available, speaker DS rolled out,
-    # demo LoadBalancer Service got a VIP from the v6 pool, backend
-    # serves on it from inside the cluster (driver Pod's kubectl exec
-    # probe). The verify-side curl below closes Gate A by hitting the
-    # same VIP from outside the cluster (VM `ext6-ra-peer`).
-    - name: "Verify | e2e-local | run metallb-config helm test"
+    - name: "Verify | e2e-local | workload | helm test metallb-config (Gate A in-cluster)"
       ansible.builtin.command:
         argv:
           - helm
@@ -93,15 +104,12 @@
       delegate_to: localhost
       register: _metallb_helm_test
 
-    # ---- Gate A external-segment closure ----------------------------
-    # The chart-side hook left the demo Deployment + Service running
-    # (`hook-delete-policy: before-hook-creation` only). Read the VIP
-    # from the workload cluster (runner-side via rewritten kubeconfig)
-    # and drive an HTTP GET against it from the VM. The curl runs on
-    # the VM (no `delegate_to: localhost`) so the packet egresses
-    # through `ext6-ra-peer` (2001:db8:42:100::1) → veth → `br-ext6`
-    # → eth1 of the speaker leader → kube-proxy → backend Pod.
-    # Round-trip 200 + body "ok\n" == Gate A green.
+    # ---- Gate A external-segment closure ------------------------------------
+    # The chart-side hook left the demo Deployment + Service running.
+    # Read the VIP from the workload cluster (runner-side) and drive an
+    # HTTP GET from the VM (no `delegate_to: localhost`) so the packet
+    # egresses through `ext6-ra-peer` (2001:db8:42:100::1) → veth →
+    # `br-ext6` → eth1 of the speaker leader → kube-proxy → backend Pod.
     - name: "Verify | e2e-local | read MetalLB demo Service VIP"
       kubernetes.core.k8s_info:
         kubeconfig: "{{ _workload_kubeconfig }}"
@@ -128,10 +136,6 @@
       ansible.builtin.set_fact:
         _metallb_demo_vip: "{{ _metallb_demo_svc.resources[0].status.loadBalancer.ingress[0].ip }}"
 
-    # IPv6 literal HTTP URL — RFC 3986 brackets. ansible.builtin.uri
-    # honours [..]. busybox-side wget on the VM is also available as a
-    # fallback if uri's urllib3 stack ever balks at IPv6, but uri stays
-    # native and produces structured output.
     - name: "Verify | e2e-local | external HTTP GET to MetalLB VIP from VM"
       ansible.builtin.uri:
         url: "http://[{{ _metallb_demo_vip }}]:{{ _metallb_demo_port }}/"
@@ -153,29 +157,8 @@
           succeeded but returned unexpected body:
           {{ _metallb_external_curl.content | default('<none>') }}
 
-    - name: "Verify | e2e-local | snapshot bootstrap-side CAPI objects"
-      kubernetes.core.k8s_info:
-        kubeconfig: "{{ _bootstrap_kubeconfig }}"
-        api_version: "{{ item.api_version }}"
-        kind: "{{ item.kind }}"
-        namespace: "{{ _workload_namespace }}"
-      loop: "{{ _capi_kinds }}"
-      loop_control:
-        label: "{{ item.kind }}"
-      register: _capi_snapshot
-      delegate_to: localhost
-      vars:
-        ansible_python_interpreter: "{{ ansible_playbook_python }}"
-
-    # ---- Runner-reachable nodes-ready acceptance --------------------
-    # converge.yml already wrote the rewritten kubeconfig to
-    # `.artifacts/clusters/<cluster>.kubeconfig`. Re-query workload
-    # Nodes through it and assert all are Ready=True. This proves the
-    # full path runner → libvirt → VM:<api-proxy-port> → LXD proxy
-    # device → haproxy LB → CP backend → kube-apiserver works end-to-
-    # end. CNI is in by now (helm test cni-calico above), so Ready=True
-    # is the right bar.
-    - name: "Verify | e2e-local | runner-side workload Nodes through rewritten kubeconfig"
+    # ---- workload Nodes Ready via runner-reachable kubeconfig ---------------
+    - name: "Verify | e2e-local | workload | runner-side Nodes via rewritten kubeconfig"
       kubernetes.core.k8s_info:
         kubeconfig: "{{ _workload_kubeconfig }}"
         api_version: v1
@@ -191,7 +174,7 @@
       vars:
         ansible_python_interpreter: "{{ ansible_playbook_python }}"
 
-    - name: "Verify | e2e-local | assert all workload Nodes Ready=True (runner-side)"
+    - name: "Verify | e2e-local | workload | assert all Nodes Ready=True"
       ansible.builtin.assert:
         that:
           - (_wl_nodes_runner.resources | length) ==
@@ -211,6 +194,25 @@
              | map(attribute='status.conditions')
              | map('selectattr', 'type', 'eq', 'Ready')
              | map('first') | list }}
+
+    # ---- self-hosted mgmt-1 CAPI snapshot ----------------------------------
+    # mgmt.kubeconfig points at mgmt-1 post-pivot. Snapshot CAPI CRs to
+    # confirm pivot landed cleanly + workload Cluster CR is reconciled
+    # against mgmt-1's CAPI controllers (not bootstrap's — bootstrap is
+    # gone).
+    - name: "Verify | e2e-local | mgmt-1 | snapshot CAPI objects"
+      kubernetes.core.k8s_info:
+        kubeconfig: "{{ _mgmt_kubeconfig }}"
+        api_version: "{{ item.api_version }}"
+        kind: "{{ item.kind }}"
+        namespace: "{{ _capi_namespace }}"
+      loop: "{{ _capi_kinds }}"
+      loop_control:
+        label: "{{ item.kind }}"
+      register: _capi_snapshot
+      delegate_to: localhost
+      vars:
+        ansible_python_interpreter: "{{ ansible_playbook_python }}"
 
     - name: "Verify | e2e-local | print compact state"
       ansible.builtin.debug:

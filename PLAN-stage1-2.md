@@ -11,11 +11,11 @@
 PLAN-stage1-common.md ............ §1..§12  (project contract, architecture, test harness, risk catalog)
 PLAN-stage1-1.md ................. §13..§14 (completed roles + phases)
 PLAN-stage1-2.md ................. §15      (Phases 3.5 + 4 bootstrap management cluster)  <-- этот файл
-PLAN-stage1-3.md ................. §16      (Phases 5 + 5.05 CAPI topology via Helm)
-PLAN-stage1-4.md ................. §17      (Phases 5.1 + 5.2 + 5.3 Helm add-ons + in-cluster tests)
-PLAN-stage1-5.md ................. §18      (Phases 6 + 7 pivot + workload clusters)
+PLAN-stage1-3.md ................. §16      (workload_cluster TF module: CAPI topology + add-ons + acceptance)
+PLAN-stage1-4.md ................. §17      (Helm test contracts — Gate A + Gate B chart-side specs)
+PLAN-stage1-5.md ................. §18      (pivot mgmt-1 → self-hosted)
 PLAN-stage1-6.md ................. §19      (Phase 8 destroy)
-PLAN-stage1-7.md ................. §20..§22 (Stage 1 meta: out-of-scope, self-review, recommendation)
+PLAN-stage1-7.md ................. §20..§22 (Stage 1 closure + self-review + recommendation)
 ```
 
 ---
@@ -37,7 +37,6 @@ notes и checksum-style breakdown живут в §13.8.**
 * `kubectl`
 * `clusterctl`
 * `k3s`
-* optional `jq`, `yq` (отложено — потребители не запросили)
 
 Требования:
 
@@ -73,8 +72,6 @@ raw.lxc apparmor=unconfined, restart-on-profile-change) — см.
     `bootstrap_k3s_tls_san: []`
   * `--cluster-cidr` / `--service-cidr` опционально (Step 4 не
     требовал — k3s defaults достаточно)
-  * `--disable=local-storage` отложено (см. §15.6 export_artifacts —
-    локальный storage может потребоваться pivot'у)
 
 K3s docs и FAQ explicitly support disabling packaged components like `traefik` and `servicelb`, and `server` docs support `--tls-san`. ([K3s][18])
 
@@ -111,8 +108,9 @@ Phase-level summary:
   `["capi-clusters"]`). 5 substrate-required ключей per CAPN
   identity-secret format ([capn.linuxcontainers.org][19]):
   `server`, `server-crt`, `client-crt`, `client-key`, `project`.
-  Conditional label `clusterctl.cluster.x-k8s.io/move: "true"` под
-  `k8s_lab_pivot_enabled=true`.
+  Label `clusterctl.cluster.x-k8s.io/move: "true"` присутствует по
+  дефолту (`bootstrap_capn_secret_pivot_enabled=true`, canonical
+  flow §3 — pivot mandatory).
 * Architectural truth (verified Step 11 chart-level acceptance):
   CAPN v1alpha2 `LXCCluster.spec.secretRef` ищет Secret в namespace
   LXCCluster CR'а; cross-ns lookup не поддерживается. Поэтому Secret
@@ -137,7 +135,8 @@ workflow и chart consumers):
 
 * `bootstrap_capn_secret_name ← k8s_lab_infrastructure_secret_name`;
 * `bootstrap_capn_secret_namespaces ← k8s_lab_capn_identity_namespaces`;
-* `bootstrap_capn_secret_pivot_enabled ← k8s_lab_pivot_enabled`;
+* `bootstrap_capn_secret_pivot_enabled` defaults `true` (canonical
+  flow §3, pivot mandatory);
 * `bootstrap_capn_secret_lxd_project ← k8s_lab_project_name`;
 * `bootstrap_capn_secret_internal_network_name ←
   k8s_lab_internal_network_name`.
@@ -198,32 +197,30 @@ execution model (`delegate_to: localhost` с `become: false + run_once:
 true` для runner-side файлов), substrate-required filename
 conventions + file mode контракт, идемпотентный slurp+copy паттерн,
 optional server URL rewrite (runner-reach handling через публичный
-`export_artifacts_bootstrap_api_server_url`), Phase 5 smoke-test через
+`export_artifacts_mgmt_api_server_url`), Phase 5 smoke-test через
 `kubernetes.core.k8s_info` из verify scenario'а — живут в §13.12.
 End-to-end прогон зелёный (2026-04-23).**
 
-Stage 1 MVP-скоуп (Step 8):
+Stage 1 scope:
 
-* `.artifacts/bootstrap.kubeconfig` — shipped с host'а (материализован
-  `bootstrap_clusterctl` §15.3), mode 0600 на runner'е;
-* `.artifacts/bootstrap.auto.tfvars.json` — fact-bundle для Phase 5
+* `.artifacts/mgmt.kubeconfig` — единственный admin kubeconfig
+  активного management-кластера. На первом include'е роли (через
+  meta-chain) указывает на bootstrap k3s — shipped с host'а из
+  internal staging роли `bootstrap_clusterctl` §15.3, mode 0600 на
+  runner'е. На втором include'е роли с
+  `export_artifacts_run_meta_chain: false` + source-override на
+  pivot host-side staging — тот же runner-side файл перезаписывается
+  in place mgmt-1 creds'ами (canonical flow §3, pivot mandatory);
+* `.artifacts/mgmt.auto.tfvars.json` — fact-bundle для Phase 5
   Terraform fixture'ов (TF auto-load'ит `*.auto.tfvars.json` glob'ом);
   ключи зеркалят §8 `k8s_lab_*` globals 1:1 + производные
-  `k8s_lab_bootstrap_kubeconfig_path` / `_api_server_url`;
-* `.artifacts/clusters/` — пустой subdir, зарезервирован для Phase
-  5.05 per-cluster kubeconfig'ов.
-
-Отложено до Phase 5+:
-
-* `.artifacts/mgmt.kubeconfig` — зависит от target self-hosted
-  management cluster'а (Phase 6+ / §18); роль расширяется новой
-  `tasks/mgmt_kubeconfig.yml` без breaking change для Phase 4 caller'ов.
-* `.artifacts/clusters/<cluster>.kubeconfig` — debug-копия workload
-  kubeconfig'а написанная Molecule e2e-local verify.yml для
-  operator inspection. TF module §16.4 в этот subdir не пишет (см.
-  §16.4 architectural fence); module держит rewritten kubeconfig в
-  state и эмитит через `terraform output -raw kubeconfig`. Subdir
-  предсоздаётся `export_artifacts` для Molecule debug needs.
+  `k8s_lab_mgmt_kubeconfig_path` / `k8s_lab_mgmt_api_server_url`;
+* `.artifacts/clusters/` — пустой subdir, зарезервирован для
+  per-workload debug-копий написанных Molecule e2e-local verify.yml
+  (raw Secret content, internal endpoint — не rewritten). TF module
+  §16.4 в этот subdir не пишет (см. §16.4 architectural fence);
+  module держит rewritten kubeconfig в state и эмитит через
+  `terraform output -raw kubeconfig`.
 
 ## 15.7. Phase 3.5 — binary_fetch (отложен из Phase 1)
 
@@ -235,10 +232,7 @@ Stage 1 MVP-скоуп (Step 8):
 Сделано:
 
 * скачаны pinned версии `kubectl`, `clusterctl`, `k3s` в
-  `/opt/capi-lab/bin` с checksum verification;
-* `jq` / `yq` отложены — на Step 4 потребители не запросили; могут
-  быть добавлены позже без breaking-change ролей через
-  `binary_fetch_*_enabled` toggles или новый бинарь в каталоге.
+  `/opt/capi-lab/bin` с checksum verification.
 
 Acceptance: достигнуто (см. §14.5).
 
@@ -270,8 +264,8 @@ Acceptance (целая phase) — **закрыта** 2026-04-23:
 * bootstrap API reachable из runner'а             ✓ (Step 8 — LXD
   proxy device + shipped kubeconfig с runner-reachable URL +
   `tls-server-name` pin)
-* handoff bundle shipped на runner (`.artifacts/bootstrap.kubeconfig`
-  + `.artifacts/bootstrap.auto.tfvars.json`) ✓ (Step 8 — §13.12)
+* handoff bundle shipped на runner (`.artifacts/mgmt.kubeconfig`
+  + `.artifacts/mgmt.auto.tfvars.json`) ✓ (Step 8 — §13.12)
 
 Acceptance Step 4 + Step 6 + Step 8 частей (доказано verify
 scenario'ями, end-to-end smoke через `kubernetes.core.k8s_info` с

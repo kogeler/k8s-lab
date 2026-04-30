@@ -1,14 +1,12 @@
 ---
 # Dispatcher-only (plan §2.6.2). Each include file covers one concern.
 #
-# Hard gate: every mutating step is conditioned on BOTH the global
-# `k8s_lab_pivot_enabled` mode flag (§3.1 — default `false`, MVP path)
-# AND the role-level `pivot_clusterctl_move_enabled` toggle. Preflight
-# is the only step that ALSO runs in MVP mode — it surfaces
-# misconfiguration early without mutating anything (assert-only +
-# read-only stat probes), which is consistent with the rest of this
-# repo's role contract (e.g. bootstrap_clusterctl's preflight always
-# runs even when its `_enabled` flag is `false`).
+# Pivot is a mandatory step in the canonical k8s-lab flow (plan §3 +
+# §10 — bootstrap k3s exists only as scaffolding to host the mgmt-1
+# Cluster CR until clusterctl move relocates it). The role's only
+# coarse-grained toggle is `pivot_clusterctl_move_enabled` (default
+# true) for symmetry with other roles; preflight always runs to
+# surface misconfiguration early.
 
 - name: "pivot-clusterctl-move | preflight"
   ansible.builtin.include_tasks:
@@ -23,7 +21,6 @@
     apply:
       tags: [pivot_clusterctl_move, pivot-clusterctl-move, pivot_clusterctl_move_target_kubeconfig]
   when:
-    - k8s_lab_pivot_enabled | bool
     - pivot_clusterctl_move_enabled
     - pivot_clusterctl_move_flow_control_target_kubeconfig
   tags: [pivot_clusterctl_move, pivot-clusterctl-move, pivot_clusterctl_move_target_kubeconfig]
@@ -34,7 +31,6 @@
     apply:
       tags: [pivot_clusterctl_move, pivot-clusterctl-move, pivot_clusterctl_move_config]
   when:
-    - k8s_lab_pivot_enabled | bool
     - pivot_clusterctl_move_enabled
     - pivot_clusterctl_move_flow_control_config
   tags: [pivot_clusterctl_move, pivot-clusterctl-move, pivot_clusterctl_move_config]
@@ -45,7 +41,6 @@
     apply:
       tags: [pivot_clusterctl_move, pivot-clusterctl-move, pivot_clusterctl_move_init]
   when:
-    - k8s_lab_pivot_enabled | bool
     - pivot_clusterctl_move_enabled
     - pivot_clusterctl_move_flow_control_init
   tags: [pivot_clusterctl_move, pivot-clusterctl-move, pivot_clusterctl_move_init]
@@ -56,7 +51,6 @@
     apply:
       tags: [pivot_clusterctl_move, pivot-clusterctl-move, pivot_clusterctl_move_move]
   when:
-    - k8s_lab_pivot_enabled | bool
     - pivot_clusterctl_move_enabled
     - pivot_clusterctl_move_flow_control_move
   tags: [pivot_clusterctl_move, pivot-clusterctl-move, pivot_clusterctl_move_move]
@@ -66,7 +60,5 @@
     file: healthchecks.yml
     apply:
       tags: [pivot_clusterctl_move, pivot-clusterctl-move, pivot_clusterctl_move_healthchecks]
-  when:
-    - k8s_lab_pivot_enabled | bool
-    - pivot_clusterctl_move_enabled
+  when: pivot_clusterctl_move_enabled
   tags: [pivot_clusterctl_move, pivot-clusterctl-move, pivot_clusterctl_move_healthchecks]

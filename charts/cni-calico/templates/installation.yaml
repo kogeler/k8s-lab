@@ -66,9 +66,21 @@ spec:
       - name: default-ipv6-ippool
         cidr: {{ $v6 | quote }}
         encapsulation: VXLAN
-        # IPv6 pod traffic is routed natively via the LXD bridge —
-        # leaving NAT off keeps egress traceable per-pod and avoids
-        # double-translating already-globally-unique addresses.
-        natOutgoing: Disabled
+        # natOutgoing: Enabled (mirrors the IPv4 pool above). Pod IPv6
+        # CIDR is ULA (fd42:77:2::/56 by default — see PLAN §8) and
+        # the capi-int LXD bridge (fd42:77:1::/64) has no route back
+        # to it. Without SNAT, Pod→capi-int IPv6 packets reach the
+        # destination but the reply has nowhere to go. Concretely
+        # blocks post-pivot CAPI cluster-cache: CAPI controllers run
+        # in Pods on the self-hosted mgmt cluster and connect to
+        # workload kube-apiserver via the haproxy LB instance's
+        # capi-int IPv6 (Cluster CR `controlPlaneEndpoint.host`). With
+        # natOutgoing off, those connections time out and workers stay
+        # Pending forever (CABPK can't issue join tokens). SNAT'ing
+        # Pod source IPv6 to Node IPv6 on egress fixes the return
+        # path; it's already standard for IPv4 here, and consistent
+        # with how other Kubernetes-on-LXD setups handle Pod→external
+        # IPv6 traffic.
+        natOutgoing: Enabled
         nodeSelector: all()
   controlPlaneReplicas: 2

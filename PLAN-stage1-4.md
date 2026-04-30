@@ -5,17 +5,17 @@ invocation'а helm test'ов из единого `workload_cluster` TF module'а
 ссылки вида `§<номер>` валидны без указания имени файла — см.
 `PLAN-stage1-common.md` header для полного file lineup. Атомарный
 scope этого шарда — **только chart contracts + acceptance гейты**;
-TF module structure + Phase 5 orchestration живут в §16.
+TF module structure + workload-cluster orchestration живут в §16.
 
 ```
 PLAN-stage1-common.md ............ §1..§12  (project contract, architecture, test harness, risk catalog)
 PLAN-stage1-1.md ................. §13..§14 (completed roles + phases)
 PLAN-stage1-2.md ................. §15      (Phases 3.5 + 4 bootstrap management cluster)
-PLAN-stage1-3.md ................. §16      (Phase 5 — workload_cluster TF module)
+PLAN-stage1-3.md ................. §16      (workload_cluster TF module)
 PLAN-stage1-4.md ................. §17      (Helm test acceptance contracts — Gate A + Gate B chart-side specs)  <-- этот файл
-PLAN-stage1-5.md ................. §18      (Phase 6 + 7 — optional pivot)
+PLAN-stage1-5.md ................. §18      (pivot mgmt-1 → self-hosted)
 PLAN-stage1-6.md ................. §19      (Phase 8 destroy)
-PLAN-stage1-7.md ................. §20..§22 (Stage 1 meta: out-of-scope, self-review, recommendation)
+PLAN-stage1-7.md ................. §20..§22 (Stage 1 closure + self-review + recommendation)
 ```
 
 ---
@@ -107,7 +107,9 @@ provider 3.x не имеет `helm_test` resource); idempotency обеспече
 ## 17.2. Gate B — CNI viability acceptance
 
 **Статус: shipped в Step 13 (2026-04-26, `charts/cni-calico/`
-version 0.2.0).** Local wrapper над upstream
+version 0.2.0); IPv6 `natOutgoing` enable bumped 0.2.0 → 0.2.1
+(см. substrate hardcoded list ниже + §3.3 + §20).** Local wrapper
+над upstream
 `projectcalico/tigera-operator` v3.31.5 через `Chart.yaml`
 `dependencies:`. Substrate-required hardcoded'ы в Installation CR
 (`templates/installation.yaml`):
@@ -124,6 +126,19 @@ version 0.2.0).** Local wrapper над upstream
   BGP infra нет, VXLAN единственный dual-stack-capable mode;
 * `calicoNetwork.ipPools[*].nodeSelector: all()` — single-tier
   лаба, per-pool node tagging не нужен;
+* `calicoNetwork.ipPools[*].natOutgoing: Enabled` (на обоих pools,
+  IPv4 и IPv6) — Pod CIDRs обоих family это RFC1918 / ULA, без
+  upstream routing к ним. Без SNAT Pod→substrate (capi-int
+  `fd42:77:1::/64`, host LXD daemon `:8443`, haproxy LB instances
+  по `controlPlaneEndpoint.host`) деадлочится на return path
+  (substrate не знает Pod CIDR `fd42:77:2::/56`). Concretely
+  блокирует post-pivot CAPI cluster-cache: CAPI controllers
+  крутятся в Pods на self-hosted mgmt и стучатся к workload
+  apiserver через LB IPv6 с Pod source IP — без natOutgoing
+  reply'и LB'а пропадают. Pre-pivot bug не виден потому что
+  bootstrap k3s = host-network mode, CAPI использовал прямо
+  Node IPv6 как source (см. §3.3 для архитектурной симметрии
+  bootstrap↔self-hosted);
 * `controlPlaneReplicas: 2` — HA pair §2.12 contract для
   calico-kube-controllers + calico-apiserver (operator gives them
   2 replicas + built-in podAntiAffinity).

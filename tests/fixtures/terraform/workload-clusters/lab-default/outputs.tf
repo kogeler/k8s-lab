@@ -25,7 +25,7 @@ output "api_proxy_port" {
 }
 
 output "lxd_host_address" {
-  description = "Resolved LXD host address (derived from k8s_lab_bootstrap_api_server_url)."
+  description = "Resolved LXD host address (derived from k8s_lab_mgmt_api_server_url)."
   value       = local.lxd_host_address
 }
 

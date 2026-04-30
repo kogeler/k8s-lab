@@ -37,7 +37,7 @@
               (item.resources[0].data | default({})).keys() | list | sort
             )
         ) | length == 0
-      # Pivot label discipline: present iff k8s_lab_pivot_enabled.
+      # Pivot label discipline: present iff bootstrap_capn_secret_pivot_enabled.
       - >-
         (
           (bootstrap_capn_secret_pivot_enabled | bool)
