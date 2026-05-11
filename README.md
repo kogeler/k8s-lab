@@ -1,4 +1,4 @@
-# k8s-lab — Cluster API + LXC/LXD Kubernetes laboratory on Debian 13
+# k8s-lab — Cluster API + LXC/LXD Kubernetes laboratory on Debian-family Linux
 
 [![License: MIT](https://img.shields.io/github/license/kogeler/k8s-lab)](LICENSE)
 [![Latest release](https://img.shields.io/github/v/release/kogeler/k8s-lab?display_name=tag&sort=semver)](https://github.com/kogeler/k8s-lab/releases)
@@ -6,21 +6,21 @@
 [![Kubernetes](https://img.shields.io/badge/kubernetes-v1.35-blue?logo=kubernetes&logoColor=white)](doc/03-stack.md)
 [![Cluster API](https://img.shields.io/badge/cluster--api-v1.12-326CE5)](doc/03-stack.md)
 [![CAPN](https://img.shields.io/badge/CAPN-v0.8-228B22)](doc/03-stack.md)
-[![Debian](https://img.shields.io/badge/Debian-13%20Trixie-A81D33?logo=debian&logoColor=white)](doc/05-prerequisites.md)
+[![Debian](https://img.shields.io/badge/Debian-family-A81D33?logo=debian&logoColor=white)](doc/05-prerequisites.md)
 
-> Reusable building blocks for a single-host Kubernetes laboratory on Debian 13.
-> LXC/LXD system containers are the Kubernetes nodes, the **Cluster API provider
-> for Incus/LXD (CAPN)** drives the cluster lifecycle, and every Kubernetes
-> object is delivered as a Helm chart through Terraform. A Molecule + Vagrant +
-> libvirt harness exercises the same code path on a developer laptop as on
-> production hardware.
+> Reusable building blocks for a single-host Kubernetes laboratory on
+> Debian-family Linux. LXC/LXD system containers are the Kubernetes nodes,
+> the **Cluster API provider for Incus/LXD (CAPN)** drives the cluster
+> lifecycle, and every Kubernetes object is delivered as a Helm chart through
+> Terraform. A Molecule + Vagrant + libvirt harness exercises the same code
+> path on a developer laptop as on production hardware.
 
 ---
 
 ## What is k8s-lab?
 
 `k8s-lab` is a code repository for building a Kubernetes laboratory on a
-**single bare-metal Debian 13 host** where the Kubernetes nodes are
+**single bare-metal Debian-family Linux host** where the Kubernetes nodes are
 unprivileged LXC/LXD system containers, not virtual machines. The cluster
 lifecycle is managed end-to-end by Cluster API: a transient single-node `k3s`
 bootstrap cluster runs `clusterctl init`, then **pivots** management
@@ -70,7 +70,7 @@ tool.
 
 ```mermaid
 flowchart LR
-    subgraph host["Debian 13 host"]
+    subgraph host["Debian-family Linux host"]
         direction TB
         snap["LXD snap (6/stable)"]
         bridge["br-ext6 Linux bridge<br/>(external IPv6 ingress)"]

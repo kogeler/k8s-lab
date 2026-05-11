@@ -3,10 +3,10 @@
 ## What is k8s-lab
 
 **k8s-lab** is a reusable code repository for building a Kubernetes
-laboratory on a single bare-metal Debian 13 host where the Kubernetes
-nodes are **LXC/LXD system containers**, not virtual machines, and the
-cluster lifecycle is managed end-to-end by the **Cluster API provider
-for Incus/LXD (CAPN)**.
+laboratory on a single bare-metal Debian-family Linux host where the
+Kubernetes nodes are **LXC/LXD system containers**, not virtual machines,
+and the cluster lifecycle is managed end-to-end by the **Cluster API
+provider for Incus/LXD (CAPN)**.
 
 It ships:
 
@@ -155,7 +155,7 @@ cycle, and must not regress Stage 1 invariants.
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
-│ Bare-metal host (Debian 13)                                         │
+│ Bare-metal host (Debian-family Linux)                               │
 │                                                                     │
 │   ┌──────────────┐    LXD substrate (snap, project=capi-lab)       │
 │   │ /opt/capi-lab│         │                                        │

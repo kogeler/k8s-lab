@@ -11,8 +11,8 @@ For the *why* behind each decision, see plan `§2`–`§6`.
 
 ## 1. The one-host model
 
-Every component of a k8s-lab deployment runs on a single Debian 13
-bare-metal host:
+Every component of a k8s-lab deployment runs on a single Debian-family
+Linux bare-metal host:
 
 - **The host itself** runs only LXD (installed via snap) and a Linux
   bridge for the external IPv6 segment. No Docker, no host-level
@@ -355,7 +355,7 @@ pivot is not magic.
 ### 7.1. After Phase 4 (substrate + bootstrap k3s + clusterctl init)
 
 ```
-host (Debian 13)
+host (Debian-family Linux)
 ├── /opt/capi-lab/bin/{kubectl,clusterctl,k3s}        # binaries
 ├── /var/snap/lxd/common/lxd/                          # LXD data dir
 └── LXD project "capi-lab"
@@ -374,7 +374,7 @@ The runner has `.artifacts/mgmt.kubeconfig` pointing at
 ### 7.2. After Phase 5 (mgmt-1 helm install + Gate A/B)
 
 ```
-host (Debian 13)
+host (Debian-family Linux)
 └── LXD project "capi-lab"
     ├── capi-bootstrap-0    (still alive)
     │   └── (same as above)
@@ -396,7 +396,7 @@ Helm releases on bootstrap k3s:
 ### 7.3. After Phase 7 (pivot + cleanup_bootstrap)
 
 ```
-host (Debian 13)
+host (Debian-family Linux)
 └── LXD project "capi-lab"
     ├── mgmt-1-CP-0         (now SELF-HOSTING the CAPI controllers)
     ├── mgmt-1-W-0
@@ -416,7 +416,7 @@ kube-apiserver.
 ### 7.4. After Phase 9 (workload helm install)
 
 ```
-host (Debian 13)
+host (Debian-family Linux)
 └── LXD project "capi-lab"
     ├── mgmt-1-CP-0          (self-hosted mgmt)
     ├── mgmt-1-W-{0,1}

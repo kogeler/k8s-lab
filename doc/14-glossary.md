@@ -430,8 +430,8 @@ of scope. KCP enforces odd replica counts under stacked etcd (1, 3,
 
 ### substrate
 
-Everything below the management cluster: the Debian 13 host, LXD via
-snap, the `br-ext6` Linux bridge, the `capi-int` LXD bridge, LXD
+Everything below the management cluster: the Debian-family Linux host,
+LXD via snap, the `br-ext6` Linux bridge, the `capi-int` LXD bridge, LXD
 storage pools and profiles, the `capi-lab` LXD project, and the
 bootstrap LXC instance up to and including `bootstrap_clusterctl`.
 Phases 0..3 of the canonical flow. Owned exclusively by Ansible roles.
@@ -459,7 +459,7 @@ See plan `§2.8`.
 ### vagrant-libvirt
 
 Vagrant provider plugin that uses libvirt/KVM as the VM backend. The
-local harness runs a single Debian 13 VM via vagrant-libvirt
+local harness runs a single VM via vagrant-libvirt
 (`tests/vagrant/debian13/`). Several environment quirks
 (IFNAMSIZ-truncated bridge names, `private_network type: dhcp` for
 IPv6-only NICs, disabled `synced_folder "/vagrant"`, …) are wired

@@ -3,9 +3,9 @@ message: "If you use this software, please cite it as below."
 title: "k8s-lab"
 abstract: >-
   Reusable building blocks for a single-host Kubernetes laboratory on
-  Debian 13: LXC/LXD nodes driven by Cluster API (CAPN), Ansible roles,
-  a Terraform module, and Helm charts, with a Molecule + Vagrant +
-  libvirt local test harness.
+  Debian-family Linux: LXC/LXD nodes driven by Cluster API (CAPN),
+  Ansible roles, a Terraform module, and Helm charts, with a Molecule +
+  Vagrant + libvirt local test harness.
 authors:
   - name: "kogeler"
 repository-code: "https://github.com/kogeler/k8s-lab"

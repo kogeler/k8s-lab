@@ -1,8 +1,8 @@
 # 06 — Quickstart (local lab)
 
 This chapter takes you from a fresh clone of the repository to a fully
-working two-cluster Kubernetes lab on a single Debian 13 Vagrant VM,
-without touching any real hardware. It is the recommended first
+working two-cluster Kubernetes lab on a single local Vagrant VM, without
+touching any real hardware. It is the recommended first
 hands-on after [`01-overview.md`](01-overview.md) and
 [`02-architecture.md`](02-architecture.md) (plan `§9.1`, `§10.2`).
 
@@ -17,7 +17,7 @@ build here uses the same code paths the consumer repo would call.
 
 After a successful run, the local lab will look like this:
 
-- **One Debian 13 Vagrant VM** running on libvirt/KVM (`k8slab_host`),
+- **One local Vagrant VM** running on libvirt/KVM (`k8slab_host`),
   attached to a single libvirt network `k8slab-mgmt-nat`.
 - **Inside the VM**, an LXD substrate hosting:
   - the transient bootstrap k3s LXC (`capi-bootstrap-0`) — destroyed

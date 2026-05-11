@@ -57,10 +57,11 @@ multiple workloads on one mgmt) needs more of all three.
 
 ### Operating system
 
-- **Debian 13 Trixie**, fixed by [`§2.1`](../plans/PLAN-stage1-common.md).
-  Other distros are out of scope: the role contract assumes
-  systemd-networkd, the `snap` package, and the Trixie-shipped
-  `python3-kubernetes 30.1.0-2`.
+- **Debian-family Linux.** Other Linux families are out of scope: the role
+  contract assumes apt, systemd-networkd, the `snap` package, the LXD
+  snap, and the Debian-family kernel feature defaults. The host
+  distribution is asserted by every role's preflight; see the role
+  source for the strict gate.
 - A clean install with the standard system utilities is enough —
   the roles install everything else (LXD via snap; `kubectl`,
   `clusterctl`, `k3s` binaries downloaded into
@@ -94,12 +95,12 @@ Notes (driven by [`§2.11`](../plans/PLAN-stage1-common.md) and the
 
 ### Kernel and namespaces
 
-The host kernel ships these features by default on Debian 13. They
-are listed here so you can sanity-check a non-default install:
+Recent Debian-family kernels ship these features by default. They are
+listed here so you can sanity-check a non-default install:
 
-- User namespaces enabled (Debian default).
-- `unprivileged_userns_clone=1` (Debian default in Trixie).
-- cgroup v2 (Debian Trixie default).
+- User namespaces enabled (Debian-family default).
+- `unprivileged_userns_clone=1` (Debian-family default on recent releases).
+- cgroup v2 (Debian-family default on recent releases).
 - AppArmor enabled and active (LXD's snap profile depends on it).
 - The kernel modules used by Calico — `overlay`, `br_netfilter`,
   `ip_tables`, `ip6_tables`, `xt_*`, `vxlan` — present. The
@@ -195,7 +196,7 @@ For the local lab additionally:
 - runner user in the `libvirt` group (else `virsh net-define`
   fails, see `tests/vagrant/debian13/Vagrantfile:53`);
 - `/dev/kvm` accessible to the runner user (KVM acceleration is
-  required — without it the Debian 13 guest will crawl).
+  required — without it the local Vagrant guest will crawl).
 
 On Debian / Ubuntu:
 
@@ -408,8 +409,8 @@ deliberately avoids. To reduce friction:
   kubeadm CA, CAPN identity Secret — is generated during the
   canonical flow.
 - **No `kind`, `minikube`, or Docker Desktop.** The local lab uses
-  Vagrant + libvirt + a Debian 13 Trixie VM that mirrors the
-  production host. There is no shortcut driver.
+  Vagrant + libvirt + a local VM that mirrors the production host.
+  There is no shortcut driver.
 
 ---
 
@@ -417,7 +418,7 @@ deliberately avoids. To reduce friction:
 
 The local Vagrant + libvirt lab does **not** need bare metal. The
 runner can be the same machine as the local lab — Vagrant brings
-up a Debian 13 Trixie VM that plays the role of the host
+up a local VM that plays the role of the host
 ([`§9.1`](../plans/PLAN-stage1-common.md), [`§9.2`](../plans/PLAN-stage1-common.md)).
 
 What the local path needs from the runner instead of bare metal:

@@ -2,7 +2,8 @@
 
 This is the practical chapter. It walks an operator from a blank
 private "consumer" repository to a fully running k8s-lab on a real
-Debian 13 host: substrate, bootstrap, pivot, and a workload cluster.
+Debian-family Linux host: substrate, bootstrap, pivot, and a workload
+cluster.
 
 The flow described here is the production form of what
 `tests/molecule/e2e-local/converge.yml` exercises locally — the same
@@ -12,7 +13,7 @@ roles, the same charts, the same Terraform module. Only the *inputs*
 > **Before you start**: you should have read
 > [`01-overview.md`](01-overview.md) and
 > [`02-architecture.md`](02-architecture.md), and you should have a
-> Debian 13 host that satisfies
+> Debian-family Linux host that satisfies
 > [`05-prerequisites.md`](05-prerequisites.md).
 
 ---

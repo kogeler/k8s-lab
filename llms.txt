@@ -1,11 +1,11 @@
 # k8s-lab
 
-> Reusable building blocks for a single-host Kubernetes laboratory on Debian 13.
-> LXC/LXD system containers are the Kubernetes nodes; the Cluster API provider
-> for Incus/LXD (CAPN) drives the cluster lifecycle; every Kubernetes object is
-> delivered as a Helm chart through Terraform. A Molecule + Vagrant + libvirt
-> harness exercises the same code path on a developer laptop as on production
-> hardware.
+> Reusable building blocks for a single-host Kubernetes laboratory on
+> Debian-family Linux. LXC/LXD system containers are the Kubernetes nodes;
+> the Cluster API provider for Incus/LXD (CAPN) drives the cluster lifecycle;
+> every Kubernetes object is delivered as a Helm chart through Terraform.
+> A Molecule + Vagrant + libvirt harness exercises the same code path on a
+> developer laptop as on production hardware.
 
 The repository ships only reusable building blocks (Ansible roles, a Terraform
 module, Helm charts, a test harness). Site-specific composition lives in

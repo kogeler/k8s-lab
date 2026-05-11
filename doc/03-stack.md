@@ -41,8 +41,10 @@ re-tell that flow — it only enumerates the pieces.
 
 ## Host platform
 
-- **OS:** Debian 13 Trixie. Both the production target host and the
-  local Vagrant VM run Debian 13 (`§2.1`).
+- **OS target:** Debian-family Linux. The pinned reference is Debian 13
+  Trixie — both the production target host (per plan `§2.1`) and the
+  local Vagrant VM run this build. Role preflight checks enforce the
+  host distribution; see role source for the exact assertion.
 - **Package source:** only the standard Debian APT repositories.
   Custom APT repositories on the host are forbidden (`§2.2`); every
   non-standard binary (`kubectl`, `clusterctl`, `k3s`) is fetched into
