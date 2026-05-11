@@ -8,9 +8,9 @@ This repo intentionally ships **only reusable building blocks**:
 
 * Ansible roles (host bootstrap, LXD substrate, bootstrap management cluster,
   local harness, validation gates).
-* Terraform modules (Cluster API objects, machine templates, guest networking,
+* Terraform module (Cluster API objects, machine templates, guest networking,
   cluster add-ons via Helm).
-* Shared manifests / wrapper Helm charts.
+* Local wrapper Helm charts.
 * Molecule + Vagrant + libvirt local test harness.
 * `Makefile` and scripts for local end-to-end testing.
 
@@ -18,19 +18,38 @@ Concrete environment composition (inventories, secrets, environment-specific
 tfvars, site-specific root modules, `make deploy TARGET=…`) **does not belong
 here** — it lives in separate private consumer repos that import this code.
 
-For the full contract see `PLAN-stage1.md`. Implementation progress is tracked
-in `PLAN-stage1-progress.md`.
+## Documentation
+
+Start with [doc/README.md](doc/README.md) for the full user-facing
+documentation.
+
+Common entry points:
+
+* [Overview](doc/01-overview.md) — core idea, goals, non-goals.
+* [Architecture](doc/02-architecture.md) — bootstrap and pivot flow, dual-NIC
+  model, layer ownership, and validation gates.
+* [Quickstart local](doc/06-quickstart-local.md) — Vagrant + libvirt local
+  end-to-end workflow.
+* [Deployment guide](doc/07-deployment-guide.md) — real-host deployment through
+  a private consumer repository.
+* [Configuration reference](doc/08-configuration-reference.md) — project
+  globals, role inputs, Terraform inputs and outputs, and chart values.
+
+The translated plans live under [plans/](plans/). The root `PLAN-stage1-*.md`
+files are kept as the original plan set.
 
 ## Layout
 
 ```
-ansible/       # Roles — host/bootstrap/harness only
-clusterctl/    # Pinned clusterctl.yaml
-charts/        # Local wrapper Helm charts (e.g. MetalLB config CRs)
-terraform/     # Reusable modules — cluster objects / guest net / add-ons
-manifests/     # Shared inputs consumed by Terraform modules
-tests/         # Molecule scenarios + Vagrant harness + Terraform test fixtures
+ansible/       # Reusable roles for host, LXD substrate, bootstrap, and pivot
+charts/        # Local wrapper Helm charts
+clusterctl/    # Reserved; runtime clusterctl.yaml is rendered by roles
+doc/           # User-facing documentation
+plans/         # English translated plan files
 scripts/       # Local automation helpers
+terraform/     # Reusable workload_cluster module
+tests/         # Molecule scenarios + Vagrant harness + Terraform fixtures
+LICENSE        # MIT License
 .artifacts/    # Runtime-only: kubeconfigs, tfvars handoff, ephemeral trust
 ```
 
@@ -59,5 +78,11 @@ make clean-local          # tear down local harness state
 
 ## Status
 
-Implementation is staged — see `PLAN-stage1-progress.md` for what is done
-and what is next.
+Stage 1 is closed as v1.0. This repository ships reusable building blocks only;
+real-environment composition lives in consumer repositories.
+
+## License
+
+k8s-lab is licensed under the [MIT License](LICENSE). The license applies to
+this repository's code and documentation. Third-party tools, providers, charts,
+collections, and container images keep their own licenses.

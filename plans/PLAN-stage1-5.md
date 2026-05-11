@@ -1,8 +1,8 @@
-Этот файл владеет §18: pivot mgmt-1 → self-hosted as a mandatory step
-inside the canonical e2e-local flow (plan §3 + §10). Нумерация §N
-сквозная по всем plan-файлам; перекрёстные ссылки вида `§<номер>`
-валидны без указания имени файла — см. `PLAN-stage1-common.md`
-header для полного file lineup.
+This file owns §18: pivot mgmt-1 → self-hosted as a mandatory step
+inside the canonical e2e-local flow (plan §3 + §10). The §N numbering
+is continuous across all plan files; cross-references in the form
+`§<number>` are valid without naming the file — see
+`PLAN-stage1-common.md` header for the full file lineup.
 
 ```
 PLAN-stage1-common.md ............ §1..§12  (project contract, architecture, test harness, risk catalog)
@@ -10,7 +10,7 @@ PLAN-stage1-1.md ................. §13..§14 (completed roles + phases)
 PLAN-stage1-2.md ................. §15      (Phases 3.5 + 4 bootstrap management cluster)
 PLAN-stage1-3.md ................. §16      (workload_cluster TF module)
 PLAN-stage1-4.md ................. §17      (Helm test contracts — Gate A + Gate B chart-side specs)
-PLAN-stage1-5.md ................. §18      (pivot mgmt-1 → self-hosted)                        <-- этот файл
+PLAN-stage1-5.md ................. §18      (pivot mgmt-1 → self-hosted)                        <-- this file
 PLAN-stage1-6.md ................. §19      (Phase 8 destroy)
 PLAN-stage1-7.md ................. §20..§22 (Stage 1 closure + self-review + recommendation)
 ```
@@ -19,72 +19,72 @@ PLAN-stage1-7.md ................. §20..§22 (Stage 1 closure + self-review + r
 
 # 18. Pivot mgmt-1 → self-hosted
 
-Pivot — обязательная стадия canonical k8s-lab flow (§3 + §10): bootstrap
-k3s — это transient scaffolding, его единственная задача — захостить
-mgmt-1 Cluster CR ровно столько, сколько нужно `clusterctl init` +
-`clusterctl move` чтобы превратить mgmt-1 в self-hosted CAPI management
-cluster. После этого bootstrap LXC удаляется через `cleanup_bootstrap`.
+Pivot is a mandatory stage of the canonical k8s-lab flow (§3 + §10): bootstrap
+k3s is transient scaffolding, its sole job is to host the
+mgmt-1 Cluster CR for exactly as long as needed by `clusterctl init` +
+`clusterctl move` to turn mgmt-1 into a self-hosted CAPI management
+cluster. After that the bootstrap LXC is deleted via `cleanup_bootstrap`.
 
-Нет dispatch-веток / opt-in флагов. Standalone Make-target'а для
-pivot'а нет — pivot — это часть `tests/molecule/e2e-local/` (§10.2)
-и реализуется композицией существующих ролей.
+There are no dispatch branches / opt-in flags. There is no standalone Make target for
+the pivot — pivot is part of `tests/molecule/e2e-local/` (§10.2)
+and is implemented as a composition of existing roles.
 
-## 18.1. mgmt-1 helm install — на bootstrap'е
+## 18.1. mgmt-1 helm install — on bootstrap
 
-mgmt-1 Cluster CR создаётся через те же `charts/capi-cluster-class/`
-+ `charts/capi-workload-cluster/` (§16.2 / §16.3) что и workload —
-просто с другими values:
+The mgmt-1 Cluster CR is created via the same `charts/capi-cluster-class/`
++ `charts/capi-workload-cluster/` (§16.2 / §16.3) as workload —
+just with different values:
 
-* `cluster.name: "mgmt-1"` (из §8 `k8s_lab_management_cluster_name`);
-* `clusterClass.name: "capn-mgmt"` — отдельный ClusterClass,
-  позволяет mgmt и workload Cluster CR'ам сосуществовать в одном
-  `capi-clusters` namespace до момента clusterctl move;
+* `cluster.name: "mgmt-1"` (from §8 `k8s_lab_management_cluster_name`);
+* `clusterClass.name: "capn-mgmt"` — a separate ClusterClass,
+  allows mgmt and workload Cluster CRs to coexist in the same
+  `capi-clusters` namespace until the clusterctl move;
 * `topology.controlPlane.replicas: 1`, `topology.workers.replicas: 2`
-  (§8 + §2.12 mgmt-side replica policy + chart-required floor — см.
-  ниже);
-* `clusterNetwork.pods.cidrBlocks` / `services.cidrBlocks` — те же
-  что у workload (Cluster CR'ы имеют independent clusterNetwork
-  блоки; overlap на одной wire moot потому что каждый кластер —
-  свой kube-proxy / CNI domain).
+  (§8 + §2.12 mgmt-side replica policy + chart-required floor — see
+  below);
+* `clusterNetwork.pods.cidrBlocks` / `services.cidrBlocks` — the same
+  as for workload (Cluster CRs have independent clusterNetwork
+  blocks; overlap on the same wire is moot because each cluster is
+  its own kube-proxy / CNI domain).
 
-Установка идёт через `kubernetes.core.helm` напрямую в
-`tests/molecule/e2e-local/converge.yml` против `.artifacts/mgmt.kubeconfig`
-(который на этом этапе указывает на bootstrap k3s). После того как
-helm install вернул control (chart's post-install hook
-`api-proxy-attach` отработал, /livez ответил 200), на runner'е
-материализуется `.artifacts/clusters/mgmt-1.kubeconfig` через
+Installation goes through `kubernetes.core.helm` directly in
+`tests/molecule/e2e-local/converge.yml` against `.artifacts/mgmt.kubeconfig`
+(which at this stage points to bootstrap k3s). After
+helm install returns control (the chart's post-install hook
+`api-proxy-attach` has run, /livez responded with 200), on the runner
+`.artifacts/clusters/mgmt-1.kubeconfig` is materialized via
 parse-and-rewrite (server URL → `https://<lxd_host>:<api-proxy-port>`,
 `tls-server-name: kubernetes.default.svc`).
 
-CNI Calico + MetalLB ставятся на mgmt-1 через те же
+CNI Calico + MetalLB are installed on mgmt-1 via the same
 `charts/cni-calico/` + `charts/metallb/` + `charts/metallb-config/`
-против `.artifacts/clusters/mgmt-1.kubeconfig`. Это требуется ДО
-pivot'а потому что `clusterctl init` (запускаемый pivot ролью на
-mgmt-1) ставит cert-manager + 4 CAPI/CAPN provider Deployments —
-без pod networking они уйдут в crash-loop, `--wait-providers`
-тайм-аутится.
+against `.artifacts/clusters/mgmt-1.kubeconfig`. This is required BEFORE
+the pivot because `clusterctl init` (run by the pivot role on
+mgmt-1) installs cert-manager + 4 CAPI/CAPN provider Deployments —
+without pod networking they will go into a crash loop, and `--wait-providers`
+times out.
 
-Между CNI install и MetalLB install — explicit
-`kubernetes.core.k8s_info` polling-task на все Nodes `Ready=True`
-(см. §3.1 шаг 3 для rationale). Без поллинга MetalLB install с
-`wait: true` тайм-аутится потому что Calico Installation CR
-reconciliate'ится async после `helm install --wait` returnа.
+Between CNI install and MetalLB install — an explicit
+`kubernetes.core.k8s_info` polling task for all Nodes `Ready=True`
+(see §3.1 step 3 for rationale). Without polling, MetalLB install with
+`wait: true` times out because the Calico Installation CR
+reconciles async after `helm install --wait` returns.
 
-Перед самим pivot'ом converge.yml гоняет helm tests на mgmt-1
+Before the pivot itself, converge.yml runs helm tests on mgmt-1
 (`capi-workload-cluster` cluster-ready hook + `cni-calico` Gate B
-+ `metallb-config` Gate A) — гейт перед pivot'ом. Если mgmt-1 data
-plane сломан, останавливаемся здесь, не на failed pivot'е.
++ `metallb-config` Gate A) — a gate before the pivot. If the mgmt-1 data
+plane is broken, we stop here, not on a failed pivot.
 
-**Worker count floor = 2.** `cni-calico` chart (§17.2) helm test
-включает phase 6 «live pod-to-pod ICMP4+ICMP6 across workers» с
-`requiredDuringScheduling pod-anti-affinity` — probe-a и probe-b
-обязаны попасть на разные worker-ноды. На mgmt с 1 worker probe-b
-застревает в `Pending` → helm test падает на gate. Поэтому §8
+**Worker count floor = 2.** The `cni-calico` chart (§17.2) helm test
+includes phase 6 «live pod-to-pod ICMP4+ICMP6 across workers» with
+`requiredDuringScheduling pod-anti-affinity` — probe-a and probe-b
+must land on different worker nodes. On mgmt with 1 worker, probe-b
+gets stuck in `Pending` → the helm test fails on the gate. Therefore §8
 `k8s_lab_management_worker_count` default = `2`.
 
 ## 18.2. Role: `pivot_clusterctl_move`
 
-**Статус: выполнено в Step 18 (2026-04-29).**
+**Status: done in Step 18 (2026-04-29).**
 
 Role lives at `ansible/roles/pivot_clusterctl_move/`.
 
