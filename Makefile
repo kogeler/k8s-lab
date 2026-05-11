@@ -227,6 +227,39 @@ reset-all: ## Full PLAN §19.2 reverse — terraform destroy on live workload, T
 # Convenience
 # --------------------------------------------------------------------------
 
+# --------------------------------------------------------------------------
+# Documentation bundle for LLM crawlers
+# --------------------------------------------------------------------------
+#
+# `make docs-llm` regenerates llms-full.txt by concatenating every chapter
+# under doc/ in reading order (README first, then 01..14). The bundle is
+# committed so it is fetchable as a single file at the canonical GitHub raw
+# URL — the llms.txt convention assumes a flat, single-URL "everything"
+# pointer for LLM ingestion.
+
+.PHONY: docs-llm
+docs-llm: ## Regenerate llms-full.txt from doc/*.md in reading order
+	@( \
+	  echo "# k8s-lab — full documentation snapshot" ; \
+	  echo "" ; \
+	  echo "> Concatenated bundle of every chapter under doc/, in reading order." ; \
+	  echo "> Regenerate with 'make docs-llm'. Canonical source: https://github.com/kogeler/k8s-lab" ; \
+	  echo "" ; \
+	  for f in $(REPO_ROOT)/doc/README.md $$(ls $(REPO_ROOT)/doc/[0-9][0-9]-*.md | sort) ; do \
+	    rel=$${f#$(REPO_ROOT)/} ; \
+	    echo "" ; \
+	    echo "---" ; \
+	    echo "" ; \
+	    echo "<!-- source: $$rel -->" ; \
+	    echo "" ; \
+	    cat "$$f" ; \
+	    echo "" ; \
+	  done \
+	) > $(REPO_ROOT)/llms-full.txt
+	@lines=$$(wc -l < $(REPO_ROOT)/llms-full.txt) ; \
+	 bytes=$$(wc -c < $(REPO_ROOT)/llms-full.txt) ; \
+	 echo "== wrote llms-full.txt ($$lines lines, $$bytes bytes)"
+
 .PHONY: deps
 deps: ## Install Ansible collections into ansible/collections (project-local)
 	# --force makes the install authoritative for the project tree — without

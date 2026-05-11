@@ -1,0 +1,99 @@
+site_name: k8s-lab
+site_description: >-
+  Reusable building blocks for a single-host Kubernetes laboratory on Debian 13:
+  LXC/LXD nodes driven by Cluster API (CAPN), Ansible roles, a Terraform module,
+  and Helm charts. Molecule + Vagrant + libvirt local test harness.
+site_url: https://kogeler.github.io/k8s-lab/
+site_author: kogeler
+copyright: MIT licensed — see LICENSE on GitHub.
+
+repo_url: https://github.com/kogeler/k8s-lab
+repo_name: kogeler/k8s-lab
+edit_uri: edit/main/doc/
+
+# Only doc/ is published. The README.md at repo root carries badges + Mermaid
+# overview targeted at github.com visitors. Pages visitors land at doc/README.md,
+# which is the documentation index. Cross-references to ../plans/*.md from doc/
+# resolve correctly on github.com (the architectural source of truth lives in
+# plans/, which is browsable there).
+docs_dir: doc
+
+theme:
+  name: material
+  language: en
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  features:
+    - navigation.sections
+    - navigation.top
+    - navigation.tracking
+    - content.code.copy
+    - content.action.edit
+    - search.suggest
+    - search.highlight
+    - search.share
+
+plugins:
+  - search
+
+# Rewrite ../<dir>/<path> relative links to absolute github.com blob URLs so
+# cross-references from doc/ into plans/, ansible/, charts/, terraform/,
+# tests/, scripts/, and LICENSE resolve on the Pages site.
+hooks:
+  - scripts/docs_hooks.py
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - def_list
+  - footnotes
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.details
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.tabbed:
+      alternate_style: true
+
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/kogeler/k8s-lab
+
+nav:
+  - Home: README.md
+  - Overview: 01-overview.md
+  - Architecture: 02-architecture.md
+  - Stack: 03-stack.md
+  - Repository structure: 04-repository-structure.md
+  - Prerequisites: 05-prerequisites.md
+  - Quickstart (local): 06-quickstart-local.md
+  - Deployment guide: 07-deployment-guide.md
+  - Configuration reference: 08-configuration-reference.md
+  - Roles reference: 09-roles-reference.md
+  - Modules and charts: 10-modules-and-charts.md
+  - Operations: 11-operations.md
+  - Testing: 12-testing.md
+  - Troubleshooting: 13-troubleshooting.md
+  - Glossary: 14-glossary.md

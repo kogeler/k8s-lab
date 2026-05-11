@@ -1,0 +1,7 @@
+# Build-time dependencies for the GitHub Pages docs site.
+#
+# Lower bounds only (project policy §2.11): the next major release is not
+# pre-emptively locked out. The CI workflow at .github/workflows/pages.yml
+# pins the latest stable transitively via `pip install -r`.
+
+mkdocs-material>=9.7.6

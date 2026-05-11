@@ -1,0 +1,69 @@
+name: Bug report
+description: Report a defect in an Ansible role, Terraform module, Helm chart, or the test harness.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Before filing: please confirm `make lint` passes against `main` on a
+        clean clone, and that the failure reproduces on the local Vagrant +
+        libvirt harness (see `doc/06-quickstart-local.md`).
+  - type: input
+    id: commit
+    attributes:
+      label: Commit / release
+      description: Git SHA, tag, or release this reproduces on.
+      placeholder: "e.g. v1.0 or f9d9a37"
+    validations:
+      required: true
+  - type: dropdown
+    id: layer
+    attributes:
+      label: Affected layer
+      options:
+        - Ansible role
+        - Terraform module
+        - Helm chart
+        - Molecule / Vagrant harness
+        - Documentation
+        - Makefile / scripts
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: component
+    attributes:
+      label: Component name
+      description: Role / chart / module / scenario name.
+      placeholder: "e.g. lxd_host, charts/cni-calico, terraform/modules/workload_cluster"
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction
+      description: Minimal command sequence (make targets, variables, tfvars overrides) to reproduce.
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behaviour
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behaviour
+      description: Paste the error message, controller log line, or failing test output.
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Host OS, Vagrant + libvirt versions if local, LXD channel, anything that deviates from `doc/05-prerequisites.md`.
+    validations:
+      required: false
