@@ -9,6 +9,7 @@ on:
       - "mkdocs.yml"
       - "scripts/docs_hooks.py"
       - "requirements-docs.txt"
+      - ".github/site-root/**"
       - ".github/workflows/pages.yml"
   workflow_dispatch:
 
@@ -44,6 +45,19 @@ jobs:
 
       - name: Build site
         run: mkdocs build
+
+      - name: Copy .github/site-root/ extras into deployed site
+        # Anything under .github/site-root/ is copied verbatim to the
+        # deployed Pages site root. Use for search-engine verification
+        # files (Google, Bing, etc.), /.well-known/ entries,
+        # ads.txt, security.txt, etc. — files that must live at the site
+        # root but are not part of the mkdocs documentation tree.
+        run: |
+          if [[ -d .github/site-root ]] && compgen -G ".github/site-root/*" >/dev/null; then
+            cp -rv .github/site-root/. site/
+          else
+            echo ".github/site-root/ empty or missing — nothing to copy"
+          fi
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v5

@@ -10,13 +10,33 @@
 
 # k8s-lab — Documentation
 
-This directory holds the user-facing documentation for **k8s-lab**, a
-reusable building-block repository for a single-host Kubernetes
-laboratory built on LXC/LXD system containers and the Cluster API
-provider for Incus/LXD (CAPN).
+> **Production-grade Kubernetes platform on a single bare-metal/VM box** —
+> the same Cluster API pattern platform-engineering teams run in real
+> environments, made almost as turnkey as `minikube` to spin up.
+>
+> Put LXD on the host. Run the bootstrap. You get a **self-hosted Cluster
+> API management cluster** that provisions any number of workload clusters
+> from a handful of Cluster API CRDs (`Cluster`, `ClusterClass`,
+> Kubeadm/KCP templates, CAPN infrastructure CRs) flexibly describing the
+> topology — Kubernetes version, control-plane size, worker pools,
+> networking. Real kubeadm, real CNI, real load balancer. Nodes are unprivileged LXC system containers:
+> **near-zero virtualisation overhead, seconds-not-minutes provisioning,
+> strong host isolation** — no VM tax.
+>
+> - **Production patterns, lab footprint.** Real CAPI / CABPK / KCP / CAPN
+>   management plane — not a `kind` / `minikube` / single-node k3s toy.
+> - **Declarative all the way down.** Every Kubernetes object ships through
+>   Helm via Terraform; cluster lifecycle is CRD-driven.
+> - **Locally reproducible.** A Vagrant + libvirt harness runs the entire
+>   canonical flow on a developer laptop — same code path as a real host.
+> - **Test any change at any layer.** Molecule scenarios cover every role
+>   (substrate → bootstrap → pivot → workload → add-ons); chart-side
+>   `helm.sh/hook: test` Pods (external-L2 reachability + CNI viability)
+>   then gate `terraform apply` — a broken data plane fails the deploy
+>   instead of silently shipping a half-working cluster.
 
-If you have not seen the project yet, start with
-[`01-overview.md`](01-overview.md).
+This directory holds the user-facing documentation. If you have not seen
+the project yet, start with [`01-overview.md`](01-overview.md).
 
 If you want to spin up a local end-to-end lab on your laptop in ~30
 minutes, jump to [`06-quickstart-local.md`](06-quickstart-local.md).
