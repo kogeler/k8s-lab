@@ -4,7 +4,7 @@ site_description: >-
   Debian-family Linux: LXC/LXD nodes driven by Cluster API (CAPN), Ansible
   roles, a Terraform module, and Helm charts. Molecule + Vagrant + libvirt
   local test harness.
-site_url: https://kogeler.github.io/k8s-lab/
+site_url: https://k8s-lab.romancello.net/
 site_author: kogeler
 copyright: MIT licensed — see LICENSE on GitHub.
 
