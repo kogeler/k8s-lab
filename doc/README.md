@@ -122,6 +122,15 @@ retain their own licenses.
 
 ---
 
+## Release history
+
+Cross-version changes live in [`15-changelog.md`](15-changelog.md)
+(a symlink to `CHANGELOG.md` at the repo root, so the same content
+shows up on the documentation site and in the GitHub source tree).
+The changelog is the authoritative log of what changed between
+tagged releases; each GitHub release body is a verbatim copy of the
+matching section.
+
 ## Feedback and changes
 
 Documentation tracks the code. If you change a role's variable

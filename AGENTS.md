@@ -46,6 +46,9 @@ Important entry points:
 - [doc/13-troubleshooting.md](doc/13-troubleshooting.md): known failure modes.
 - [CONTRIBUTING.md](CONTRIBUTING.md): contribution scope, style, and pre-PR
   checks.
+- [CHANGELOG.md](CHANGELOG.md): per-version diff log. Each section is the
+  authoritative source for the matching GitHub release body — release notes
+  are a verbatim copy, never rewritten.
 - [plans/PLAN-stage1-common.md](plans/PLAN-stage1-common.md): fixed
   architecture and development contracts.
 - [plans/PLAN-stage2-common.md](plans/PLAN-stage2-common.md): opt-in backlog.

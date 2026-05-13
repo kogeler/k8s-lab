@@ -132,6 +132,13 @@ retain their own licenses.
 
 ---
 
+## Release history
+
+Cross-version changes live in [`../CHANGELOG.md`](../CHANGELOG.md)
+at the repo root. The changelog is the authoritative log of what
+changed between tagged releases; each GitHub release body is a
+verbatim copy of the matching section.
+
 ## Feedback and changes
 
 Documentation tracks the code. If you change a role's variable
