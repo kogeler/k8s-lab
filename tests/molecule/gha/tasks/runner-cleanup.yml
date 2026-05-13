@@ -23,18 +23,29 @@
     - containerd.service
   failed_when: false
 
-- name: "gha | runner-cleanup | flush Docker NAT chains"
-  # `iptables -t nat -F DOCKER` returns 1 when the chain does not exist.
-  # We tolerate that because Docker may have been masked at image-build
-  # time on some runner generations. The flush is sufficient — we do
-  # not delete the chain, so a later `systemctl start docker` would
-  # recreate state cleanly.
+- name: "gha | runner-cleanup | flush Docker's own NAT chain"
+  # Targeted at Docker's per-container DNAT entries only — leaves
+  # built-in chains (PREROUTING/POSTROUTING/OUTPUT/INPUT) intact. A
+  # bare `iptables -F` / `iptables -t nat -F` was here previously and
+  # nuked rules LXD's iptables-nft compat layer relied on, breaking
+  # egress from LXC pods (see CI run 25787813025 diagnostics).
   ansible.builtin.command:
-    cmd: "{{ item }}"
-  loop:
-    - "iptables -t nat -F DOCKER"
-    - "iptables -t nat -F"
-    - "iptables -F"
+    cmd: "iptables -t nat -F DOCKER"
+  failed_when: false
+  changed_when: false
+
+- name: "gha | runner-cleanup | restore default-accept iptables filter policies"
+  # Docker's systemd unit pins `iptables -P FORWARD DROP` at daemon
+  # start as part of its security model. Stopping the daemon leaves
+  # that policy in place — the kernel evaluates iptables-nft compat
+  # BEFORE LXD's `inet lxd` nftables table, so a DROP at FORWARD kills
+  # every packet crossing the LXC bridge → host before LXD ever gets
+  # to ACCEPT it. Pods inside the LXC end up unable to reach external
+  # registries (docker.io, quay.io) and crash-loop on sandbox image
+  # pull — the failure mode in CI run 25787813025.
+  ansible.builtin.command:
+    cmd: "iptables -P {{ item }} ACCEPT"
+  loop: [INPUT, FORWARD, OUTPUT]
   failed_when: false
   changed_when: false
 
@@ -61,6 +72,14 @@
   # ubuntu-latest pre-installs ~5–10 GiB of toolchains we do not use.
   # Purging recovers space on `/`, which is where snap's LXD storage
   # cache lives (the pool itself moves to /mnt — see loopback-pool.yml).
+  #
+  # List trimmed to packages actually present in the current
+  # ubuntu-latest image (verified by `apt --simulate` output in CI run
+  # 25787813025): every entry below caused at least one package to be
+  # marked for removal. Two previously-listed candidates — `aws-cli`
+  # and `mongodb-org` — are no longer on the image (aws-cli ships as
+  # a manual /usr/local/aws-cli install, mongodb was dropped from the
+  # runner-images baseline) and were trimmed.
   ansible.builtin.apt:
     name:
       - "google-chrome-stable"
@@ -68,8 +87,6 @@
       - "powershell"
       - "azure-cli"
       - "google-cloud-cli"
-      - "aws-cli"
-      - "mongodb-org"
       - "mysql-server"
       - "mysql-client"
       - "postgresql-*"
@@ -85,13 +102,25 @@
   # `rm -rf` on a missing path returns 0, so the loop is idempotent.
   # Owned by this playbook (not the workflow YAML) so the disk-reclaim
   # contract has a single source of truth: `tests/molecule/gha/`.
+  #
+  # List trimmed to paths actually present on the current ubuntu-latest
+  # image (verified by `ansible.builtin.file: state=absent` results in
+  # CI run 25787813025: each entry below returned `changed: true`).
+  # `/opt/ghc` was on the original list but the runner-images project
+  # no longer ships GHC at that path on ubuntu-latest 24.04 — removed.
+  #
+  # `diff: false` is a per-task override of the scenario-wide
+  # `[diff] always=true` (set in molecule.yml). The android SDK tree
+  # alone is ~30k files; with diff on, `file: state=absent` emits one
+  # diff line per removed file and the CI log balloons to >200k lines
+  # for a single task. Diff is still on everywhere else.
   ansible.builtin.file:
     path: "{{ item }}"
     state: absent
+  diff: false
   loop:
     - /usr/share/dotnet
     - /usr/share/swift
-    - /opt/ghc
     - /opt/hostedtoolcache/CodeQL
     - /opt/microsoft
     - /usr/local/lib/android

@@ -158,10 +158,18 @@ jobs:
           say "host: failed units"; sudo systemctl --failed
           say "host: journal errors (last 200)"
           sudo journalctl --boot --priority=err --no-pager 2>&1 | tail -200
+          say "host: iptables filter policy + forward chain"
+          sudo iptables -S INPUT 2>&1 | head -1
+          sudo iptables -S FORWARD 2>&1 | head -1
+          sudo iptables -S OUTPUT 2>&1 | head -1
           say "host: iptables nat (head 50)"
           sudo iptables -t nat -S 2>&1 | head -50
           say "host: nftables tables"
           sudo nft list tables 2>&1
+          say "host: nftables inet lxd (LXD's own NAT/FORWARD rules)"
+          sudo nft list table inet lxd 2>&1 | head -80
+          say "host: ip_forward sysctls"
+          sysctl net.ipv4.ip_forward net.ipv6.conf.all.forwarding 2>&1
 
           # ---- 2. LXD substrate ----
           say "LXD: daemon info"
@@ -172,13 +180,22 @@ jobs:
           sudo lxc list --all-projects 2>&1
 
           # Per-container deep dive — name+project pairs via CSV.
-          sudo lxc list --all-projects --format csv -c np 2>/dev/null \
+          # `-c n` = name, `-c P` (uppercase) = project; lowercase `p`
+          # would be PID, which silently turned this loop into
+          # "Project not found" errors on a previous diagnostic run.
+          sudo lxc list --all-projects --format csv -c nP 2>/dev/null \
             | while IFS=, read -r name proj; do
                 [ -z "$name" ] && continue
                 say "LXD: info $proj/$name"
                 sudo lxc info --project "$proj" "$name" 2>&1 | head -40
                 say "LXD: $proj/$name -- ip addr"
                 sudo lxc exec --project "$proj" "$name" -- ip -br addr 2>&1
+                say "LXD: $proj/$name -- default route"
+                sudo lxc exec --project "$proj" "$name" -- ip route 2>&1
+                say "LXD: $proj/$name -- egress probe (TCP/443 to docker.io)"
+                sudo lxc exec --project "$proj" "$name" -- \
+                  timeout 10 curl -sSv -o /dev/null \
+                    https://registry-1.docker.io/v2/ 2>&1 | tail -20
                 say "LXD: $proj/$name -- recent journal errors"
                 sudo lxc exec --project "$proj" "$name" -- \
                   journalctl --no-pager -p err -n 80 2>&1
