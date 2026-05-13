@@ -44,6 +44,9 @@ jobs:
           pip install -r requirements-docs.txt
 
       - name: Build site
+        env:
+          # Repository variable, e.g. G-XXXXXXXXXX. Empty keeps analytics off.
+          GOOGLE_ANALYTICS_KEY: ${{ vars.GOOGLE_ANALYTICS_KEY }}
         run: mkdocs build
 
       - name: Copy .github/site-root/ extras into deployed site
