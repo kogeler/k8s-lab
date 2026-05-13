@@ -1,0 +1,13 @@
+---
+# gha scenario converge — defer to e2e-local for the canonical
+# bootstrap → mgmt-1 pivot → workload flow. Single source of truth: any
+# change to the flow is made once in `e2e-local/converge.yml` and both
+# scenarios pick it up.
+#
+# Why import_playbook (and not include_tasks against a tasks file): the
+# e2e-local converge is a full play with its own `vars:`, `become:`,
+# host pattern, and rich variable assembly. import_playbook preserves
+# all of that without forcing us to refactor it into a tasks file.
+
+- name: "Converge | gha | import e2e-local converge"
+  ansible.builtin.import_playbook: ../e2e-local/converge.yml

@@ -1,0 +1,98 @@
+---
+# GHA-runner-specific cleanup. The ubuntu-latest image ships with
+# Docker, swap, and ~10 GiB of preinstalled bloat (Android SDK, .NET,
+# Haskell, …) that would either conflict with our LXD substrate or
+# starve us of disk. Runs once per converge — idempotent on re-apply.
+#
+# Scoped strictly to this file: nothing here touches Vagrant or any
+# other harness path.
+
+- name: "gha | runner-cleanup | stop and disable Docker daemon"
+  # Docker's iptables-NAT rules and the `docker0` bridge race with
+  # kube-proxy in the LXC nodes and frequently break Service routing
+  # in opaque ways. Removing the package is too aggressive (the runner
+  # image holds an apt lock on `docker.io` from preinstall) — stopping
+  # the unit and flushing its NAT chains is enough.
+  ansible.builtin.systemd:
+    name: "{{ item }}"
+    state: stopped
+    enabled: false
+  loop:
+    - docker.socket
+    - docker.service
+    - containerd.service
+  failed_when: false
+
+- name: "gha | runner-cleanup | flush Docker NAT chains"
+  # `iptables -t nat -F DOCKER` returns 1 when the chain does not exist.
+  # We tolerate that because Docker may have been masked at image-build
+  # time on some runner generations. The flush is sufficient — we do
+  # not delete the chain, so a later `systemctl start docker` would
+  # recreate state cleanly.
+  ansible.builtin.command:
+    cmd: "{{ item }}"
+  loop:
+    - "iptables -t nat -F DOCKER"
+    - "iptables -t nat -F"
+    - "iptables -F"
+  failed_when: false
+  changed_when: false
+
+- name: "gha | runner-cleanup | disable swap"
+  # kubeadm refuses to bring up a kubelet with swap on by default; the
+  # CAPN-spawned kubeadm join would fail. `swapoff -a` is idempotent.
+  ansible.builtin.command:
+    cmd: "swapoff -a"
+  register: _gha_swapoff
+  changed_when: "'swapoff' in _gha_swapoff.stdout"
+  failed_when: false
+
+- name: "gha | runner-cleanup | comment swap entries in /etc/fstab"
+  # Persist swap-off across systemd-mounted swap units. The runner is
+  # ephemeral so a /etc/fstab edit is purely defensive — a future
+  # `systemctl daemon-reload + swapon -a` would otherwise reactivate
+  # the swap file the image ships with.
+  ansible.builtin.replace:
+    path: /etc/fstab
+    regexp: '^([^#].*\sswap\s+.*)$'
+    replace: '# \1'
+
+- name: "gha | runner-cleanup | reclaim disk via apt purge of bloat"
+  # ubuntu-latest pre-installs ~5–10 GiB of toolchains we do not use.
+  # Purging recovers space on `/`, which is where snap's LXD storage
+  # cache lives (the pool itself moves to /mnt below — see
+  # loopback-pool.yml).
+  ansible.builtin.apt:
+    name:
+      - "google-chrome-stable"
+      - "firefox"
+      - "powershell"
+      - "azure-cli"
+      - "google-cloud-cli"
+      - "aws-cli"
+      - "mongodb-org"
+      - "mysql-server"
+      - "mysql-client"
+      - "postgresql-*"
+      - "ruby"
+      - "php*"
+    state: absent
+    purge: true
+  failed_when: false
+
+- name: "gha | runner-cleanup | reclaim disk via rm of preinstalled toolchains"
+  # Apt does not track these — they live under /usr/local or /opt and
+  # are dropped onto the image by GitHub's runner-images build pipeline.
+  # `rm -rf` on a missing path returns 0, so the loop is idempotent.
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - /usr/share/dotnet
+    - /usr/share/swift
+    - /opt/ghc
+    - /opt/hostedtoolcache/CodeQL
+    - /opt/microsoft
+    - /usr/local/lib/android
+    - /usr/local/share/boost
+    - /imagegeneration

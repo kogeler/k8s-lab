@@ -1,0 +1,101 @@
+---
+# Provision the LXD pool's backing block device on a GHA runner.
+#
+# Strategy: allocate a sparse file on /mnt (the runner's large scratch
+# volume — typically ~70 GiB free vs ~14 GiB on /) and attach it via
+# `losetup` to a loop device. Publish a stable udev-style symlink at
+# `/dev/disk/by-id/k8slab-lxdpool-loop` so downstream consumers
+# (`lxd_storage_pools_pools[].config.source`, the host-side btrfs
+# mount, `prepare-clean-disk.yml`'s wipefs target) bind to a path that
+# survives both re-runs and kernel re-numbering of /dev/loopN.
+#
+# Idempotence:
+#   * `truncate --size` only writes when the existing file is the wrong
+#     size, so re-runs are cheap;
+#   * `losetup -j <file>` returns an existing association; we only
+#     attach a fresh loop when none was found;
+#   * the symlink is rewritten unconditionally (cheap) so it always
+#     points at the *current* /dev/loopN.
+
+- name: "gha | loopback-pool | install util-linux extras (losetup)"
+  # `losetup` is part of `util-linux` on Debian/Ubuntu and is already
+  # present on every modern image — task is here purely as a safety
+  # net for any minimal-image variant.
+  ansible.builtin.apt:
+    name: util-linux
+    state: present
+    update_cache: false
+
+- name: "gha | loopback-pool | ensure scratch directory on /mnt"
+  ansible.builtin.file:
+    path: /mnt/k8slab
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: "gha | loopback-pool | allocate sparse pool image (20 GiB)"
+  # 20 GiB is enough for the bootstrap k3s LXC + 8 CAPN nodes' rootfs
+  # under btrfs subvolume snapshots. `truncate` writes a sparse file —
+  # the actual disk consumption only grows as LXD writes to it.
+  ansible.builtin.command:
+    cmd: "truncate --size=20G /mnt/k8slab/lxd-pool.img"
+    creates: /mnt/k8slab/lxd-pool.img
+
+- name: "gha | loopback-pool | look up existing loop association"
+  # `losetup -j <file>` prints "/dev/loopN: ..." when the file is
+  # already attached, empty otherwise. We trim and capture the device
+  # path; the `set_fact` below decides whether we need a fresh attach.
+  ansible.builtin.command:
+    cmd: "losetup -j /mnt/k8slab/lxd-pool.img"
+  register: _gha_loop_lookup
+  changed_when: false
+
+- name: "gha | loopback-pool | attach loop device when not already attached"
+  # `losetup -f --show <file>` finds the first free /dev/loopN, attaches
+  # it, and prints the device path on stdout.
+  ansible.builtin.command:
+    cmd: "losetup -f --show /mnt/k8slab/lxd-pool.img"
+  register: _gha_loop_attach
+  when: _gha_loop_lookup.stdout | length == 0
+  changed_when: true
+
+- name: "gha | loopback-pool | resolve loop device path"
+  ansible.builtin.set_fact:
+    # Two branches: existing association (extract device from
+    # "/dev/loopN: [..." prefix) or fresh attach (whole stdout line).
+    _gha_loop_device: >-
+      {{ (_gha_loop_lookup.stdout | regex_replace(':.*$', '') | trim)
+         if (_gha_loop_lookup.stdout | length) > 0
+         else (_gha_loop_attach.stdout | trim) }}
+
+- name: "gha | loopback-pool | assert loop device resolved"
+  ansible.builtin.assert:
+    that:
+      - _gha_loop_device is string
+      - _gha_loop_device is match('^/dev/loop[0-9]+$')
+    fail_msg: >-
+      Failed to resolve a loop device for /mnt/k8slab/lxd-pool.img.
+      lookup stdout = {{ _gha_loop_lookup.stdout | default('<unset>') }};
+      attach stdout = {{ _gha_loop_attach.stdout | default('<unset>') }}.
+
+- name: "gha | loopback-pool | ensure /dev/disk/by-id exists"
+  ansible.builtin.file:
+    path: /dev/disk/by-id
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: "gha | loopback-pool | publish stable symlink for the loop device"
+  # The same target path is pinned in host_vars/k8slab-host.yml
+  # (`k8s_lab_lxd_pool_device`) and read by every downstream consumer.
+  # We use a symlink rather than mutating udev rules because the runner
+  # is ephemeral — udev would re-run on the next /dev/loopN attach and
+  # we'd need to manage rule reload anyway.
+  ansible.builtin.file:
+    src: "{{ _gha_loop_device }}"
+    dest: "{{ k8s_lab_lxd_pool_device }}"
+    state: link
+    force: true
+    follow: false

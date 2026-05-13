@@ -39,6 +39,9 @@ __pycache__/
 *.pyo
 .venv/
 venv/
+# Throwaway venv used to regenerate requirements-gha.txt (see header
+# of that file for the recipe). Should never be committed.
+.venv-gha-temp/
 
 # MkDocs build output
 site/

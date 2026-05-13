@@ -10,15 +10,19 @@
       - min
   when: ansible_facts['os_family'] is not defined
 
-- name: "bootstrap-clusterctl | preflight | target OS is Debian 13+"
+- name: "bootstrap-clusterctl | preflight | target OS is Debian 13+ or Ubuntu 22.04+"
   ansible.builtin.assert:
     that:
       - ansible_facts['os_family'] == 'Debian'
-      - ansible_facts['distribution'] == 'Debian'
-      - (ansible_facts['distribution_major_version'] | int) >= 13
+      - >-
+        (ansible_facts['distribution'] == 'Debian'
+         and (ansible_facts['distribution_major_version'] | int) >= 13)
+        or
+        (ansible_facts['distribution'] == 'Ubuntu'
+         and (ansible_facts['distribution_major_version'] | int) >= 22)
     fail_msg: >-
-      bootstrap_clusterctl targets Debian 13 Trixie or newer on the LXD
-      host (the bootstrap container OS is independent).
+      bootstrap_clusterctl targets Debian 13 Trixie+ or Ubuntu 22.04 LTS+
+      on the LXD host (the bootstrap container OS is independent).
 
 - name: "bootstrap-clusterctl | preflight | validate identifiers"
   ansible.builtin.assert:

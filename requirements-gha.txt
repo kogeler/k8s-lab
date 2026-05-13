@@ -1,0 +1,80 @@
+# =========================================================================
+# Python dependencies for the `tests/molecule/gha` CI scenario (Python 3.13)
+# =========================================================================
+#
+# Consumed by `.github/workflows/molecule.yml` as `pip install -r
+# requirements-gha.txt`. Fully pinned (including transitives) so a
+# wheel re-publish on PyPI cannot silently change CI behaviour between
+# two runs of the same SHA.
+#
+# Primary dependencies (the only entries to edit when bumping). All
+# transitives below are derived — do NOT bump them by hand.
+#
+#   ansible-core   — drives ansible-playbook for prepare/converge/verify
+#   molecule       — runs the scenario via `molecule test -s gha`
+#   kubernetes     — Python client used by kubernetes.core.helm /
+#                    k8s_info on the runner (delegate_to: localhost)
+#   jsonpatch      — patch operations used by kubernetes.core.k8s
+#
+# Regeneration recipe (run from repo root):
+#
+#   rm -rf .venv-gha-temp
+#   python3.13 -m venv .venv-gha-temp
+#   .venv-gha-temp/bin/pip install --upgrade pip
+#   .venv-gha-temp/bin/pip install ansible-core molecule kubernetes jsonpatch
+#   .venv-gha-temp/bin/pip freeze > requirements-gha.txt   # then re-add header
+#   rm -rf .venv-gha-temp
+#
+# Memory `feedback_latest_stable` policy: when bumping, always re-resolve
+# against the latest stable releases — do not selectively up-pin a single
+# entry. The regeneration recipe above already does this (no version
+# bounds on the four primaries).
+#
+# Python version: this file is resolved on Python 3.13 to match the GHA
+# runner. A different Python may pick different wheels (e.g. for
+# `cryptography` and `rpds-py` which ship ABI-specific binaries).
+# Regenerate on Python 3.13 — not the system default — when bumping.
+
+# --- Primary -------------------------------------------------------------
+ansible-core==2.20.5
+molecule==26.4.0
+kubernetes==35.0.0
+jsonpatch==1.33
+
+# --- Transitive (auto-resolved; do not edit by hand) ---------------------
+ansible-compat==26.3.0
+attrs==26.1.0
+bracex==2.6
+certifi==2026.4.22
+cffi==2.0.0
+charset-normalizer==3.4.7
+click==8.3.3
+cryptography==48.0.0
+durationpy==0.10
+enrich==1.2.7
+idna==3.15
+Jinja2==3.1.6
+jsonpointer==3.1.1
+jsonschema==4.26.0
+jsonschema-specifications==2025.9.1
+markdown-it-py==4.2.0
+MarkupSafe==3.0.3
+mdurl==0.1.2
+oauthlib==3.3.1
+packaging==26.2
+pluggy==1.6.0
+pycparser==3.0
+Pygments==2.20.0
+python-dateutil==2.9.0.post0
+PyYAML==6.0.3
+referencing==0.37.0
+requests==2.34.0
+requests-oauthlib==2.0.0
+resolvelib==1.2.1
+rich==15.0.0
+rpds-py==0.30.0
+six==1.17.0
+subprocess-tee==0.4.2
+urllib3==2.7.0
+wcmatch==10.1
+websocket-client==1.9.0

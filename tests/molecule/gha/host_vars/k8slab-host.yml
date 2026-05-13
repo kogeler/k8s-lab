@@ -1,0 +1,89 @@
+---
+# ==========================================================================
+# gha scenario host_vars (CI-only, GitHub Actions ubuntu-latest runner)
+# ==========================================================================
+#
+# Inherits everything substrate-related from
+# `tests/molecule/shared/inventory/group_vars/k8slab_host.yml` (via the
+# `inventory.links.group_vars` in molecule.yml) and overrides only what
+# differs between the Vagrant-Debian harness and a GHA runner.
+
+# --- SSH coordinates: REPLACED with local connection -----------------
+#
+# Shared group_vars wire `ansible_host/user/port/key/ssh_common_args` to
+# env vars exported by `scripts/molecule_run.py` from `vagrant ssh-config`.
+# On the GHA runner there is no separate target host — the runner IS the
+# host — so we pin the local connection plugin and a literal hostname.
+# host_vars precedence (priority 9) wins over group_vars (priority 7).
+ansible_host: "localhost"
+ansible_connection: "local"
+ansible_user: "{{ lookup('env', 'USER') }}"
+ansible_python_interpreter: "{{ ansible_playbook_python }}"
+# Blank out the SSH coordinates so a stray attempt to use them fails
+# loudly instead of silently retrying paramiko against env vars that
+# never got exported in CI.
+ansible_port: ~
+ansible_ssh_private_key_file: ~
+ansible_ssh_common_args: ""
+
+# --- LXD pool device: loopback (set at runtime by gha prepare) -------
+#
+# The Vagrant harness attaches a dedicated disk with serial
+# `k8slab-lxdpool`; on a GHA runner we have no extra block device, so
+# `tasks/loopback-pool.yml` (run in prepare) allocates a sparse file on
+# /mnt (the runner's large scratch volume), attaches it to a loop
+# device, and writes a stable udev-style symlink at the path below. We
+# set the *override path here* so every downstream consumer
+# (shared/tasks/prepare-btrfs-pool.yml, lxd_storage_pools_pools.source,
+# …) reads the same value irrespective of which /dev/loopN the kernel
+# happened to pick.
+k8s_lab_lxd_pool_device: "/dev/disk/by-id/k8slab-lxdpool-loop"
+
+# --- base_system: do not assert btrfs mountpoint ----------------------
+#
+# Same rationale as `e2e-local/host_vars/k8slab-host.yml`: in the full
+# flow `lxd_storage_pools` lets LXD format the pool device itself, so
+# `shared/tasks/prepare-clean-disk.yml` leaves no mounted filesystem
+# for base_system's preflight contract to assert. Override the shared
+# `true` to `false` so the role's preflight is silent on this host.
+base_system_btrfs_pool_required: false
+
+# --- LXD storage pool: point at the loop device ----------------------
+#
+# Shared group_vars set `source: "{{ k8s_lab_lxd_pool_device }}"` so the
+# override above propagates through; we re-declare the pool list
+# here as a defensive snapshot — if someone later overrides
+# `lxd_storage_pools_pools` at a higher precedence and forgets the
+# `source` reference, this host_vars stays self-consistent.
+lxd_storage_pools_pools:
+  - name:        "capi-fast"
+    driver:      "btrfs"
+    description: "k8s-lab primary pool (btrfs on loopback file, GHA-only)"
+    config:
+      source: "{{ k8s_lab_lxd_pool_device }}"
+
+# --- Workload topology: same as Vagrant — exercise full HA pattern ---
+#
+# Inherited from shared group_vars:
+#   k8s_lab_workload_controlplane_count: 3
+#   k8s_lab_workload_worker_count:       2
+# Total LXC budget on the runner: 1 bootstrap k3s + 3 mgmt-1 (1 CP + 2
+# wkr, mgmt defaults below) + 5 workload (3 CP + 2 wkr) = 9 instances.
+# ubuntu-latest = 4 vCPU / 16 GiB / ~70 GiB /mnt — feasible but tight.
+# If the runner OOMs at workload scale, tighten *here* (in this file)
+# rather than mutating the shared substrate vars.
+
+# --- Wait/timeout budgets: enlarge for the slower runner -------------
+#
+# GHA runners have slower IO than the dev libvirt VM and pull every
+# container image cold; image-pull-bound steps (k3s first boot, CAPI
+# provider init, kubeadm node join) push past the conservative
+# Vagrant-tuned defaults. The values below double the shared budgets;
+# they're scoped to this scenario, so the Vagrant harness keeps its
+# tighter loop.
+lxd_bootstrap_instance_wait_timeout: 600
+bootstrap_k3s_wait_retries:          180
+bootstrap_k3s_wait_delay:            4
+bootstrap_clusterctl_init_timeout:   1200
+bootstrap_clusterctl_wait_retries:   180
+bootstrap_clusterctl_wait_delay:     5

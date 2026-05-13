@@ -68,13 +68,24 @@ SCENARIOS := \
 # drivers without renaming targets.
 DRIVERS := delegated vagrant
 
+# CI-only scenarios that bypass the Vagrant harness entirely. The `gha`
+# scenario runs molecule directly against the GitHub Actions runner
+# (`ansible_connection: local` in host_vars), so we route it through a
+# separate `gha-local-*` target family that:
+#   * does NOT shell out to `molecule_run.py` (no `make up`, no
+#     `vagrant ssh-config` discovery);
+#   * refuses to run unless $GITHUB_ACTIONS=true, mirroring the
+#     scenario's own first-task assertion.
+GHA_SCENARIOS := gha
+
 .PHONY: help
 help:
 	@echo "Targets follow the scheme <scenario>-<driver>-<action>."
 	@echo ""
-	@echo "Scenarios: $(SCENARIOS)"
-	@echo "Drivers:   $(DRIVERS)"
-	@echo "Actions:   create prepare converge idempotence verify test destroy"
+	@echo "Local (Vagrant) scenarios: $(SCENARIOS)"
+	@echo "Local drivers:             $(DRIVERS)"
+	@echo "CI-only scenarios:         $(GHA_SCENARIOS) (driver=local, GHA-only)"
+	@echo "Actions:                   create prepare converge idempotence verify test destroy"
 	@echo ""
 	@echo "Convenience:"
 	@echo "  harness-smoke    — quick local smoke (no scenario run)"
@@ -120,3 +131,40 @@ destroy-all:
 define _molecule
 	@$(REPO_ROOT)/scripts/molecule_run.py $1 $2
 endef
+
+# ---- gha-local-<action>: CI-only, no Vagrant -----------------------------
+#
+# Skips `scripts/molecule_run.py` entirely (no `vagrant up`, no SSH
+# coordinate export) and invokes `molecule` directly against the
+# scenario whose `host_vars/k8slab-host.yml` pins
+# `ansible_connection: local`. The runner's own filesystem IS the
+# target — there is no separate guest VM to discover.
+#
+# The leading guard refuses to run unless $GITHUB_ACTIONS=true so a
+# fat-fingered `make gha-local-converge` on a dev box cannot mutate
+# host networking, snap, systemd-networkd, iptables, swap and
+# /etc/fstab on the developer's machine. The Molecule scenario itself
+# repeats the same assertion in `prepare.yml` as defence in depth.
+define _molecule_local
+	@if [ "$${GITHUB_ACTIONS:-}" != "true" ]; then \
+		echo "ERROR: gha scenario is CI-only — refusing to run locally."; \
+		echo "       The scenario mutates host networking, snap, iptables,"; \
+		echo "       swap and /etc/fstab in ways that conflict with the"; \
+		echo "       Vagrant local harness. Use e2e-local for local e2e."; \
+		exit 1; \
+	fi
+	@MOLECULE_GLOB='$(HERE)/*/molecule.yml' \
+		$(MOLECULE) $2 -s $1
+endef
+
+gha-local-create:        ; $(call _molecule_local,gha,create)
+gha-local-prepare:       ; $(call _molecule_local,gha,prepare)
+gha-local-converge:      ; $(call _molecule_local,gha,converge)
+gha-local-idempotence:   ; $(call _molecule_local,gha,idempotence)
+gha-local-verify:        ; $(call _molecule_local,gha,verify)
+gha-local-test:          ; $(call _molecule_local,gha,test)
+gha-local-destroy:       ; $(call _molecule_local,gha,destroy)
+gha-local-lint:          ; $(call _molecule_local,gha,lint)
+.PHONY: gha-local-create gha-local-prepare gha-local-converge \
+        gha-local-idempotence gha-local-verify gha-local-test \
+        gha-local-destroy gha-local-lint

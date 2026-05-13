@@ -1,0 +1,172 @@
+---
+# Molecule e2e on a GitHub Actions ubuntu-latest runner.
+#
+# Runs the `tests/molecule/gha` scenario — which imports the full
+# e2e-local bootstrap → mgmt-1 pivot → workload flow — directly on the
+# runner (no Vagrant, no nested virtualisation). The scenario's
+# `host_vars/k8slab-host.yml` pins `ansible_connection: local`, and
+# `tests/molecule/gha/prepare.yml` substitutes the Vagrant-attached
+# disk with a loopback btrfs image on /mnt and runs `radvd` on a veth
+# pair inside the runner — the same RA source the Vagrant harness uses,
+# just sitting on the runner instead of the libvirt VM.
+#
+# Trigger policy:
+#   * pull_request → runs the scenario if anything that could affect
+#     end-to-end behaviour changed (roles, charts, tests/molecule, the
+#     workflow itself, requirements.yml). Doc-only PRs skip the job.
+#   * push to main → always runs, to catch regressions that slipped in
+#     via a path-filtered PR.
+#
+# Concurrency: cancel-in-progress so a force-push during a slow e2e
+# does not double-bill runner minutes.
+
+name: Molecule
+
+on:
+  pull_request:
+    branches:
+      - main
+      - add-gha-ci
+    paths:
+      - "ansible/**"
+      - "charts/**"
+      - "terraform/**"
+      - "tests/molecule/**"
+      - "scripts/**"
+      - ".github/workflows/molecule.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - "ansible/**"
+      - "charts/**"
+      - "terraform/**"
+      - "tests/molecule/**"
+      - "scripts/**"
+      - ".github/workflows/molecule.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: molecule-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  gha:
+    name: "tests/molecule/gha (e2e on runner)"
+    runs-on: ubuntu-latest
+    # 6h is the GHA hard ceiling; we set a softer one so a runaway job
+    # gets killed before the billing edge. The full bootstrap → pivot
+    # → workload flow has historically run in ~30–60 min on the local
+    # harness; we double-budget it for the slower runner IO.
+    timeout-minutes: 180
+
+    env:
+      # Read by `tests/molecule/e2e-local/converge.yml` as the
+      # runner-reachable LXD host address (substituted into the
+      # rewritten kubeconfig + `/livez` probe URL). On a runner the
+      # LXD-proxy device listener is on the loopback.
+      K8SLAB_HOST_ADDR: "127.0.0.1"
+      # Ansible / Molecule discoverability.
+      ANSIBLE_FORCE_COLOR: "true"
+      PY_COLORS: "1"
+      ANSIBLE_COLLECTIONS_PATH: ${{ github.workspace }}/ansible/collections
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: requirements-gha.txt
+
+      - name: Install Python tooling from pinned requirements
+        # `requirements-gha.txt` is a fully-pinned set (primary +
+        # transitives) generated at repo root from a Python 3.13 venv.
+        # Regeneration recipe lives at the top of that file; per
+        # memory `feedback_latest_stable`, regenerate from scratch
+        # against the latest stable primaries — never bump a single
+        # transitive by hand.
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-gha.txt
+
+      - name: Install Ansible collections
+        run: |
+          ansible-galaxy collection install \
+            -r ansible/requirements.yml \
+            -p "$ANSIBLE_COLLECTIONS_PATH" --force
+
+      - name: Install Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: "v3.18.4"
+
+      - name: Install kubectl
+        # kubectl is used by chart-side `helm test` Pods (which `exec`
+        # `kubectl` shipped INSIDE the Pod image) and by a couple of
+        # diagnostic taps in the flow. Keeping the host-side copy
+        # version-matched to k8s_lab_kubectl_version (currently
+        # v1.35.3) avoids surprise API-version drift.
+        uses: azure/setup-kubectl@v4
+        with:
+          version: "v1.35.3"
+
+      - name: Free disk before molecule prepare
+        # Belt-and-braces alongside the in-playbook cleanup in
+        # `tests/molecule/gha/tasks/runner-cleanup.yml`. The actions
+        # in this step shave another ~10 GiB out of /, which gives
+        # snap LXD's cache room to expand on first boot.
+        run: |
+          sudo rm -rf \
+            /usr/share/dotnet \
+            /usr/share/swift \
+            /opt/ghc \
+            /opt/hostedtoolcache/CodeQL \
+            /opt/microsoft \
+            /usr/local/lib/android \
+            /usr/local/share/boost \
+            /imagegeneration \
+            || true
+          df -h /
+
+      - name: Molecule test (gha scenario)
+        # Routed through the project Makefile to keep the invocation
+        # scheme consistent with local Vagrant scenarios
+        # (memory `feedback_makefile_only`). The Makefile target
+        # enforces $GITHUB_ACTIONS=true as a defence-in-depth guard
+        # against accidental local execution.
+        run: make -C tests/molecule gha-local-test
+
+      - name: Collect diagnostics on failure
+        if: failure()
+        run: |
+          set +e
+          echo "=== df -h"
+          df -h
+          echo "=== free -m"
+          free -m
+          echo "=== lxc list (if LXD reachable)"
+          sudo lxc list 2>&1 || true
+          echo "=== systemctl --failed"
+          sudo systemctl --failed || true
+          echo "=== journalctl --boot --priority=err"
+          sudo journalctl --boot --priority=err --no-pager | tail -200 || true
+          echo "=== ls .artifacts/"
+          ls -laR .artifacts 2>&1 | tail -200 || true
+
+      - name: Upload .artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: k8s-lab-artifacts
+          path: |
+            .artifacts/
+            /tmp/molecule.*.log
+          retention-days: 7
+          if-no-files-found: ignore
