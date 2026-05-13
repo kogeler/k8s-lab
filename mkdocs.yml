@@ -1,7 +1,7 @@
 site_name: k8s-lab
 site_description: >-
   Reusable building blocks for a single-host Kubernetes laboratory on
-  Debian-family Linux: LXC/LXD nodes driven by Cluster API (CAPN), Ansible
+  Debian or Ubuntu Linux: LXC/LXD nodes driven by Cluster API (CAPN), Ansible
   roles, a Terraform module, and Helm charts. Molecule + Vagrant + libvirt
   local test harness.
 site_url: https://k8s-lab.romancello.net/

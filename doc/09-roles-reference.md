@@ -34,14 +34,14 @@ Each role section follows the same template:
 
 ## Phase 0..1: Host bootstrap
 
-These two roles run on the bare-metal Debian-family Linux host before any
+These two roles run on the bare-metal Debian or Ubuntu Linux host before any
 LXD state exists. Together they own the host-side prerequisites: APT
 packages, kernel modules, sysctl, the `/opt/capi-lab` tree, and the
 pinned binaries everything downstream consumes.
 
 ### `base_system`
 
-**What it does.** Minimal Debian-family Linux host preparation. Installs
+**What it does.** Minimal Debian or Ubuntu Linux host preparation. Installs
 only the APT packages allowed by plan
 [`§2.2`](../plans/PLAN-stage1-common.md) (no custom APT repos),
 optionally installs `btrfs-progs`, loads and persists the kernel

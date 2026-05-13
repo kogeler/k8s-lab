@@ -7,7 +7,7 @@ When in doubt, follow the linked source of truth.
 ## Project In One Paragraph
 
 `k8s-lab` is a reusable building-block repository for a single-host
-Kubernetes lab on Debian-family Linux. Kubernetes nodes are unprivileged
+Kubernetes lab on Debian or Ubuntu Linux. Kubernetes nodes are unprivileged
 LXC/LXD system containers. Cluster lifecycle is driven by Cluster API with
 CAPN. A transient k3s bootstrap LXC installs CAPI/CAPN, management ownership is
 pivoted to a self-hosted `mgmt-1` cluster, and workload clusters are then

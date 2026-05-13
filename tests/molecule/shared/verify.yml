@@ -15,8 +15,12 @@
     - name: "Verify | shared | host is reachable"
       ansible.builtin.ping: {}
 
-    - name: "Verify | shared | OS family is Debian"
+    - name: "Verify | shared | OS family is Debian (Debian or Ubuntu)"
+      # ansible_facts['os_family'] is "Debian" for both Debian and
+      # Ubuntu hosts — this assert simply screens out RHEL/Arch/etc.
+      # The narrower Debian-13+ / Ubuntu-22.04+ gate lives in each role's
+      # own preflight.
       ansible.builtin.assert:
         that:
           - ansible_facts['os_family'] | default('') == 'Debian'
-        fail_msg: "k8s-lab targets Debian family hosts only."
+        fail_msg: "k8s-lab targets Debian or Ubuntu hosts only."

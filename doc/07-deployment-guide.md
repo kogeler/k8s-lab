@@ -2,7 +2,7 @@
 
 This is the practical chapter. It walks an operator from a blank
 private "consumer" repository to a fully running k8s-lab on a real
-Debian-family Linux host: substrate, bootstrap, pivot, and a workload
+Debian or Ubuntu Linux host: substrate, bootstrap, pivot, and a workload
 cluster.
 
 The flow described here is the production form of what
@@ -13,7 +13,7 @@ roles, the same charts, the same Terraform module. Only the *inputs*
 > **Before you start**: you should have read
 > [`01-overview.md`](01-overview.md) and
 > [`02-architecture.md`](02-architecture.md), and you should have a
-> Debian-family Linux host that satisfies
+> Debian or Ubuntu Linux host that satisfies
 > [`05-prerequisites.md`](05-prerequisites.md).
 
 ---

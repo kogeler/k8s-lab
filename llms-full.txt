@@ -127,7 +127,7 @@ retain their own licenses.
   into the English translation under `plans/`.
 - **"Runner"** = the operator's local machine (where you run
   `ansible-playbook` / `terraform` / `helm`). **"Host"** = the bare
-  metal target Debian-family Linux machine. **"Bootstrap"** = the temporary
+  metal target Debian or Ubuntu Linux machine. **"Bootstrap"** = the temporary
   k3s LXC instance used during the initial Cluster API pivot.
 
 ---
@@ -156,7 +156,7 @@ of truth for *how to use* it.
 ## What is k8s-lab
 
 **k8s-lab** is a reusable code repository for building a Kubernetes
-laboratory on a single bare-metal Debian-family Linux host where the
+laboratory on a single bare-metal Debian or Ubuntu Linux host where the
 Kubernetes nodes are **LXC/LXD system containers**, not virtual machines,
 and the cluster lifecycle is managed end-to-end by the **Cluster API
 provider for Incus/LXD (CAPN)**.
@@ -308,7 +308,7 @@ cycle, and must not regress Stage 1 invariants.
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
-│ Bare-metal host (Debian-family Linux)                               │
+│ Bare-metal host (Debian or Ubuntu Linux)                               │
 │                                                                     │
 │   ┌──────────────┐    LXD substrate (snap, project=capi-lab)       │
 │   │ /opt/capi-lab│         │                                        │
@@ -372,8 +372,8 @@ For the *why* behind each decision, see plan `§2`–`§6`.
 
 ## 1. The one-host model
 
-Every component of a k8s-lab deployment runs on a single Debian-family
-Linux bare-metal host:
+Every component of a k8s-lab deployment runs on a single Debian or
+Ubuntu Linux bare-metal host:
 
 - **The host itself** runs only LXD (installed via snap) and a Linux
   bridge for the external IPv6 segment. No Docker, no host-level
@@ -716,7 +716,7 @@ pivot is not magic.
 ### 7.1. After Phase 4 (substrate + bootstrap k3s + clusterctl init)
 
 ```
-host (Debian-family Linux)
+host (Debian or Ubuntu Linux)
 ├── /opt/capi-lab/bin/{kubectl,clusterctl,k3s}        # binaries
 ├── /var/snap/lxd/common/lxd/                          # LXD data dir
 └── LXD project "capi-lab"
@@ -735,7 +735,7 @@ The runner has `.artifacts/mgmt.kubeconfig` pointing at
 ### 7.2. After Phase 5 (mgmt-1 helm install + Gate A/B)
 
 ```
-host (Debian-family Linux)
+host (Debian or Ubuntu Linux)
 └── LXD project "capi-lab"
     ├── capi-bootstrap-0    (still alive)
     │   └── (same as above)
@@ -757,7 +757,7 @@ Helm releases on bootstrap k3s:
 ### 7.3. After Phase 7 (pivot + cleanup_bootstrap)
 
 ```
-host (Debian-family Linux)
+host (Debian or Ubuntu Linux)
 └── LXD project "capi-lab"
     ├── mgmt-1-CP-0         (now SELF-HOSTING the CAPI controllers)
     ├── mgmt-1-W-0
@@ -777,7 +777,7 @@ kube-apiserver.
 ### 7.4. After Phase 9 (workload helm install)
 
 ```
-host (Debian-family Linux)
+host (Debian or Ubuntu Linux)
 └── LXD project "capi-lab"
     ├── mgmt-1-CP-0          (self-hosted mgmt)
     ├── mgmt-1-W-{0,1}
@@ -910,10 +910,12 @@ re-tell that flow — it only enumerates the pieces.
 
 ## Host platform
 
-- **OS target:** Debian-family Linux. The pinned reference is Debian 13
-  Trixie — both the production target host (per plan `§2.1`) and the
-  local Vagrant VM run this build. Role preflight checks enforce the
-  host distribution; see role source for the exact assertion.
+- **OS target:** Debian or Ubuntu Linux. The pinned production reference
+  is Debian 13 Trixie — both the production target host (per plan
+  `§2.1`) and the local Vagrant VM run this build. The CI Molecule
+  scenario (`tests/molecule/gha`) exercises the same roles on Ubuntu on
+  a GitHub Actions runner. Role preflight checks gate on Debian 13+ or
+  Ubuntu 22.04+; see role source for the exact assertion.
 - **Package source:** only the standard Debian APT repositories.
   Custom APT repositories on the host are forbidden (`§2.2`); every
   non-standard binary (`kubectl`, `clusterctl`, `k3s`) is fetched into
@@ -1749,11 +1751,11 @@ multiple workloads on one mgmt) needs more of all three.
 
 ### Operating system
 
-- **Debian-family Linux.** Other Linux families are out of scope: the role
-  contract assumes apt, systemd-networkd, the `snap` package, the LXD
-  snap, and the Debian-family kernel feature defaults. The host
-  distribution is asserted by every role's preflight; see the role
-  source for the strict gate.
+- **Debian or Ubuntu Linux.** Other Linux families are out of scope: the
+  role contract assumes apt, systemd-networkd, the `snap` package, the
+  LXD snap, and the Debian / Ubuntu kernel feature defaults. The host
+  distribution is asserted by every role's preflight (Debian 13+ or
+  Ubuntu 22.04+); see the role source for the strict gate.
 - A clean install with the standard system utilities is enough —
   the roles install everything else (LXD via snap; `kubectl`,
   `clusterctl`, `k3s` binaries downloaded into
@@ -1787,12 +1789,12 @@ Notes (driven by [`§2.11`](../plans/PLAN-stage1-common.md) and the
 
 ### Kernel and namespaces
 
-Recent Debian-family kernels ship these features by default. They are
-listed here so you can sanity-check a non-default install:
+Recent Debian and Ubuntu kernels ship these features by default. They
+are listed here so you can sanity-check a non-default install:
 
-- User namespaces enabled (Debian-family default).
-- `unprivileged_userns_clone=1` (Debian-family default on recent releases).
-- cgroup v2 (Debian-family default on recent releases).
+- User namespaces enabled (Debian and Ubuntu default).
+- `unprivileged_userns_clone=1` (Debian and Ubuntu default on recent releases).
+- cgroup v2 (Debian and Ubuntu default on recent releases).
 - AppArmor enabled and active (LXD's snap profile depends on it).
 - The kernel modules used by Calico — `overlay`, `br_netfilter`,
   `ip_tables`, `ip6_tables`, `xt_*`, `vxlan` — present. The
@@ -2548,7 +2550,7 @@ operations see [`11-operations.md`](11-operations.md).
 
 This is the practical chapter. It walks an operator from a blank
 private "consumer" repository to a fully running k8s-lab on a real
-Debian-family Linux host: substrate, bootstrap, pivot, and a workload
+Debian or Ubuntu Linux host: substrate, bootstrap, pivot, and a workload
 cluster.
 
 The flow described here is the production form of what
@@ -2559,7 +2561,7 @@ roles, the same charts, the same Terraform module. Only the *inputs*
 > **Before you start**: you should have read
 > [`01-overview.md`](01-overview.md) and
 > [`02-architecture.md`](02-architecture.md), and you should have a
-> Debian-family Linux host that satisfies
+> Debian or Ubuntu Linux host that satisfies
 > [`05-prerequisites.md`](05-prerequisites.md).
 
 ---
@@ -3869,7 +3871,7 @@ is role-scoped (consumed by role `lxd_host` directly, plan §13.2).
 
 | Name | Type | Default | Required? | Notes |
 | --- | --- | --- | --- | --- |
-| `k8s_lab_host_distro` | string | `debian-13` | no | Target host distribution. The role contract gates on the Debian-family kernel and apt baseline; see role preflight checks for the strict assertion. |
+| `k8s_lab_host_distro` | string | `debian-13` | no | Target host distribution. The role contract gates on the Debian / Ubuntu kernel and apt baseline (Debian 13+ or Ubuntu 22.04+); see role preflight checks for the strict assertion. |
 | `lxd_host_snap_channel` | string | `6/stable` | no | LXD snap channel; feature-stable per the §8a deviation (Canonical recommends LTS `5.21/stable`). |
 | `lxd_host_snap_refresh_mode` | string | `hold` | no | `hold` or `timer`; hold is indefinite, timer is `snap set system refresh.timer=...`. |
 | `lxd_host_snap_refresh_timer_value` | string | `fri,03:00-04:00` | no | systemd-calendar expression used when `lxd_host_snap_refresh_mode=timer`. |
@@ -4023,7 +4025,7 @@ role. `_<role>_*` private vars are intentionally omitted.
 
 ### `base_system`
 
-Plan §13.1. Minimal Debian-family Linux host preparation.
+Plan §13.1. Minimal Debian or Ubuntu Linux host preparation.
 
 | Name | Type | Default | Notes |
 | --- | --- | --- | --- |
@@ -4610,14 +4612,14 @@ Each role section follows the same template:
 
 ## Phase 0..1: Host bootstrap
 
-These two roles run on the bare-metal Debian-family Linux host before any
+These two roles run on the bare-metal Debian or Ubuntu Linux host before any
 LXD state exists. Together they own the host-side prerequisites: APT
 packages, kernel modules, sysctl, the `/opt/capi-lab` tree, and the
 pinned binaries everything downstream consumes.
 
 ### `base_system`
 
-**What it does.** Minimal Debian-family Linux host preparation. Installs
+**What it does.** Minimal Debian or Ubuntu Linux host preparation. Installs
 only the APT packages allowed by plan
 [`§2.2`](../plans/PLAN-stage1-common.md) (no custom APT repos),
 optionally installs `btrfs-progs`, loads and persists the kernel
@@ -8691,7 +8693,7 @@ of scope. KCP enforces odd replica counts under stacked etcd (1, 3,
 
 ### substrate
 
-Everything below the management cluster: the Debian-family Linux host,
+Everything below the management cluster: the Debian or Ubuntu Linux host,
 LXD via snap, the `br-ext6` Linux bridge, the `capi-int` LXD bridge, LXD
 storage pools and profiles, the `capi-lab` LXD project, and the
 bootstrap LXC instance up to and including `bootstrap_clusterctl`.

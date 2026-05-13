@@ -60,7 +60,7 @@ is role-scoped (consumed by role `lxd_host` directly, plan §13.2).
 
 | Name | Type | Default | Required? | Notes |
 | --- | --- | --- | --- | --- |
-| `k8s_lab_host_distro` | string | `debian-13` | no | Target host distribution. The role contract gates on the Debian-family kernel and apt baseline; see role preflight checks for the strict assertion. |
+| `k8s_lab_host_distro` | string | `debian-13` | no | Target host distribution. The role contract gates on the Debian / Ubuntu kernel and apt baseline (Debian 13+ or Ubuntu 22.04+); see role preflight checks for the strict assertion. |
 | `lxd_host_snap_channel` | string | `6/stable` | no | LXD snap channel; feature-stable per the §8a deviation (Canonical recommends LTS `5.21/stable`). |
 | `lxd_host_snap_refresh_mode` | string | `hold` | no | `hold` or `timer`; hold is indefinite, timer is `snap set system refresh.timer=...`. |
 | `lxd_host_snap_refresh_timer_value` | string | `fri,03:00-04:00` | no | systemd-calendar expression used when `lxd_host_snap_refresh_mode=timer`. |
@@ -214,7 +214,7 @@ role. `_<role>_*` private vars are intentionally omitted.
 
 ### `base_system`
 
-Plan §13.1. Minimal Debian-family Linux host preparation.
+Plan §13.1. Minimal Debian or Ubuntu Linux host preparation.
 
 | Name | Type | Default | Notes |
 | --- | --- | --- | --- |
