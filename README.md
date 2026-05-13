@@ -3,6 +3,7 @@
 [![License: MIT](https://img.shields.io/github/license/kogeler/k8s-lab)](LICENSE)
 [![Latest release](https://img.shields.io/github/v/release/kogeler/k8s-lab?display_name=tag&sort=semver)](https://github.com/kogeler/k8s-lab/releases)
 [![Last commit](https://img.shields.io/github/last-commit/kogeler/k8s-lab/main)](https://github.com/kogeler/k8s-lab/commits/main)
+[![Docs](https://img.shields.io/badge/docs-k8s--lab.romancello.net-2088FF?logo=readthedocs&logoColor=white)](https://k8s-lab.romancello.net/)
 [![Kubernetes](https://img.shields.io/badge/kubernetes-v1.35-blue?logo=kubernetes&logoColor=white)](doc/03-stack.md)
 [![Cluster API](https://img.shields.io/badge/cluster--api-v1.12-326CE5)](doc/03-stack.md)
 [![CAPN](https://img.shields.io/badge/CAPN-v0.8-228B22)](doc/03-stack.md)
@@ -129,8 +130,9 @@ ownership split.
 
 ## Documentation
 
-Start with [`doc/README.md`](doc/README.md) for the full user-facing
-documentation. Common entry points:
+The full user-facing documentation is rendered as a MkDocs site at
+**<https://k8s-lab.romancello.net/>**. The same content lives under
+[`doc/`](doc/) for offline reading on GitHub. Common entry points:
 
 - [Overview](doc/01-overview.md) — core idea, goals, non-goals.
 - [Architecture](doc/02-architecture.md) — bootstrap and pivot flow, dual-NIC
