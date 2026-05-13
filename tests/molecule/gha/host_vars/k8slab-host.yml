@@ -84,9 +84,22 @@ lxd_storage_pools_pools:
 lxd_bootstrap_instance_wait_timeout: 600
 bootstrap_k3s_wait_retries:          180
 bootstrap_k3s_wait_delay:            4
-bootstrap_clusterctl_init_timeout:   1200
-bootstrap_clusterctl_wait_retries:   180
-bootstrap_clusterctl_wait_delay:     5
+# init_timeout (ansible async) must stay strictly greater than
+# `bootstrap_clusterctl_cert_manager_timeout` below — otherwise
+# Ansible's async would kill the clusterctl process before its own
+# cert-manager wait window expires, and we'd lose the rich
+# "context deadline exceeded" diagnostic from clusterctl.
+bootstrap_clusterctl_init_timeout:        1800
+bootstrap_clusterctl_wait_retries:        180
+bootstrap_clusterctl_wait_delay:          5
+
+# Bootstrap-time cert-manager wait inside `clusterctl init`. Default
+# upstream is 10 min — on Azure-hosted GHA runners, cold-cache pulls
+# of cainjector + webhook + controller from quay.io routinely take
+# 12–15 min, so 10 min trips the internal deadline with "context
+# deadline exceeded" before the Deployments reach Available. 25 min
+# is a wide safety margin; tighten back once we have cache stats.
+bootstrap_clusterctl_cert_manager_timeout: "25m"
 
 # --- Kubeconfig modes: runner-readable on GHA -----------------------
 #

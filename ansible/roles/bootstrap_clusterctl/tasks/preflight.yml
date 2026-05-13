@@ -63,9 +63,16 @@
       - bootstrap_clusterctl_wait_retries | int > 0
       - bootstrap_clusterctl_wait_delay | int > 0
       - bootstrap_clusterctl_cluster_topology_enabled in [true, false]
+      # cert-manager timeout is optional. Accept "" (use clusterctl
+      # default) OR a Go duration suffix [smh] on a positive number.
+      - bootstrap_clusterctl_cert_manager_timeout is string
+      - >-
+        (bootstrap_clusterctl_cert_manager_timeout | length == 0)
+        or (bootstrap_clusterctl_cert_manager_timeout is match('^[1-9][0-9]*[smh]$'))
     fail_msg: >-
       bootstrap_clusterctl: capn_version must look like vX.Y.Z;
-      extra_* must be sequences; timeouts must be positive ints.
+      extra_* must be sequences; timeouts must be positive ints;
+      cert_manager_timeout must be empty or "<N>[smh]".
 
 - name: "bootstrap-clusterctl | preflight | assert host clusterctl present"
   ansible.builtin.stat:

@@ -44,6 +44,15 @@ provisioner:
       result_format: yaml
       forks: 5
       callbacks_enabled: ansible.posix.profile_tasks
+    diff:
+      # `[diff] always=true` is the ini equivalent of `--diff` on every
+      # ansible-playbook invocation molecule makes (prepare, converge,
+      # idempotence, verify). Enabled only for the gha scenario — the
+      # CI log is the only artefact we have for post-mortem debugging,
+      # so showing per-task diffs there is worth the extra log volume.
+      # Vagrant scenarios keep the default (diff off) to keep dev-loop
+      # logs readable.
+      always: true
   inventory:
     links:
       group_vars: ../shared/inventory/group_vars

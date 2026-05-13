@@ -116,24 +116,6 @@ jobs:
         with:
           version: "v1.35.3"
 
-      - name: Free disk before molecule prepare
-        # Belt-and-braces alongside the in-playbook cleanup in
-        # `tests/molecule/gha/tasks/runner-cleanup.yml`. The actions
-        # in this step shave another ~10 GiB out of /, which gives
-        # snap LXD's cache room to expand on first boot.
-        run: |
-          sudo rm -rf \
-            /usr/share/dotnet \
-            /usr/share/swift \
-            /opt/ghc \
-            /opt/hostedtoolcache/CodeQL \
-            /opt/microsoft \
-            /usr/local/lib/android \
-            /usr/local/share/boost \
-            /imagegeneration \
-            || true
-          df -h /
-
       - name: Molecule test (gha scenario)
         # Routed through the project Makefile to keep the invocation
         # scheme consistent with local Vagrant scenarios
@@ -143,21 +125,102 @@ jobs:
         run: make -C tests/molecule gha-local-test
 
       - name: Collect diagnostics on failure
+        # Designed so that a single failed run produces enough state to
+        # diagnose without rerunning the 30–60 min e2e:
+        #   1. Host: disk / memory / loop devices / failed units /
+        #      kernel-level errors / iptables + nftables snapshot.
+        #   2. LXD substrate: every project's containers (the previous
+        #      bare `lxc list` showed only the `default` project and
+        #      missed the bootstrap LXC living in `capi-lab`), per-
+        #      instance info, and an inside-container ip-addr +
+        #      journal-error dump.
+        #   3. Bootstrap k3s: nodes / pods / events / describe + logs
+        #      for every non-Running pod. This is the layer where
+        #      `clusterctl init` waits for cert-manager and where the
+        #      "context deadline exceeded" class of failures originates.
+        #   4. Self-hosted mgmt (post-pivot): if `.artifacts/mgmt.kubeconfig`
+        #      exists, snapshot CAPI CRs + recent events.
+        #   5. Artifacts dir for the kubeconfigs / tfvars we shipped.
+        # `set +e` + `|| true` on every probe so a hard fail in one
+        # section never short-circuits the rest.
         if: failure()
         run: |
           set +e
-          echo "=== df -h"
-          df -h
-          echo "=== free -m"
-          free -m
-          echo "=== lxc list (if LXD reachable)"
-          sudo lxc list 2>&1 || true
-          echo "=== systemctl --failed"
-          sudo systemctl --failed || true
-          echo "=== journalctl --boot --priority=err"
-          sudo journalctl --boot --priority=err --no-pager | tail -200 || true
-          echo "=== ls .artifacts/"
-          ls -laR .artifacts 2>&1 | tail -200 || true
+          say() { echo ""; echo "=== $* ==="; }
+          BOOT_KC=/opt/capi-lab/etc/bootstrap_clusterctl/bootstrap.kubeconfig
+          MGMT_KC="$GITHUB_WORKSPACE/.artifacts/mgmt.kubeconfig"
+          KCT='kubectl --request-timeout=15s'
+
+          # ---- 1. host ----
+          say "host: df -h"; df -h
+          say "host: free -m"; free -m
+          say "host: loop devices"; sudo losetup -a 2>&1
+          say "host: failed units"; sudo systemctl --failed
+          say "host: journal errors (last 200)"
+          sudo journalctl --boot --priority=err --no-pager 2>&1 | tail -200
+          say "host: iptables nat (head 50)"
+          sudo iptables -t nat -S 2>&1 | head -50
+          say "host: nftables tables"
+          sudo nft list tables 2>&1
+
+          # ---- 2. LXD substrate ----
+          say "LXD: daemon info"
+          sudo lxc info 2>&1 | head -20
+          say "LXD: projects"
+          sudo lxc project list 2>&1
+          say "LXD: containers in ALL projects"
+          sudo lxc list --all-projects 2>&1
+
+          # Per-container deep dive — name+project pairs via CSV.
+          sudo lxc list --all-projects --format csv -c np 2>/dev/null \
+            | while IFS=, read -r name proj; do
+                [ -z "$name" ] && continue
+                say "LXD: info $proj/$name"
+                sudo lxc info --project "$proj" "$name" 2>&1 | head -40
+                say "LXD: $proj/$name -- ip addr"
+                sudo lxc exec --project "$proj" "$name" -- ip -br addr 2>&1
+                say "LXD: $proj/$name -- recent journal errors"
+                sudo lxc exec --project "$proj" "$name" -- \
+                  journalctl --no-pager -p err -n 80 2>&1
+              done
+
+          # ---- 3. bootstrap k3s ----
+          if sudo test -r "$BOOT_KC"; then
+            say "bootstrap k3s: kubeconfig at $BOOT_KC"
+            sudo $KCT --kubeconfig "$BOOT_KC" get nodes -o wide 2>&1
+            say "bootstrap k3s: pods (all-ns)"
+            sudo $KCT --kubeconfig "$BOOT_KC" get pods -A -o wide 2>&1
+            say "bootstrap k3s: recent events (last 60)"
+            sudo $KCT --kubeconfig "$BOOT_KC" \
+              get events -A --sort-by=.lastTimestamp 2>&1 | tail -60
+            say "bootstrap k3s: non-Running pods describe + logs"
+            sudo $KCT --kubeconfig "$BOOT_KC" get pods -A --no-headers 2>/dev/null \
+              | awk '$4 != "Running" && $4 != "Completed" { print $1 " " $2 }' \
+              | while read ns name; do
+                  say "describe $ns/$name"
+                  sudo $KCT --kubeconfig "$BOOT_KC" \
+                    describe -n "$ns" pod "$name" 2>&1 | head -100
+                  say "logs $ns/$name"
+                  sudo $KCT --kubeconfig "$BOOT_KC" \
+                    logs --tail=100 -n "$ns" "$name" --all-containers 2>&1
+                done
+          else
+            say "bootstrap k3s: $BOOT_KC missing or unreadable — skipped"
+          fi
+
+          # ---- 4. self-hosted mgmt (post-pivot only) ----
+          if [ -r "$MGMT_KC" ]; then
+            say "mgmt: CAPI snapshot"
+            $KCT --kubeconfig "$MGMT_KC" get \
+              clusters,kcp,md,ma -A -o wide 2>&1 | head -60
+            say "mgmt: events (last 40)"
+            $KCT --kubeconfig "$MGMT_KC" \
+              get events -A --sort-by=.lastTimestamp 2>&1 | tail -40
+          fi
+
+          # ---- 5. shipped artifacts ----
+          say "artifacts tree"
+          sudo ls -laR .artifacts 2>&1 | tail -100
 
       - name: Upload .artifacts on failure
         if: failure()

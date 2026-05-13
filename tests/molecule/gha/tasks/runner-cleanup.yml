@@ -60,8 +60,7 @@
 - name: "gha | runner-cleanup | reclaim disk via apt purge of bloat"
   # ubuntu-latest pre-installs ~5–10 GiB of toolchains we do not use.
   # Purging recovers space on `/`, which is where snap's LXD storage
-  # cache lives (the pool itself moves to /mnt below — see
-  # loopback-pool.yml).
+  # cache lives (the pool itself moves to /mnt — see loopback-pool.yml).
   ansible.builtin.apt:
     name:
       - "google-chrome-stable"
@@ -84,6 +83,8 @@
   # Apt does not track these — they live under /usr/local or /opt and
   # are dropped onto the image by GitHub's runner-images build pipeline.
   # `rm -rf` on a missing path returns 0, so the loop is idempotent.
+  # Owned by this playbook (not the workflow YAML) so the disk-reclaim
+  # contract has a single source of truth: `tests/molecule/gha/`.
   ansible.builtin.file:
     path: "{{ item }}"
     state: absent

@@ -15,3 +15,11 @@ providers:
     url:  "{{ entry.url }}"
     type: "{{ entry.type }}"
 {% endfor %}
+{% if bootstrap_clusterctl_cert_manager_timeout | length > 0 %}
+
+# cert-manager block — emitted only when the consumer overrides the
+# wait timeout. clusterctl merges this partially with its bundled
+# defaults (URL + version stay defaulted; only `timeout` overrides).
+cert-manager:
+  timeout: "{{ bootstrap_clusterctl_cert_manager_timeout }}"
+{% endif %}
