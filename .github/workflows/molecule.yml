@@ -25,7 +25,7 @@ name: Molecule
 on:
   pull_request:
     branches:
-      - mainу 
+      - main
     paths:
       - "ansible/**"
       - "charts/**"
