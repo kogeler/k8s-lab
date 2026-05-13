@@ -4,6 +4,14 @@ List of features that may be implemented on top of the working
 substrate of the repo. Each item is opt-in, independent of the others,
 and requires its own design step + implementation + lint/test cycle.
 
+Stage 2 file lineup (§N is assigned when a backlog item is
+implemented as a numbered Step, not before):
+
+```
+PLAN-stage2-common.md ............ backlog (this file)
+PLAN-stage2-1.md ................. §23  (Step 18 — hosted CI path)
+```
+
 Forbidden:
 * to regress substrate invariants fixed in the repo code
   (unprivileged-only LXC, helm-first delivery of K8s objects, mandatory
@@ -15,6 +23,12 @@ Forbidden:
   on a fresh VM.
 
 Items have no fixed order of implementation.
+
+## Completed Stage 2 items
+
+* Step 18 — **Hosted CI path on GitHub Actions** (`§23`, see
+  `PLAN-stage2-1.md`). Closes the *"Hosted CI path without local
+  runner"* item that previously lived in this backlog.
 
 ---
 
@@ -160,27 +174,6 @@ create / destroy.
 
 **Trade-off.** Backup/restore requires a storage provisioner (see Day-1
 addons above) — upgrades are fully independent.
-
----
-
-## Hosted CI path without local runner
-
-**Goal.** Run e2e-local in a hosted CI environment (GitHub Actions /
-GitLab CI / etc.), without requiring an operator with a physical Vagrant + libvirt
-host.
-
-**Approach.**
-* nested virtualization: the host runner brings up nested KVM → Vagrant
-  libvirt provider. GitHub Actions Linux runners support KVM
-  via the `setup-kvm` action or manual `apt install qemu-kvm`. Cost:
-  e2e cycle ~30 min, which is acceptable for PR validation;
-* alternative: a bare LXD host on the hosted-CI runner (running the whole
-  substrate + bootstrap k3s + workload without promiscuous mode and without
-  libvirt) — less overhead, but requires privileged host access
-  which GitHub Actions runners do not provide.
-
-**Trade-off.** Sustained CI cost (CPU minutes + KVM setup time on
-a cold runner). Guarantee: every PR passes a full e2e before merge.
 
 ---
 

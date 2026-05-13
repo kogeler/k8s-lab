@@ -25,6 +25,14 @@ feature.
   make -C tests/molecule <scenario>-delegated-converge
   make -C tests/molecule <scenario>-delegated-verify
   ```
+- After pushing, the GitHub Actions Molecule workflow
+  ([`.github/workflows/molecule.yml`](.github/workflows/molecule.yml))
+  runs the same canonical end-to-end flow on `ubuntu-latest` via the
+  CI-only `tests/molecule/gha` scenario — see
+  [`doc/12-testing.md`](doc/12-testing.md) §11. **Do not run the gha
+  scenario locally**: it mutates host networking, snap, iptables,
+  swap, and `/etc/fstab` in ways meant for an ephemeral runner; a
+  three-layer guard refuses local invocation.
 
 ## Scope
 

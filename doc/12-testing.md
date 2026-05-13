@@ -15,10 +15,13 @@ this order whenever a role, a chart, or a module is touched:
    which executes the full canonical flow (substrate → bootstrap →
    pivot → cleanup → workload, plus Gates A/B at every cluster).
 
-The harness is the **only** end-to-end driver shipped in the repo.
-There is no CI; the "test before commit" rule (plan `§2.11a`,
-user-memory `feedback_test_before_commit`) is enforced by running
-this locally on the developer's machine.
+The local Vagrant harness is the developer's pre-commit gate (plan
+`§2.11a`, user-memory `feedback_test_before_commit`). On top of it
+the repo also ships a **CI scenario** at `tests/molecule/gha/` that
+runs the same canonical end-to-end flow directly on a GitHub Actions
+`ubuntu-latest` runner — see §11 below. Both drivers exercise the
+same Ansible roles and Helm charts; only the substrate differs
+(Vagrant libvirt VM locally vs. the runner itself in CI).
 
 The full specification lives in plan `§9` (local development and
 testing) and `§9.5` (shared inventory architecture).
@@ -83,15 +86,17 @@ The currently wired scenarios, in canonical-flow order:
 | 12 | `export-artifacts` | `export_artifacts` | bootstrap (handoff) |
 | 13 | `cleanup-bootstrap` | `cleanup_bootstrap` | post-pivot |
 | 14 | `e2e-local` | (composite — full canonical flow) | end-to-end |
+| 15 | `gha` | (composite — same flow as `e2e-local`, **CI-only**) | end-to-end on GHA |
 
 The `tests/molecule/Makefile` curated `SCENARIOS` list is the source
-of truth; `make -C tests/molecule harness-smoke` enumerates and
-sanity-checks it.
+of truth for the Vagrant-driven scenarios (`harness-smoke` enumerates
+them); the CI-only `gha` lives in a separate `GHA_SCENARIOS` list and
+is invoked through its own `gha-local-*` target family — see §5.3.
 
 The `pivot_clusterctl_move` role is exercised only inside the
-`e2e-local` composite scenario; it has no standalone Molecule
-scenario by design (pivot is an end-to-end behaviour, not a
-substrate primitive).
+`e2e-local` (and therefore `gha`) composite scenario; it has no
+standalone Molecule scenario by design (pivot is an end-to-end
+behaviour, not a substrate primitive).
 
 ---
 
@@ -289,6 +294,39 @@ running any of them — useful when a scenario directory has been
 moved or renamed and you want to know whether the Make pattern
 still resolves it.
 
+### 5.3. The `gha-local-*` family (CI-only)
+
+The `gha` scenario uses a separate target family that bypasses
+`scripts/molecule_run.py` — no `vagrant up`, no SSH-coordinate
+discovery, because the scenario's `host_vars` pins
+`ansible_connection: local` (the target IS the runner). The
+recipe macro `_molecule_local` in `tests/molecule/Makefile` invokes
+`molecule` directly:
+
+```
+gha-local-{create,prepare,converge,idempotence,verify,test,destroy,lint}
+```
+
+Both layers refuse a local invocation:
+
+- The Make target gates on `$GITHUB_ACTIONS == "true"` at the top
+  of `_molecule_local` and `exit 1`s otherwise with a friendly
+  "CI-only" message.
+- The first task in `tests/molecule/gha/prepare.yml` asserts the
+  same env var as defence in depth.
+- The workflow file `.github/workflows/molecule.yml` is the only
+  legitimate caller.
+
+The reason for the strict guard: the scenario mutates host
+networking (`radvd` + a veth pair under systemd-networkd), the
+snap-installed LXD daemon, iptables (one explicit `FORWARD ACCEPT`
+rule after stopping Docker), `/etc/fstab` (swap), and 20 GiB of
+`/mnt` for the loopback btrfs pool image. On an ephemeral runner
+this is fine — the VM is discarded at job end. On a developer
+workstation it would persist and corrupt the local Vagrant harness.
+For local end-to-end runs use the Vagrant `e2e-local-vagrant-test`
+target (see §6).
+
 ---
 
 ## 6. Running e2e-local
@@ -438,10 +476,128 @@ Plan sources: `§9` (local development), `§9.4` (Make scheme),
 
 ## 11. CI
 
-There is no CI in this repository. Linters and Molecule are
-intentionally local-only — the "test before commit" policy
-(plan `§2.11a`, user-memory `feedback_test_before_commit`) puts
-the responsibility on the developer running the harness on a real
-VM before pushing. A consumer repository wrapping this code is
-free to add CI on top of `make lint` + `make test-local-e2e` —
-that is a consumer concern, not a Stage 1 contract.
+The repo ships **one** GitHub Actions workflow at
+[`.github/workflows/molecule.yml`](../.github/workflows/molecule.yml).
+It runs the `gha` Molecule scenario (full canonical flow:
+substrate → bootstrap → pivot → cleanup → workload + Gate A/B,
+imported verbatim from `e2e-local/{converge,verify}.yml`) directly
+on a `ubuntu-latest` runner. No Vagrant, no nested virtualisation —
+the runner itself is the host, with `ansible_connection: local`.
+
+### 11.1. Trigger policy
+
+```yaml
+on:
+  pull_request: { branches: [main], paths: [ansible/**, charts/**,
+                  terraform/**, tests/molecule/**, scripts/**,
+                  .github/workflows/molecule.yml] }
+  push:         { branches: [main], paths: <same as above> }
+  workflow_dispatch:
+```
+
+Doc-only PRs (`doc/**`, `*.md`) skip the workflow. Push-to-main
+re-checks every code change as defence in depth in case a path-
+filtered PR merged something unrelated. `cancel-in-progress` is
+on so a force-push during a 30–60 min e2e does not double-bill.
+
+### 11.2. Runner-specific substrate
+
+GHA's `ubuntu-latest` differs from the Vagrant VM in three ways
+the scenario compensates for:
+
+- **No dedicated disk** for the LXD pool. `tests/molecule/gha/tasks/
+  loopback-pool.yml` allocates a 20 GiB sparse file on `/mnt` (the
+  runner's large scratch volume), attaches it via `losetup -f --show`,
+  and publishes a stable symlink at
+  `/dev/disk/by-id/k8slab-lxdpool-loop` so `k8s_lab_lxd_pool_device`
+  resolves the same path on every re-run.
+- **Pre-installed Docker** owns `iptables -P FORWARD DROP`, and its
+  graceful shutdown does not revert it. `runner-cleanup.yml` stops
+  Docker (which cleans most of its rules) and inserts a single
+  explicit `iptables -I FORWARD -j ACCEPT` so LXC egress reaches
+  external registries.
+- **Image bloat** on `/`. The same task purges ~5 GiB of preinstalled
+  apt packages (`google-cloud-cli`, `azure-cli`, `mysql-*`, `php*`,
+  `ruby`, …) and `rm -rf`s another ~10 GiB of unpacked toolchains
+  (`/usr/share/dotnet`, `/usr/local/lib/android`, etc.). Diff is
+  suppressed on the rm step (`diff: false`) to avoid a 200k-line log
+  spam when the global `[diff] always=true` walks the Android SDK
+  tree.
+
+### 11.3. Scenario-local overrides
+
+The CI substrate ships a few overrides in
+`tests/molecule/gha/host_vars/k8slab-host.yml` that do NOT apply to
+the Vagrant flow:
+
+- **Mode relaxation** for kubeconfigs read by `kubernetes.core`
+  action plugins on the controller (`bootstrap_clusterctl` /
+  `pivot_clusterctl_move` `staging_mode_{dir,kubeconfig}` → 0755/0644).
+  With `connection: local` the action plugin reads `kubeconfig:`
+  on the controller as the runner user (the play's `become: true`
+  does NOT apply to controller-side file reads), so root-only
+  permissions cause EACCES.
+- **`bootstrap_clusterctl_cert_manager_timeout: "25m"`** rendered
+  into `clusterctl.yaml`. Default upstream wait is 10 min — cold
+  pulls of cert-manager from quay.io on Azure-hosted runners
+  routinely exceed that.
+- **`export_artifacts_tfvars_enabled: false`** — the
+  `mgmt.auto.tfvars.json` handoff artifact's healthcheck asserts
+  the API URL does not contain `127.0.0.1`. In CI the URL is
+  always loopback (target == runner), Terraform is never invoked,
+  so disabling the tfvars step avoids a false-positive failure.
+- **Wider timeouts** (`bootstrap_k3s_wait_retries`,
+  `bootstrap_clusterctl_init_timeout`, etc.) — the GHA runner's
+  IO and remote-registry latency are slower than the local libvirt
+  VM.
+
+### 11.4. Python deps
+
+`requirements-gha.txt` at repo root pins every Python dependency
+including transitives. Primary entries (`ansible-core`, `molecule`,
+`kubernetes`, `jsonpatch`) and the regeneration recipe live in the
+file header. Workflow uses
+`actions/setup-python@v5` with `cache-dependency-path:
+requirements-gha.txt` so the pip cache invalidates automatically
+when the file changes. Helm and kubectl come from the
+`azure/setup-{helm,kubectl}@v4` actions with explicit versions
+pinned in the workflow.
+
+### 11.5. Failure diagnostics
+
+The workflow's `Collect diagnostics on failure` step produces a
+multi-layer state dump intended to make a CI failure diagnosable
+without re-running the 30–60 min e2e:
+
+1. **Host** — `df -h`, `free -m`, `losetup -a`, `systemctl --failed`,
+   `journalctl --boot --priority=err`, `iptables -S` policies,
+   `iptables -t nat -S`, `nft list tables`, `nft list table inet lxd`,
+   `sysctl net.ipv4.ip_forward net.ipv6.conf.all.forwarding`.
+2. **LXD substrate** — `lxc info`, `lxc project list`,
+   `lxc list --all-projects`, per-container `lxc info` +
+   `ip -br addr` + `ip route` + a curl-probe to
+   `https://registry-1.docker.io/v2/` + `journalctl -p err`.
+3. **Bootstrap k3s** — `kubectl get nodes/pods -A/events` against
+   the bootstrap kubeconfig, plus `kubectl describe pod` and
+   `kubectl logs --tail=100 --all-containers` for every non-Running
+   pod. This is what catches the typical CI-substrate failure
+   modes (sandbox pause image pull, cert-manager init, etc.).
+4. **Self-hosted mgmt** — CAPI CR snapshot (Cluster, KCP, MD, Machine)
+   + events if `.artifacts/mgmt.kubeconfig` reached the post-pivot
+   state.
+5. **Artifacts dir** — `ls -laR .artifacts`.
+
+The `Upload .artifacts on failure` step then uploads `.artifacts/`
+and `/tmp/molecule.*.log` as a `k8s-lab-artifacts` zip, retention
+7 days, so the dump is available for post-mortem outside the run
+log.
+
+### 11.6. Local equivalence
+
+The `gha` scenario IS forbidden to run locally (defence-in-depth
+guards in three places — see §5.3). For pre-commit verification
+of a change that would affect the gha scenario, use the Vagrant
+`make test-local-e2e` flow instead: both scenarios import the same
+`e2e-local/converge.yml` and `verify.yml`, so a green Vagrant run
+is a strong (though not perfect — the CI-substrate overrides in
+§11.3 are not exercised) predictor for a green GHA run.

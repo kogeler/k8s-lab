@@ -49,6 +49,8 @@ Important entry points:
 - [plans/PLAN-stage1-common.md](plans/PLAN-stage1-common.md): fixed
   architecture and development contracts.
 - [plans/PLAN-stage2-common.md](plans/PLAN-stage2-common.md): opt-in backlog.
+- [plans/PLAN-stage2-1.md](plans/PLAN-stage2-1.md): §23 — Step 18 hosted CI
+  path on GitHub Actions (completed).
 
 ## Non-Negotiable Contracts
 
@@ -87,8 +89,14 @@ Important entry points:
   `capi-cluster-class`, `capi-workload-cluster`, `cni-calico`, `metallb`,
   `metallb-config`.
 - `terraform/modules/workload_cluster/`: the only shipped Terraform module.
-- `tests/molecule/`: per-role scenarios and the composite `e2e-local` scenario.
+- `tests/molecule/`: per-role scenarios, the composite `e2e-local`
+  scenario for the local Vagrant harness, and the CI-only `gha`
+  scenario invoked through `.github/workflows/molecule.yml`.
 - `tests/vagrant/debian13/`: shared local libvirt VM harness.
+- `.github/workflows/molecule.yml`: the CI workflow that runs the
+  `gha` Molecule scenario on `ubuntu-latest`. See
+  [doc/12-testing.md](doc/12-testing.md) §11 for the substrate-
+  specific overrides and failure-diagnostic contract.
 - `tests/fixtures/terraform/workload-clusters/lab-default/`: the only
   Terraform root in this repo, used as a test consumer.
 - `scripts/`: harness helpers, kubeconfig rendering, bootstrap fact export,
@@ -160,6 +168,13 @@ Important entry points:
   `make test-local-e2e &> /tmp/k8s-lab-e2e.log &` and
   `tail -f /tmp/k8s-lab-e2e.log`.
 - Do not claim a test passed unless it actually ran in this workspace.
+- The CI-only `gha` scenario (`tests/molecule/gha/`) is strictly forbidden
+  to run locally — three-layer guard (playbook assert + Makefile target
+  guard + workflow-only invocation), see
+  [doc/12-testing.md](doc/12-testing.md) §5.3 and §11. The agent must NEVER
+  invoke `make -C tests/molecule gha-local-*` from the dev box; use the
+  Vagrant `e2e-local` flow for local equivalence and let the CI run for
+  GHA verification.
 
 ## Documentation And Plan Updates
 
