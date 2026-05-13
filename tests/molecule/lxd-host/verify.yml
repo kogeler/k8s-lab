@@ -102,6 +102,21 @@
           {{ (_verify_brmembers_register.files | default([]))
              | map(attribute='path') | map('basename') | list }}.
 
+    - name: "Verify | lxd_host | read bridge multicast_snooping"
+      ansible.builtin.slurp:
+        src: "/sys/class/net/{{ _expected_bridge }}/bridge/multicast_snooping"
+      register: _verify_brmcsnoop_register
+
+    - name: "Verify | lxd_host | assert multicast_snooping is disabled"
+      ansible.builtin.assert:
+        that:
+          - (_verify_brmcsnoop_register.content | b64decode | trim) == "0"
+        fail_msg: >-
+          {{ _expected_bridge }} multicast_snooping must be 0 — upstream RAs
+          would otherwise stop flooding to container ports past the MLD
+          membership timeout (pure-L2 bridge, no querier). Got
+          "{{ _verify_brmcsnoop_register.content | b64decode | trim }}".
+
     # ---- systemd-networkd state -------------------------------------
     - name: "Verify | lxd_host | systemd-networkd is enabled + active"
       ansible.builtin.systemd:

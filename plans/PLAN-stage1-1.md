@@ -890,6 +890,15 @@ Implementation notes (recorded in Step 2):
   not via shell `ip link add` / `brctl`. This lets you update
   the configuration declaratively via `networkctl reload` without disruption
   of existing interfaces.
+* `br-ext6` is a pure-L2 bridge with `LinkLocalAddressing=no` on the bridge
+  itself, so no MLD querier runs on it. To keep upstream RAs (`ff02::1`)
+  flooded to every container port past the kernel multicast membership
+  timeout (~260s on Linux defaults), the `.netdev` hardcodes
+  `[Bridge] MulticastSnooping=no` — the snooping filter is unsafe in
+  the absence of a querier and would otherwise expire RA flooding to
+  veth ports. The setting is substrate-required, not a tunable, and
+  the verify scenario asserts
+  `/sys/class/net/br-ext6/bridge/multicast_snooping == 0`.
 * `networking.service` (ifupdown) is **not touched** — other NICs
   (mgmt) may remain under it. Match patterns are always explicit
   `Name=<iface>`, without wildcards.

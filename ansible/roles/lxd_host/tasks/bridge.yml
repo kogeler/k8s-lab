@@ -42,6 +42,8 @@
       [Bridge]
       STP={{ 'true' if lxd_host_ext_bridge_stp else 'false' }}
       ForwardDelaySec={{ lxd_host_ext_bridge_forward_delay }}
+      # No MLD querier on this pure-L2 bridge → flood RAs to all ports.
+      MulticastSnooping=no
   notify: "lxd-host | handlers | reload systemd-networkd"
 
 - name: "lxd-host | bridge | define bridge .network (L2 stub)"
