@@ -78,6 +78,11 @@ markdown_extensions:
       alternate_style: true
 
 extra:
+  # GA4 Measurement ID (G-...) is injected by the Pages workflow from the
+  # GOOGLE_ANALYTICS_KEY repository variable. Empty means analytics is disabled.
+  analytics:
+    provider: google
+    property: !ENV [GOOGLE_ANALYTICS_KEY, ""]
   social:
     - icon: fontawesome/brands/github
       link: https://github.com/kogeler/k8s-lab
