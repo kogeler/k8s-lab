@@ -6,6 +6,7 @@ on:
       - main
     paths:
       - "doc/**"
+      - "CHANGELOG.md"
       - "mkdocs.yml"
       - "scripts/docs_hooks.py"
       - "requirements-docs.txt"
