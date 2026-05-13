@@ -10,11 +10,9 @@
 - name: "gha | runner-cleanup | stop and disable Docker daemon"
   # Docker's iptables-NAT rules and the `docker0` bridge race with
   # kube-proxy in the LXC nodes and frequently break Service routing
-  # in opaque ways. A graceful `systemctl stop` is enough — Docker's
-  # own shutdown removes the rules and FORWARD policy it added on
-  # start, so we deliberately do NOT touch iptables/nftables ourselves
-  # (manual flushes elsewhere stripped LXD's compat-layer rules and
-  # broke egress from LXC pods — see CI run 25787813025 diagnostics).
+  # in opaque ways. `systemctl stop` removes most of Docker's added
+  # rules — but the FORWARD chain policy it pins (`DROP`) persists
+  # until daemon restart, which is what wedges LXC egress (see below).
   ansible.builtin.systemd:
     name: "{{ item }}"
     state: stopped
@@ -24,6 +22,27 @@
     - docker.service
     - containerd.service
   failed_when: false
+
+- name: "gha | runner-cleanup | explicit ACCEPT at top of FORWARD chain"
+  # The single iptables touchpoint we DO take, and only because of an
+  # observed concrete failure (CI run 25787813025 + 25790660361):
+  # Docker pins `iptables -P FORWARD DROP` at daemon start and the
+  # graceful shutdown does NOT revert it. Pods inside the bootstrap
+  # LXC then fail every sandbox-image pull from docker.io / quay.io
+  # with `dial tcp ...:443: i/o timeout` because the kernel drops
+  # bridge-forwarded packets at the iptables FORWARD hook before
+  # LXD's `inet lxd` nftables ACCEPT can act.
+  #
+  # We do NOT change the chain POLICY (could affect Docker if it
+  # later restarts on the same runner) and we do NOT flush anything.
+  # The single inserted explicit ACCEPT at position 1 takes precedence
+  # over the residual `DROP` policy without touching any other state.
+  # community.general.iptables is properly idempotent — it checks for
+  # an equivalent rule via `iptables -C` before inserting.
+  community.general.iptables:
+    chain: FORWARD
+    jump: ACCEPT
+    action: insert
 
 - name: "gha | runner-cleanup | disable swap"
   # kubeadm refuses to bring up a kubelet with swap on by default; the
