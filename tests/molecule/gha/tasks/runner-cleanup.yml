@@ -10,9 +10,11 @@
 - name: "gha | runner-cleanup | stop and disable Docker daemon"
   # Docker's iptables-NAT rules and the `docker0` bridge race with
   # kube-proxy in the LXC nodes and frequently break Service routing
-  # in opaque ways. Removing the package is too aggressive (the runner
-  # image holds an apt lock on `docker.io` from preinstall) — stopping
-  # the unit and flushing its NAT chains is enough.
+  # in opaque ways. A graceful `systemctl stop` is enough — Docker's
+  # own shutdown removes the rules and FORWARD policy it added on
+  # start, so we deliberately do NOT touch iptables/nftables ourselves
+  # (manual flushes elsewhere stripped LXD's compat-layer rules and
+  # broke egress from LXC pods — see CI run 25787813025 diagnostics).
   ansible.builtin.systemd:
     name: "{{ item }}"
     state: stopped
@@ -22,32 +24,6 @@
     - docker.service
     - containerd.service
   failed_when: false
-
-- name: "gha | runner-cleanup | flush Docker's own NAT chain"
-  # Targeted at Docker's per-container DNAT entries only — leaves
-  # built-in chains (PREROUTING/POSTROUTING/OUTPUT/INPUT) intact. A
-  # bare `iptables -F` / `iptables -t nat -F` was here previously and
-  # nuked rules LXD's iptables-nft compat layer relied on, breaking
-  # egress from LXC pods (see CI run 25787813025 diagnostics).
-  ansible.builtin.command:
-    cmd: "iptables -t nat -F DOCKER"
-  failed_when: false
-  changed_when: false
-
-- name: "gha | runner-cleanup | restore default-accept iptables filter policies"
-  # Docker's systemd unit pins `iptables -P FORWARD DROP` at daemon
-  # start as part of its security model. Stopping the daemon leaves
-  # that policy in place — the kernel evaluates iptables-nft compat
-  # BEFORE LXD's `inet lxd` nftables table, so a DROP at FORWARD kills
-  # every packet crossing the LXC bridge → host before LXD ever gets
-  # to ACCEPT it. Pods inside the LXC end up unable to reach external
-  # registries (docker.io, quay.io) and crash-loop on sandbox image
-  # pull — the failure mode in CI run 25787813025.
-  ansible.builtin.command:
-    cmd: "iptables -P {{ item }} ACCEPT"
-  loop: [INPUT, FORWARD, OUTPUT]
-  failed_when: false
-  changed_when: false
 
 - name: "gha | runner-cleanup | disable swap"
   # kubeadm refuses to bring up a kubelet with swap on by default; the

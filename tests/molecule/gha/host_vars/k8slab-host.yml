@@ -101,6 +101,23 @@ bootstrap_clusterctl_wait_delay:          5
 # is a wide safety margin; tighten back once we have cache stats.
 bootstrap_clusterctl_cert_manager_timeout: "25m"
 
+# --- export_artifacts: disable tfvars handoff on GHA -----------------
+#
+# `export_artifacts` ships two artefacts: the mgmt kubeconfig and a
+# `mgmt.auto.tfvars.json` for the Terraform consumer. The tfvars file
+# is for a downstream operator that runs `terraform apply` against the
+# shipped mgmt cluster — its healthcheck rejects a URL containing
+# `127.0.0.1` because that would make the kubeconfig useless on any
+# machine other than the producer.
+#
+# In the gha scenario K8SLAB_HOST_ADDR is pinned to 127.0.0.1 (no
+# remote consumer — Molecule e2e drives helm/kubectl from the same
+# runner, reading the kubeconfig directly), so the assertion is a
+# false positive for our topology. We never invoke Terraform here, so
+# disabling tfvars generation is the cleanest fix: no file → no
+# healthcheck → no false failure.
+export_artifacts_tfvars_enabled: false
+
 # --- Kubeconfig modes: runner-readable on GHA -----------------------
 #
 # `kubernetes.core.k8s_info` and `kubernetes.core.k8s` ship action
