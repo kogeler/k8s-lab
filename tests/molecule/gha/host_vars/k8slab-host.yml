@@ -87,3 +87,32 @@ bootstrap_k3s_wait_delay:            4
 bootstrap_clusterctl_init_timeout:   1200
 bootstrap_clusterctl_wait_retries:   180
 bootstrap_clusterctl_wait_delay:     5
+
+# --- Kubeconfig modes: runner-readable on GHA -----------------------
+#
+# `kubernetes.core.k8s_info` and `kubernetes.core.k8s` ship action
+# plugins (action/k8s_info.py, action/k8s.py). When the target is
+# reached via `ansible_connection: local`, the action plugin's
+# `get_kubeconfig()` switches into the `if not remote_transport` branch
+# and reads the `kubeconfig:` parameter from the **controller**
+# filesystem via `self._loader.get_real_file(...)` — which runs as the
+# runner user, NOT as root, regardless of the play-level `become: true`.
+# Become escalation only applies to the module process on the target;
+# controller-side file reads in action plugins are unprivileged.
+#
+# Roles that publish such kubeconfigs (bootstrap_clusterctl,
+# pivot_clusterctl_move) default to `0750` directories and `0600`
+# files owned by root:root — fine on a Vagrant SSH host where the
+# action plugin's local-read branch is bypassed (remote_transport=True
+# → path is forwarded to the target module, where become reads as
+# root). On a GHA runner those defaults trip EACCES on the very first
+# k8s_info probe inside `bootstrap_clusterctl/tasks/init.yml`.
+#
+# We relax both mode pairs only here. Directory `0755` lets the runner
+# user traverse the staging dirs; file `0644` lets it read the
+# kubeconfigs. The runner is ephemeral so world-readable kubeconfigs
+# carry no real exposure — no other tenants on the VM.
+bootstrap_clusterctl_staging_mode_dir:         "0755"
+bootstrap_clusterctl_staging_mode_kubeconfig:  "0644"
+pivot_clusterctl_move_staging_mode_dir:        "0755"
+pivot_clusterctl_move_staging_mode_kubeconfig: "0644"
