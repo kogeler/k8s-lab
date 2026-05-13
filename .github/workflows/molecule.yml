@@ -1,0 +1,251 @@
+---
+# Molecule e2e on a GitHub Actions ubuntu-latest runner.
+#
+# Runs the `tests/molecule/gha` scenario — which imports the full
+# e2e-local bootstrap → mgmt-1 pivot → workload flow — directly on the
+# runner (no Vagrant, no nested virtualisation). The scenario's
+# `host_vars/k8slab-host.yml` pins `ansible_connection: local`, and
+# `tests/molecule/gha/prepare.yml` substitutes the Vagrant-attached
+# disk with a loopback btrfs image on /mnt and runs `radvd` on a veth
+# pair inside the runner — the same RA source the Vagrant harness uses,
+# just sitting on the runner instead of the libvirt VM.
+#
+# Trigger policy:
+#   * pull_request → runs the scenario if anything that could affect
+#     end-to-end behaviour changed (roles, charts, tests/molecule, the
+#     workflow itself, requirements.yml). Doc-only PRs skip the job.
+#   * push to main → always runs, to catch regressions that slipped in
+#     via a path-filtered PR.
+#
+# Concurrency: cancel-in-progress so a force-push during a slow e2e
+# does not double-bill runner minutes.
+
+name: Molecule
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - "ansible/**"
+      - "charts/**"
+      - "terraform/**"
+      - "tests/molecule/**"
+      - "scripts/**"
+      - ".github/workflows/molecule.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - "ansible/**"
+      - "charts/**"
+      - "terraform/**"
+      - "tests/molecule/**"
+      - "scripts/**"
+      - ".github/workflows/molecule.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: molecule-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  gha:
+    name: "tests/molecule/gha (e2e on runner)"
+    runs-on: ubuntu-latest
+    # 6h is the GHA hard ceiling; we set a softer one so a runaway job
+    # gets killed before the billing edge. The full bootstrap → pivot
+    # → workload flow has historically run in ~30–60 min on the local
+    # harness; we double-budget it for the slower runner IO.
+    timeout-minutes: 180
+
+    env:
+      # Read by `tests/molecule/e2e-local/converge.yml` as the
+      # runner-reachable LXD host address (substituted into the
+      # rewritten kubeconfig + `/livez` probe URL). On a runner the
+      # LXD-proxy device listener is on the loopback.
+      K8SLAB_HOST_ADDR: "127.0.0.1"
+      # Ansible / Molecule discoverability.
+      ANSIBLE_FORCE_COLOR: "true"
+      PY_COLORS: "1"
+      ANSIBLE_COLLECTIONS_PATH: ${{ github.workspace }}/ansible/collections
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: requirements-gha.txt
+
+      - name: Install Python tooling from pinned requirements
+        # `requirements-gha.txt` is a fully-pinned set (primary +
+        # transitives) generated at repo root from a Python 3.13 venv.
+        # Regeneration recipe lives at the top of that file; per
+        # memory `feedback_latest_stable`, regenerate from scratch
+        # against the latest stable primaries — never bump a single
+        # transitive by hand.
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-gha.txt
+
+      - name: Install Ansible collections
+        run: |
+          ansible-galaxy collection install \
+            -r ansible/requirements.yml \
+            -p "$ANSIBLE_COLLECTIONS_PATH" --force
+
+      - name: Install Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: "v4.1.4"
+
+      - name: Install kubectl
+        # kubectl is used by chart-side `helm test` Pods (which `exec`
+        # `kubectl` shipped INSIDE the Pod image) and by a couple of
+        # diagnostic taps in the flow. Keeping the host-side copy
+        # version-matched to k8s_lab_kubectl_version (currently
+        # v1.35.3) avoids surprise API-version drift.
+        uses: azure/setup-kubectl@v4
+        with:
+          version: "v1.35.3"
+
+      - name: Molecule test (gha scenario)
+        # Routed through the project Makefile to keep the invocation
+        # scheme consistent with local Vagrant scenarios
+        # (memory `feedback_makefile_only`). The Makefile target
+        # enforces $GITHUB_ACTIONS=true as a defence-in-depth guard
+        # against accidental local execution.
+        run: make -C tests/molecule gha-local-test
+
+      - name: Collect diagnostics on failure
+        # Designed so that a single failed run produces enough state to
+        # diagnose without rerunning the 30–60 min e2e:
+        #   1. Host: disk / memory / loop devices / failed units /
+        #      kernel-level errors / iptables + nftables snapshot.
+        #   2. LXD substrate: every project's containers (the previous
+        #      bare `lxc list` showed only the `default` project and
+        #      missed the bootstrap LXC living in `capi-lab`), per-
+        #      instance info, and an inside-container ip-addr +
+        #      journal-error dump.
+        #   3. Bootstrap k3s: nodes / pods / events / describe + logs
+        #      for every non-Running pod. This is the layer where
+        #      `clusterctl init` waits for cert-manager and where the
+        #      "context deadline exceeded" class of failures originates.
+        #   4. Self-hosted mgmt (post-pivot): if `.artifacts/mgmt.kubeconfig`
+        #      exists, snapshot CAPI CRs + recent events.
+        #   5. Artifacts dir for the kubeconfigs / tfvars we shipped.
+        # `set +e` + `|| true` on every probe so a hard fail in one
+        # section never short-circuits the rest.
+        if: failure()
+        run: |
+          set +e
+          say() { echo ""; echo "=== $* ==="; }
+          BOOT_KC=/opt/capi-lab/etc/bootstrap_clusterctl/bootstrap.kubeconfig
+          MGMT_KC="$GITHUB_WORKSPACE/.artifacts/mgmt.kubeconfig"
+          KCT='kubectl --request-timeout=15s'
+
+          # ---- 1. host ----
+          say "host: df -h"; df -h
+          say "host: free -m"; free -m
+          say "host: loop devices"; sudo losetup -a 2>&1
+          say "host: failed units"; sudo systemctl --failed
+          say "host: journal errors (last 200)"
+          sudo journalctl --boot --priority=err --no-pager 2>&1 | tail -200
+          say "host: iptables filter policy + forward chain"
+          sudo iptables -S INPUT 2>&1 | head -1
+          sudo iptables -S FORWARD 2>&1 | head -1
+          sudo iptables -S OUTPUT 2>&1 | head -1
+          say "host: iptables nat (head 50)"
+          sudo iptables -t nat -S 2>&1 | head -50
+          say "host: nftables tables"
+          sudo nft list tables 2>&1
+          say "host: nftables inet lxd (LXD's own NAT/FORWARD rules)"
+          sudo nft list table inet lxd 2>&1 | head -80
+          say "host: ip_forward sysctls"
+          sysctl net.ipv4.ip_forward net.ipv6.conf.all.forwarding 2>&1
+
+          # ---- 2. LXD substrate ----
+          say "LXD: daemon info"
+          sudo lxc info 2>&1 | head -20
+          say "LXD: projects"
+          sudo lxc project list 2>&1
+          say "LXD: containers in ALL projects"
+          sudo lxc list --all-projects 2>&1
+
+          # Per-container deep dive — name+project pairs via CSV.
+          # `-c n` = name, `-c P` (uppercase) = project; lowercase `p`
+          # would be PID, which silently turned this loop into
+          # "Project not found" errors on a previous diagnostic run.
+          sudo lxc list --all-projects --format csv -c nP 2>/dev/null \
+            | while IFS=, read -r name proj; do
+                [ -z "$name" ] && continue
+                say "LXD: info $proj/$name"
+                sudo lxc info --project "$proj" "$name" 2>&1 | head -40
+                say "LXD: $proj/$name -- ip addr"
+                sudo lxc exec --project "$proj" "$name" -- ip -br addr 2>&1
+                say "LXD: $proj/$name -- default route"
+                sudo lxc exec --project "$proj" "$name" -- ip route 2>&1
+                say "LXD: $proj/$name -- egress probe (TCP/443 to docker.io)"
+                sudo lxc exec --project "$proj" "$name" -- \
+                  timeout 10 curl -sSv -o /dev/null \
+                    https://registry-1.docker.io/v2/ 2>&1 | tail -20
+                say "LXD: $proj/$name -- recent journal errors"
+                sudo lxc exec --project "$proj" "$name" -- \
+                  journalctl --no-pager -p err -n 80 2>&1
+              done
+
+          # ---- 3. bootstrap k3s ----
+          if sudo test -r "$BOOT_KC"; then
+            say "bootstrap k3s: kubeconfig at $BOOT_KC"
+            sudo $KCT --kubeconfig "$BOOT_KC" get nodes -o wide 2>&1
+            say "bootstrap k3s: pods (all-ns)"
+            sudo $KCT --kubeconfig "$BOOT_KC" get pods -A -o wide 2>&1
+            say "bootstrap k3s: recent events (last 60)"
+            sudo $KCT --kubeconfig "$BOOT_KC" \
+              get events -A --sort-by=.lastTimestamp 2>&1 | tail -60
+            say "bootstrap k3s: non-Running pods describe + logs"
+            sudo $KCT --kubeconfig "$BOOT_KC" get pods -A --no-headers 2>/dev/null \
+              | awk '$4 != "Running" && $4 != "Completed" { print $1 " " $2 }' \
+              | while read ns name; do
+                  say "describe $ns/$name"
+                  sudo $KCT --kubeconfig "$BOOT_KC" \
+                    describe -n "$ns" pod "$name" 2>&1 | head -100
+                  say "logs $ns/$name"
+                  sudo $KCT --kubeconfig "$BOOT_KC" \
+                    logs --tail=100 -n "$ns" "$name" --all-containers 2>&1
+                done
+          else
+            say "bootstrap k3s: $BOOT_KC missing or unreadable — skipped"
+          fi
+
+          # ---- 4. self-hosted mgmt (post-pivot only) ----
+          if [ -r "$MGMT_KC" ]; then
+            say "mgmt: CAPI snapshot"
+            $KCT --kubeconfig "$MGMT_KC" get \
+              clusters,kcp,md,ma -A -o wide 2>&1 | head -60
+            say "mgmt: events (last 40)"
+            $KCT --kubeconfig "$MGMT_KC" \
+              get events -A --sort-by=.lastTimestamp 2>&1 | tail -40
+          fi
+
+          # ---- 5. shipped artifacts ----
+          say "artifacts tree"
+          sudo ls -laR .artifacts 2>&1 | tail -100
+
+      - name: Upload .artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: k8s-lab-artifacts
+          path: |
+            .artifacts/
+            /tmp/molecule.*.log
+          retention-days: 7
+          if-no-files-found: ignore

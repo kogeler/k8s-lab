@@ -57,11 +57,11 @@ multiple workloads on one mgmt) needs more of all three.
 
 ### Operating system
 
-- **Debian-family Linux.** Other Linux families are out of scope: the role
-  contract assumes apt, systemd-networkd, the `snap` package, the LXD
-  snap, and the Debian-family kernel feature defaults. The host
-  distribution is asserted by every role's preflight; see the role
-  source for the strict gate.
+- **Debian or Ubuntu Linux.** Other Linux families are out of scope: the
+  role contract assumes apt, systemd-networkd, the `snap` package, the
+  LXD snap, and the Debian / Ubuntu kernel feature defaults. The host
+  distribution is asserted by every role's preflight (Debian 13+ or
+  Ubuntu 22.04+); see the role source for the strict gate.
 - A clean install with the standard system utilities is enough —
   the roles install everything else (LXD via snap; `kubectl`,
   `clusterctl`, `k3s` binaries downloaded into
@@ -95,12 +95,12 @@ Notes (driven by [`§2.11`](../plans/PLAN-stage1-common.md) and the
 
 ### Kernel and namespaces
 
-Recent Debian-family kernels ship these features by default. They are
-listed here so you can sanity-check a non-default install:
+Recent Debian and Ubuntu kernels ship these features by default. They
+are listed here so you can sanity-check a non-default install:
 
-- User namespaces enabled (Debian-family default).
-- `unprivileged_userns_clone=1` (Debian-family default on recent releases).
-- cgroup v2 (Debian-family default on recent releases).
+- User namespaces enabled (Debian and Ubuntu default).
+- `unprivileged_userns_clone=1` (Debian and Ubuntu default on recent releases).
+- cgroup v2 (Debian and Ubuntu default on recent releases).
 - AppArmor enabled and active (LXD's snap profile depends on it).
 - The kernel modules used by Calico — `overlay`, `br_netfilter`,
   `ip_tables`, `ip6_tables`, `xt_*`, `vxlan` — present. The

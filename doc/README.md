@@ -117,7 +117,7 @@ retain their own licenses.
   into the English translation under `plans/`.
 - **"Runner"** = the operator's local machine (where you run
   `ansible-playbook` / `terraform` / `helm`). **"Host"** = the bare
-  metal target Debian-family Linux machine. **"Bootstrap"** = the temporary
+  metal target Debian or Ubuntu Linux machine. **"Bootstrap"** = the temporary
   k3s LXC instance used during the initial Cluster API pivot.
 
 ---

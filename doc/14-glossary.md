@@ -430,7 +430,7 @@ of scope. KCP enforces odd replica counts under stacked etcd (1, 3,
 
 ### substrate
 
-Everything below the management cluster: the Debian-family Linux host,
+Everything below the management cluster: the Debian or Ubuntu Linux host,
 LXD via snap, the `br-ext6` Linux bridge, the `capi-int` LXD bridge, LXD
 storage pools and profiles, the `capi-lab` LXD project, and the
 bootstrap LXC instance up to and including `bootstrap_clusterctl`.

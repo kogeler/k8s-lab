@@ -1,4 +1,4 @@
-# k8s-lab — Cluster API + LXC/LXD Kubernetes laboratory on Debian-family Linux
+# k8s-lab — Cluster API + LXC/LXD Kubernetes laboratory on Debian or Ubuntu Linux
 
 [![License: MIT](https://img.shields.io/github/license/kogeler/k8s-lab)](LICENSE)
 [![Latest release](https://img.shields.io/github/v/release/kogeler/k8s-lab?display_name=tag&sort=semver)](https://github.com/kogeler/k8s-lab/releases)
@@ -6,7 +6,7 @@
 [![Kubernetes](https://img.shields.io/badge/kubernetes-v1.35-blue?logo=kubernetes&logoColor=white)](doc/03-stack.md)
 [![Cluster API](https://img.shields.io/badge/cluster--api-v1.12-326CE5)](doc/03-stack.md)
 [![CAPN](https://img.shields.io/badge/CAPN-v0.8-228B22)](doc/03-stack.md)
-[![Debian](https://img.shields.io/badge/Debian-family-A81D33?logo=debian&logoColor=white)](doc/05-prerequisites.md)
+[![OS](https://img.shields.io/badge/OS-Debian%20%7C%20Ubuntu-A81D33?logo=debian&logoColor=white)](doc/05-prerequisites.md)
 
 > **Production-grade Kubernetes platform on a single bare-metal/VM box** —
 > the same Cluster API pattern platform-engineering teams run in real
@@ -38,7 +38,7 @@
 ## What is k8s-lab?
 
 `k8s-lab` is a code repository for building a Kubernetes laboratory on a
-**single bare-metal Debian-family Linux host** where the Kubernetes nodes are
+**single bare-metal Debian or Ubuntu Linux host** where the Kubernetes nodes are
 unprivileged LXC/LXD system containers, not virtual machines. The cluster
 lifecycle is managed end-to-end by Cluster API: a transient single-node `k3s`
 bootstrap cluster runs `clusterctl init`, then **pivots** management
@@ -88,7 +88,7 @@ tool.
 
 ```mermaid
 flowchart LR
-    subgraph host["Debian-family Linux host"]
+    subgraph host["Debian or Ubuntu Linux host"]
         direction TB
         snap["LXD snap (6/stable)"]
         bridge["br-ext6 Linux bridge<br/>(external IPv6 ingress)"]

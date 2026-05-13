@@ -1,0 +1,58 @@
+---
+# gha scenario prepare — CI-only.
+#
+# Order matters:
+#   1. CI guard: refuse to run anywhere except inside a GitHub Actions
+#      job (the scenario mutates host networking, snap, systemd-networkd,
+#      iptables, swap and /etc/fstab — running locally would corrupt
+#      the dev box).
+#   2. Runner cleanup: stop Docker, disable swap, reclaim disk by
+#      purging preinstalled toolchains. Done before anything else
+#      because subsequent steps assume Docker is no longer fiddling
+#      with iptables/NAT and that there's enough free space for the
+#      loop file + LXC images.
+#   3. Loopback btrfs pool: allocate 20 GiB sparse file on /mnt,
+#      losetup, publish stable /dev/disk/by-id/k8slab-lxdpool-loop
+#      symlink — substitutes the Vagrant-attached virtio disk.
+#   4. Shared prepare (apt deps + opt-root + ext6-ra veth/radvd source)
+#      — same as every other scenario.
+#   5. Shared clean-disk (wipefs of the loop device) — no-op on a
+#      freshly truncated sparse file but kept symmetric with e2e-local.
+
+- name: "Prepare | gha"
+  hosts: all
+  gather_facts: true
+  become: true
+  vars:
+    _molecule_project_dir: "{{ lookup('ansible.builtin.env', 'MOLECULE_PROJECT_DIRECTORY') }}"
+  tasks:
+    - name: "Prepare | gha | guard — refuse outside GitHub Actions"
+      ansible.builtin.assert:
+        that:
+          - (lookup('ansible.builtin.env', 'GITHUB_ACTIONS') | default('')) == 'true'
+        fail_msg: |
+          The `gha` Molecule scenario is CI-only — it must run on a
+          GitHub Actions ubuntu-latest runner.
+
+          Refusing because $GITHUB_ACTIONS is not "true". Running this
+          scenario locally would mutate host networking (radvd, veth,
+          systemd-networkd drop-ins), iptables NAT chains, /etc/fstab
+          (swap), and the snap LXD daemon in ways that conflict with
+          the Vagrant-based local harness.
+
+          For local end-to-end runs use `e2e-local` (Vagrant); for
+          single-role iteration use `<role>-delegated-test`.
+
+    - name: "Prepare | gha | runner cleanup (Docker / swap / disk)"
+      ansible.builtin.include_tasks: tasks/runner-cleanup.yml
+
+    - name: "Prepare | gha | loopback btrfs pool"
+      ansible.builtin.include_tasks: tasks/loopback-pool.yml
+
+    - name: "Prepare | gha | shared base (apt deps + ext6-ra source)"
+      ansible.builtin.include_tasks:
+        file: "{{ _molecule_project_dir }}/shared/tasks/prepare.yml"
+
+    - name: "Prepare | gha | clean pool device (wipefs of loop)"
+      ansible.builtin.include_tasks:
+        file: "{{ _molecule_project_dir }}/shared/tasks/prepare-clean-disk.yml"

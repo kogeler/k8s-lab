@@ -13,16 +13,20 @@
       - min
   when: ansible_facts['os_family'] is not defined
 
-- name: "export-artifacts | preflight | target OS is Debian 13+"
+- name: "export-artifacts | preflight | target OS is Debian 13+ or Ubuntu 22.04+"
   ansible.builtin.assert:
     that:
       - ansible_facts['os_family'] == 'Debian'
-      - ansible_facts['distribution'] == 'Debian'
-      - (ansible_facts['distribution_major_version'] | int) >= 13
+      - >-
+        (ansible_facts['distribution'] == 'Debian'
+         and (ansible_facts['distribution_major_version'] | int) >= 13)
+        or
+        (ansible_facts['distribution'] == 'Ubuntu'
+         and (ansible_facts['distribution_major_version'] | int) >= 22)
     fail_msg: >-
-      export_artifacts targets Debian 13 Trixie or newer on the LXD
-      host (the artefacts themselves are OS-independent but the
-      meta-dep chain pins host requirements).
+      export_artifacts targets Debian 13 Trixie+ or Ubuntu 22.04 LTS+
+      on the LXD host (the artefacts themselves are OS-independent but
+      the meta-dep chain pins host requirements).
 
 - name: "export-artifacts | preflight | validate artefact root"
   # export_artifacts_root is consumer-policy (plan §11.1) so it has no

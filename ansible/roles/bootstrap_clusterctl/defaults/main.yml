@@ -119,6 +119,16 @@ bootstrap_clusterctl_extra_providers: []
 # from the cluster-api releases page).
 bootstrap_clusterctl_extra_init_flags: []
 
+# Override clusterctl's internal cert-manager wait timeout. Rendered
+# into clusterctl.yaml only when non-empty; an empty string means
+# "inherit clusterctl's default" (10 min in v1.x). The cert-manager
+# bootstrap is image-pull-bound (cainjector + webhook + controller from
+# quay.io) and the 10-min default falls short on slow uplinks — most
+# notably on GitHub Actions runners, where Azure → quay.io pulls
+# routinely take 12–15 min cold. Format is a Go duration string
+# (e.g. "25m", "1500s").
+bootstrap_clusterctl_cert_manager_timeout: ""
+
 # -- clusterctl init runtime ---------------------------------------------
 
 # wall-clock budget for `clusterctl init` itself — cold-cache image

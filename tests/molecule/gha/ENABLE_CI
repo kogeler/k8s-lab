@@ -1,0 +1,5 @@
+# Sentinel: this scenario is opted into the GitHub Actions Molecule
+# workflow. Presence of this file (matched verbatim by the matrix
+# builder in .github/workflows/molecule.yml) is what makes the workflow
+# pick the scenario up. The file is empty by design — the assertion is
+# its existence, not its contents.

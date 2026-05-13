@@ -9,14 +9,18 @@
       - min
   when: ansible_facts['os_family'] is not defined
 
-- name: "lxd-profiles | preflight | target OS is Debian 13+"
+- name: "lxd-profiles | preflight | target OS is Debian 13+ or Ubuntu 22.04+"
   ansible.builtin.assert:
     that:
       - ansible_facts['os_family'] == 'Debian'
-      - ansible_facts['distribution'] == 'Debian'
-      - (ansible_facts['distribution_major_version'] | int) >= 13
+      - >-
+        (ansible_facts['distribution'] == 'Debian'
+         and (ansible_facts['distribution_major_version'] | int) >= 13)
+        or
+        (ansible_facts['distribution'] == 'Ubuntu'
+         and (ansible_facts['distribution_major_version'] | int) >= 22)
     fail_msg: >-
-      lxd_profiles only targets Debian 13 Trixie or newer; detected
+      lxd_profiles targets Debian 13 Trixie+ or Ubuntu 22.04 LTS+; detected
       {{ ansible_facts['distribution'] | default('?') }}
       {{ ansible_facts['distribution_version'] | default('?') }}.
 

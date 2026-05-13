@@ -1,0 +1,148 @@
+---
+# ==========================================================================
+# gha scenario host_vars (CI-only, GitHub Actions ubuntu-latest runner)
+# ==========================================================================
+#
+# Inherits everything substrate-related from
+# `tests/molecule/shared/inventory/group_vars/k8slab_host.yml` (via the
+# `inventory.links.group_vars` in molecule.yml) and overrides only what
+# differs between the Vagrant-Debian harness and a GHA runner.
+
+# --- SSH coordinates: REPLACED with local connection -----------------
+#
+# Shared group_vars wire `ansible_host/user/port/key/ssh_common_args` to
+# env vars exported by `scripts/molecule_run.py` from `vagrant ssh-config`.
+# On the GHA runner there is no separate target host — the runner IS the
+# host — so we pin the local connection plugin and a literal hostname.
+# host_vars precedence (priority 9) wins over group_vars (priority 7).
+ansible_host: "localhost"
+ansible_connection: "local"
+ansible_user: "{{ lookup('env', 'USER') }}"
+ansible_python_interpreter: "{{ ansible_playbook_python }}"
+# Blank out the SSH coordinates so a stray attempt to use them fails
+# loudly instead of silently retrying paramiko against env vars that
+# never got exported in CI.
+ansible_port: ~
+ansible_ssh_private_key_file: ~
+ansible_ssh_common_args: ""
+
+# --- LXD pool device: loopback (set at runtime by gha prepare) -------
+#
+# The Vagrant harness attaches a dedicated disk with serial
+# `k8slab-lxdpool`; on a GHA runner we have no extra block device, so
+# `tasks/loopback-pool.yml` (run in prepare) allocates a sparse file on
+# /mnt (the runner's large scratch volume), attaches it to a loop
+# device, and writes a stable udev-style symlink at the path below. We
+# set the *override path here* so every downstream consumer
+# (shared/tasks/prepare-btrfs-pool.yml, lxd_storage_pools_pools.source,
+# …) reads the same value irrespective of which /dev/loopN the kernel
+# happened to pick.
+k8s_lab_lxd_pool_device: "/dev/disk/by-id/k8slab-lxdpool-loop"
+
+# --- base_system: do not assert btrfs mountpoint ----------------------
+#
+# Same rationale as `e2e-local/host_vars/k8slab-host.yml`: in the full
+# flow `lxd_storage_pools` lets LXD format the pool device itself, so
+# `shared/tasks/prepare-clean-disk.yml` leaves no mounted filesystem
+# for base_system's preflight contract to assert. Override the shared
+# `true` to `false` so the role's preflight is silent on this host.
+base_system_btrfs_pool_required: false
+
+# --- LXD storage pool: point at the loop device ----------------------
+#
+# Shared group_vars set `source: "{{ k8s_lab_lxd_pool_device }}"` so the
+# override above propagates through; we re-declare the pool list
+# here as a defensive snapshot — if someone later overrides
+# `lxd_storage_pools_pools` at a higher precedence and forgets the
+# `source` reference, this host_vars stays self-consistent.
+lxd_storage_pools_pools:
+  - name:        "capi-fast"
+    driver:      "btrfs"
+    description: "k8s-lab primary pool (btrfs on loopback file, GHA-only)"
+    config:
+      source: "{{ k8s_lab_lxd_pool_device }}"
+
+# --- Workload topology: same as Vagrant — exercise full HA pattern ---
+#
+# Inherited from shared group_vars:
+#   k8s_lab_workload_controlplane_count: 3
+#   k8s_lab_workload_worker_count:       2
+# Total LXC budget on the runner: 1 bootstrap k3s + 3 mgmt-1 (1 CP + 2
+# wkr, mgmt defaults below) + 5 workload (3 CP + 2 wkr) = 9 instances.
+# ubuntu-latest = 4 vCPU / 16 GiB / ~70 GiB /mnt — feasible but tight.
+# If the runner OOMs at workload scale, tighten *here* (in this file)
+# rather than mutating the shared substrate vars.
+
+# --- Wait/timeout budgets: enlarge for the slower runner -------------
+#
+# GHA runners have slower IO than the dev libvirt VM and pull every
+# container image cold; image-pull-bound steps (k3s first boot, CAPI
+# provider init, kubeadm node join) push past the conservative
+# Vagrant-tuned defaults. The values below double the shared budgets;
+# they're scoped to this scenario, so the Vagrant harness keeps its
+# tighter loop.
+lxd_bootstrap_instance_wait_timeout: 600
+bootstrap_k3s_wait_retries:          180
+bootstrap_k3s_wait_delay:            4
+# init_timeout (ansible async) must stay strictly greater than
+# `bootstrap_clusterctl_cert_manager_timeout` below — otherwise
+# Ansible's async would kill the clusterctl process before its own
+# cert-manager wait window expires, and we'd lose the rich
+# "context deadline exceeded" diagnostic from clusterctl.
+bootstrap_clusterctl_init_timeout:        1800
+bootstrap_clusterctl_wait_retries:        180
+bootstrap_clusterctl_wait_delay:          5
+
+# Bootstrap-time cert-manager wait inside `clusterctl init`. Default
+# upstream is 10 min — on Azure-hosted GHA runners, cold-cache pulls
+# of cainjector + webhook + controller from quay.io routinely take
+# 12–15 min, so 10 min trips the internal deadline with "context
+# deadline exceeded" before the Deployments reach Available. 25 min
+# is a wide safety margin; tighten back once we have cache stats.
+bootstrap_clusterctl_cert_manager_timeout: "25m"
+
+# --- export_artifacts: disable tfvars handoff on GHA -----------------
+#
+# `export_artifacts` ships two artefacts: the mgmt kubeconfig and a
+# `mgmt.auto.tfvars.json` for the Terraform consumer. The tfvars file
+# is for a downstream operator that runs `terraform apply` against the
+# shipped mgmt cluster — its healthcheck rejects a URL containing
+# `127.0.0.1` because that would make the kubeconfig useless on any
+# machine other than the producer.
+#
+# In the gha scenario K8SLAB_HOST_ADDR is pinned to 127.0.0.1 (no
+# remote consumer — Molecule e2e drives helm/kubectl from the same
+# runner, reading the kubeconfig directly), so the assertion is a
+# false positive for our topology. We never invoke Terraform here, so
+# disabling tfvars generation is the cleanest fix: no file → no
+# healthcheck → no false failure.
+export_artifacts_tfvars_enabled: false
+
+# --- Kubeconfig modes: runner-readable on GHA -----------------------
+#
+# `kubernetes.core.k8s_info` and `kubernetes.core.k8s` ship action
+# plugins (action/k8s_info.py, action/k8s.py). When the target is
+# reached via `ansible_connection: local`, the action plugin's
+# `get_kubeconfig()` switches into the `if not remote_transport` branch
+# and reads the `kubeconfig:` parameter from the **controller**
+# filesystem via `self._loader.get_real_file(...)` — which runs as the
+# runner user, NOT as root, regardless of the play-level `become: true`.
+# Become escalation only applies to the module process on the target;
+# controller-side file reads in action plugins are unprivileged.
+#
+# Roles that publish such kubeconfigs (bootstrap_clusterctl,
+# pivot_clusterctl_move) default to `0750` directories and `0600`
+# files owned by root:root — fine on a Vagrant SSH host where the
+# action plugin's local-read branch is bypassed (remote_transport=True
+# → path is forwarded to the target module, where become reads as
+# root). On a GHA runner those defaults trip EACCES on the very first
+# k8s_info probe inside `bootstrap_clusterctl/tasks/init.yml`.
+#
+# We relax both mode pairs only here. Directory `0755` lets the runner
+# user traverse the staging dirs; file `0644` lets it read the
+# kubeconfigs. The runner is ephemeral so world-readable kubeconfigs
+# carry no real exposure — no other tenants on the VM.
+bootstrap_clusterctl_staging_mode_dir:         "0755"
+bootstrap_clusterctl_staging_mode_kubeconfig:  "0644"
+pivot_clusterctl_move_staging_mode_dir:        "0755"
+pivot_clusterctl_move_staging_mode_kubeconfig: "0644"
