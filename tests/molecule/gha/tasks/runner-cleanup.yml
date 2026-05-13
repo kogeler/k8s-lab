@@ -37,9 +37,9 @@
   # later restarts on the same runner) and we do NOT flush anything.
   # The single inserted explicit ACCEPT at position 1 takes precedence
   # over the residual `DROP` policy without touching any other state.
-  # community.general.iptables is properly idempotent — it checks for
+  # ansible.builtin.iptables is properly idempotent — it checks for
   # an equivalent rule via `iptables -C` before inserting.
-  community.general.iptables:
+  ansible.builtin.iptables:
     chain: FORWARD
     jump: ACCEPT
     action: insert
