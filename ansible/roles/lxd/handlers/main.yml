@@ -1,0 +1,6 @@
+---
+# A reload re-reads the files without touching interfaces they do not match.
+- name: "lxd | handlers | reload systemd-networkd"
+  ansible.builtin.systemd:
+    name: systemd-networkd.service
+    state: reloaded

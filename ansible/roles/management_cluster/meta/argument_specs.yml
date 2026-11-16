@@ -1,0 +1,158 @@
+---
+argument_specs:
+  main:
+    short_description: mgmt-1 through Helm on the API that currently manages it
+    description:
+      - Installs the ClusterClass and Cluster releases, writes mgmt.kubeconfig on host and runner,
+        installs Calico and MetalLB with their gates (Gate B, Gate A) and writes handoff.json.
+        Run the `state` entry point first in the same play.
+    options:
+      k8s_lab_management_kubeconfig_runner:
+        type: path
+        description: Published by the `state` entry point — runner path of the managing API; the role stops with a message without it.
+      k8s_lab_opt_root: &opt_root
+        type: path
+        required: true
+        description: Host directory for pinned binaries (bin/) and role state (etc/).
+      k8s_lab_artifacts_dir: &artifacts_dir
+        type: path
+        required: true
+        description: Runner directory of the kubeconfigs and handoff.json (0600 files).
+      k8s_lab_lxd_host_address:
+        type: str
+        required: true
+        description: The host as the runner reaches it (an IPv4 address or a name); the published API servers are on this address.
+      k8s_lab_api_listen_address:
+        type: str
+        required: true
+        description: IPv4 address of the host the published API servers listen on; restrict it on a host with a public address.
+      k8s_lab_management_cluster_name: &cluster_name
+        type: str
+        required: true
+        description: Name of the management cluster.
+      k8s_lab_cluster_namespace: &cluster_namespace
+        type: str
+        required: true
+        description: Namespace of the Cluster API objects and the CAPN identity Secret.
+      k8s_lab_kubernetes_version:
+        type: str
+        required: true
+        description: Kubernetes version of the management cluster; must have an image on the CAPN image server.
+      k8s_lab_infrastructure_secret_name:
+        type: str
+        required: true
+        description: Name of the CAPN identity Secret.
+      management_cluster_kubeconfig:
+        type: path
+        description: Runner kubeconfig of the API that holds the Cluster object.
+      management_cluster_opt_root: &mc_opt_root
+        type: path
+        description: Host directory with bin/ (kubectl) and etc/ (mgmt.kubeconfig, bootstrap.kubeconfig).
+      management_cluster_artifacts_dir: &mc_artifacts_dir
+        type: path
+        description: Runner directory of mgmt.kubeconfig, bootstrap.kubeconfig and handoff.json.
+      management_cluster_api_host:
+        type: str
+        description: Host in the server URL of the runner-side mgmt.kubeconfig.
+      management_cluster_api_listen_address:
+        type: str
+        description: IPv4 address of the host mgmt-1's published API server listens on.
+      management_cluster_handoff_path:
+        type: path
+        description: Runner path of handoff.json, which Terraform roots read.
+      management_cluster_name: &mc_name
+        type: str
+        description: Name of the Cluster and prefix of its instances.
+      management_cluster_namespace: &mc_namespace
+        type: str
+        description: Namespace of the Cluster object.
+      management_cluster_kubernetes_version:
+        type: str
+        description: Kubernetes version of the nodes.
+      management_cluster_infrastructure_secret_name:
+        type: str
+        description: The CAPN identity Secret the LXCCluster references.
+      management_cluster_controlplane_count:
+        type: int
+        description: Control-plane nodes (odd, stacked etcd).
+      management_cluster_worker_count:
+        type: int
+        description: Worker nodes (Gate B needs two).
+      management_cluster_pod_cidrs:
+        type: list
+        elements: str
+        description: Pod networks as [IPv4, IPv6].
+      management_cluster_service_cidrs:
+        type: list
+        elements: str
+        description: Service networks as [IPv4, IPv6].
+      management_cluster_external_ipv6_prefix:
+        type: str
+        required: true
+        description: The external IPv6 network of the nodes' eth1, `<prefix>/<length>`; NodePorts answer only there.
+      management_cluster_metallb_vip_range_v6:
+        type: str
+        required: true
+        description: IPv6 VIP range on the external network, `<first>-<last>`.
+      management_cluster_class_timeout:
+        type: str
+        description: Helm timeout of the ClusterClass release.
+      management_cluster_cluster_timeout:
+        type: str
+        description: Helm timeout of the Cluster release (waits for its hook, which publishes the API server).
+      management_cluster_addons_timeout:
+        type: str
+        description: Helm timeout of the add-on releases.
+      management_cluster_cluster_test_timeout:
+        type: str
+        description: Timeout of the Cluster release test.
+      management_cluster_gates_timeout:
+        type: str
+        description: Timeout of the Gate A and Gate B chart tests.
+      management_cluster_enabled:
+        type: bool
+        description: Run the role at all.
+      management_cluster_flow_control_cluster:
+        type: bool
+        description: ClusterClass and Cluster releases.
+      management_cluster_flow_control_kubeconfig:
+        type: bool
+        description: mgmt.kubeconfig on host and runner.
+      management_cluster_flow_control_addons:
+        type: bool
+        description: Calico and MetalLB.
+      management_cluster_flow_control_gates:
+        type: bool
+        description: Gate B and Gate A.
+      management_cluster_flow_control_handoff:
+        type: bool
+        description: handoff.json.
+  state:
+    short_description: Which API manages mgmt-1, published as facts
+    description:
+      - Sets k8s_lab_management_state (absent, bootstrapping, self_hosted),
+        k8s_lab_management_kubeconfig and k8s_lab_management_kubeconfig_runner. Refuses when
+        instances of the cluster exist without a reachable managing API.
+    options:
+      k8s_lab_opt_root: *opt_root
+      k8s_lab_artifacts_dir: *artifacts_dir
+      k8s_lab_management_cluster_name: *cluster_name
+      k8s_lab_cluster_namespace: *cluster_namespace
+      k8s_lab_project_name:
+        type: str
+        required: true
+        description: LXD project every cluster instance lives in.
+      k8s_lab_bootstrap_instance_name:
+        type: str
+        required: true
+        description: LXD instance of the bootstrap cluster.
+      management_cluster_opt_root: *mc_opt_root
+      management_cluster_artifacts_dir: *mc_artifacts_dir
+      management_cluster_name: *mc_name
+      management_cluster_namespace: *mc_namespace
+      management_cluster_lxd_project:
+        type: str
+        description: LXD project of the instances.
+      management_cluster_bootstrap_instance:
+        type: str
+        description: Name of the bootstrap instance.

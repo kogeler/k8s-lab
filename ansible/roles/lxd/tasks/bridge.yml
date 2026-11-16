@@ -1,0 +1,40 @@
+---
+# The uplink loses its addresses when it is bridged: bridging the interface
+# of the default route would cut the host off.
+- name: "lxd | bridge | the uplink exists and does not carry the default route"
+  ansible.builtin.assert:
+    that:
+      - lxd_uplink_interface in ansible_facts['interfaces']
+      - lxd_uplink_interface not in [ansible_facts['default_ipv4']['interface'] | default(''),
+                                     ansible_facts['default_ipv6']['interface'] | default('')]
+    fail_msg: >-
+      lxd_uplink_interface is '{{ lxd_uplink_interface }}': it must be an existing
+      interface other than the one of the default route; interfaces:
+      {{ ansible_facts['interfaces'] | sort | join(', ') }}.
+
+- name: "lxd | bridge | systemd-networkd files"
+  ansible.builtin.template:
+    src: "{{ item.src }}"
+    dest: "/etc/systemd/network/{{ item.dest }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - {src: bridge.netdev.j2, dest: "30-{{ lxd_bridge_name }}.netdev"}
+    - {src: bridge.network.j2, dest: "30-{{ lxd_bridge_name }}.network"}
+    - {src: uplink.network.j2, dest: "31-{{ lxd_bridge_name }}-uplink.network"}
+  notify: "lxd | handlers | reload systemd-networkd"
+
+- name: "lxd | bridge | systemd-networkd running"
+  ansible.builtin.systemd:
+    name: systemd-networkd.service
+    state: started
+    enabled: true
+
+- name: "lxd | bridge | apply changed files now"
+  ansible.builtin.meta: flush_handlers
+
+- name: "lxd | bridge | the uplink is a port of the bridge"
+  ansible.builtin.wait_for:
+    path: "/sys/class/net/{{ lxd_bridge_name }}/brif/{{ lxd_uplink_interface }}"
+    timeout: 60

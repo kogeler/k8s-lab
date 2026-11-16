@@ -1,0 +1,20 @@
+---
+galaxy_info:
+  role_name: clusterctl
+  namespace: k8slab
+  author: k8s-lab contributors
+  description: Cluster API providers on a management API (init and upgrade), and the pivot onto mgmt-1.
+  license: MIT
+  min_ansible_version: "2.19"
+  platforms:
+    - name: Debian
+      versions:
+        - trixie
+    - name: Ubuntu
+      versions:
+        - jammy
+        - noble
+        - resolute
+
+# Acts on a Kubernetes API; the clusterctl and kubectl binaries come from host.
+dependencies: []

@@ -1,0 +1,43 @@
+---
+# A second value for every name, address, port and path the roles take as
+# input. Applied as extra vars on top of group_vars/all.yml on a fresh test
+# host (`make test-substrate VARS=alt-vars.yml`, likewise test-bootstrap): a
+# green run proves the roles hardcode none of the reference values. Not a
+# template for a deployment.
+
+# ---- Common variables --------------------------------------------------------
+
+k8s_lab_opt_root: "/opt/k8s-lab-alt"
+k8s_lab_project_name: "k8s-alt"
+k8s_lab_management_cluster_name: "mgmt-alt"
+k8s_lab_bootstrap_instance_name: "k8s-alt-boot"
+k8s_lab_cluster_namespace: "k8s-alt-clusters"
+k8s_lab_infrastructure_secret_name: "k8s-alt-identity"
+# One address instead of all of them.
+k8s_lab_api_listen_address: "{{ ansible_facts['default_ipv4']['address'] }}"
+k8s_lab_artifacts_dir: "{{ harness_repo_root }}/.artifacts/alt"
+
+# ---- Role inputs -------------------------------------------------------------
+
+lxd_uplink_interface: "ext6-alt"
+lxd_bridge_name: "br-alt6"
+lxd_bridge_mtu: 1450
+# lxd_storage_source: the host has one pool disk.
+lxd_storage_pool_name: "k8s-alt-pool"
+lxd_network_name: "k8salt-int"
+lxd_network_ipv4_address: "10.88.0.1/24"
+lxd_network_ipv6_address: "fd42:88:1::1/64"
+lxd_network_dhcp_expiry: "72h"
+lxd_listener_port: 9443
+bootstrap_api_port: 26443
+bootstrap_pod_cidrs: ["10.52.0.0/16", "fd42:88:42::/56"]
+bootstrap_service_cidrs: ["10.53.0.0/16", "fd42:88:43::/112"]
+bootstrap_cluster_dns: ["10.53.0.10", "fd42:88:43::a"]
+
+management_cluster_external_ipv6_prefix: "2001:db8:88:100::/64"
+management_cluster_metallb_vip_range_v6: "2001:db8:88:100::200-2001:db8:88:100::2ff"
+
+# ---- Harness -----------------------------------------------------------------
+
+# The client off the external link is in another prefix too.
+harness_offlink_ipv6_prefix: "2001:db8:89:200::/64"

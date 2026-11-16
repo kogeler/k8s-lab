@@ -1,0 +1,5 @@
+---
+# The substrate and the transient bootstrap cluster with its providers and the
+# CAPN identity, as management.yml builds them before mgmt-1 exists: converge,
+# a second run that must change nothing, verify (one task file per role under
+# verify/). Everything else comes from .config/molecule/config.yml.

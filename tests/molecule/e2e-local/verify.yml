@@ -1,161 +1,137 @@
 ---
-# e2e-local verify — final acceptance after the canonical bootstrap →
-# pivot → workload flow (PLAN §10.2 / §16 / §18).
-#
-# At this point converge has finished:
-#   * `.artifacts/mgmt.kubeconfig`  → self-hosted mgmt-1 kube-apiserver
-#   * `.artifacts/clusters/{mgmt-1,lab-default}.kubeconfig` → debug copies
-#   * mgmt-1 helm tests (Gate A/B) already passed inside converge
-#     before pivot — we don't repeat them here
-#
-# This play asserts the workload cluster is healthy end-to-end:
-#   1) helm test capi-workload-cluster (chart-side cluster-ready hook)
-#   2) helm test cni-calico            (Gate B on workload)
-#   3) helm test metallb-config        (Gate A in-cluster on workload)
-#   4) external HTTP GET to MetalLB VIP from the VM (Gate A out-of-cluster
-#      proof through `ext6-ra-peer`)
-#   5) workload Nodes Ready=True via the runner-reachable kubeconfig
-#   6) CAPI snapshot via the now-self-hosted mgmt-1 kubeconfig
+# e2e-local verify. The workload cluster's gates already ran inside the
+# Terraform add-on root (helm test hooks). This play checks what the cluster
+# gates cannot see from inside:
+#   1) Terraform reports no change on a second plan of either root;
+#   2) each cluster's MetalLB pool answers from outside the cluster — on the
+#      external link and from a client behind the harness router, which takes
+#      replies only from the external link — its NodePort answers on a node's
+#      external address and not on its internal one, and the gates left no
+#      object behind but Gate B's read-only ClusterRole;
+#   3) every workload node is Ready through the runner-side kubeconfig, and
+#      every node of both clusters has its provider ID, an IPv4 and an IPv6
+#      InternalIP and pod CIDR, one IPv6 default route in its main table (eth0)
+#      and its egress on eth0 (the main table's route, which Pod egress takes
+#      too after Calico's NAT); both service ranges are dual-stack;
+#   4) both clusters are managed on the self-hosted mgmt-1: Available, every
+#      Machine with its Node, every LXC object provisioned;
+#   5) re-run safety (second play);
+#   6) day-2 through Terraform: scale the workers up and back, then destroy
+#      the workload cluster (third play).
 
-- name: "Verify | e2e-local | workload helm tests + Gate A external + Nodes Ready"
+- name: "Verify | e2e-local | workload cluster, external VIP, nodes"
   hosts: all
   gather_facts: false
   become: false
+  vars_files:
+    - vars/workload.yml
   vars:
-    _repo_root: "{{ lookup('env', 'MOLECULE_PROJECT_DIRECTORY') | dirname | dirname }}"
-    _artifacts_root: "{{ _repo_root }}/.artifacts"
+    _artifacts_root: "{{ k8s_lab_artifacts_dir }}"
     _clusters_dir: "{{ _artifacts_root }}/clusters"
 
-    # mgmt.kubeconfig now points at self-hosted mgmt-1 (overwritten in
-    # converge Phase C by the second export_artifacts include with
-    # run_meta_chain=false).
     _mgmt_kubeconfig: "{{ _artifacts_root }}/mgmt.kubeconfig"
+    _fixture: "{{ harness_repo_root }}/tests/fixtures/terraform/workload-clusters/lab-default"
 
-    _capi_namespace: "capi-clusters"
-    _metallb_namespace: "metallb-system"
-    _tigera_namespace: "tigera-operator"
+    _capi_namespace: "{{ k8s_lab_cluster_namespace }}"
+    _probe_chart: "{{ harness_repo_root }}/tests/fixtures/charts/external-probe"
 
-    _workload_cluster_name: "{{ k8s_lab_workload_cluster_name | default('lab-default') }}"
     _workload_kubeconfig: "{{ _clusters_dir }}/{{ _workload_cluster_name }}.kubeconfig"
-
-    # MetalLB chart-side test deploys this Service and leaves it running
-    # for verify-side curl (hook-delete-policy: before-hook-creation).
-    _metallb_demo_service: "k8s-lab-metallb-demo"
-    _metallb_demo_port: 80
+    _verify_workload_range: "{{ _verify_workload_pool.resources[0].spec.addresses[0] }}"
 
     _capi_kinds:
       - { api_version: "cluster.x-k8s.io/v1beta2", kind: "Cluster" }
-      - { api_version: "controlplane.cluster.x-k8s.io/v1beta2", kind: "KubeadmControlPlane" }
-      - { api_version: "cluster.x-k8s.io/v1beta2", kind: "MachineDeployment" }
       - { api_version: "cluster.x-k8s.io/v1beta2", kind: "Machine" }
       - { api_version: "infrastructure.cluster.x-k8s.io/v1alpha2", kind: "LXCCluster" }
       - { api_version: "infrastructure.cluster.x-k8s.io/v1alpha2", kind: "LXCMachine" }
   tasks:
-    # ---- workload chart helm tests (Gate A in-cluster + Gate B + cluster-ready)
-    # `helm test` has no equivalent in kubernetes.core; this is the only
-    # shell fallback. Each chart's own
-    # `before-hook-creation,hook-succeeded` policy makes re-runs
-    # idempotent (prior test pod is deleted on the next invocation).
-    - name: "Verify | e2e-local | workload | helm test capi-workload-cluster"
+    - name: "Verify | e2e-local | workload | no change in a second plan of either root"
       ansible.builtin.command:
-        argv:
-          - helm
-          - test
-          - "{{ _workload_cluster_name }}"
-          - --namespace
-          - "{{ _capi_namespace }}"
-          - --kubeconfig
-          - "{{ _mgmt_kubeconfig }}"
-          - --logs
-          - --timeout
-          - 35m
+        argv: [terraform, "-chdir={{ _fixture }}/{{ item }}", plan, -detailed-exitcode, -input=false, -no-color,
+               "-var=handoff_path={{ k8s_lab_artifacts_dir }}/handoff.json"]
+      changed_when: false
+      loop: [cluster, addons]
       delegate_to: localhost
-      register: _helm_test
 
-    - name: "Verify | e2e-local | workload | helm test cni-calico (Gate B)"
+    - name: "Verify | e2e-local | workload | read the kubeconfig output"
       ansible.builtin.command:
-        argv:
-          - helm
-          - test
-          - cni-calico
-          - --namespace
-          - "{{ _tigera_namespace }}"
-          - --kubeconfig
-          - "{{ _workload_kubeconfig }}"
-          - --logs
-          - --timeout
-          - 15m
+        argv: [terraform, "-chdir={{ _fixture }}/addons", output, -raw, kubeconfig]
+      register: _verify_workload_kubeconfig
+      changed_when: false
+      no_log: true
       delegate_to: localhost
-      register: _cni_helm_test
 
-    - name: "Verify | e2e-local | workload | helm test metallb-config (Gate A in-cluster)"
-      ansible.builtin.command:
-        argv:
-          - helm
-          - test
-          - metallb-config
-          - --namespace
-          - "{{ _metallb_namespace }}"
-          - --kubeconfig
-          - "{{ _workload_kubeconfig }}"
-          - --logs
-          - --timeout
-          - 15m
+    - name: "Verify | e2e-local | workload | runner-side directory of the workload kubeconfigs"
+      ansible.builtin.file:
+        path: "{{ _clusters_dir }}"
+        state: directory
+        mode: "0700"
       delegate_to: localhost
-      register: _metallb_helm_test
 
-    # ---- Gate A external-segment closure ------------------------------------
-    # The chart-side hook left the demo Deployment + Service running.
-    # Read the VIP from the workload cluster (runner-side) and drive an
-    # HTTP GET from the VM (no `delegate_to: localhost`) so the packet
-    # egresses through `ext6-ra-peer` (2001:db8:42:100::1) → veth →
-    # `br-ext6` → eth1 of the speaker leader → kube-proxy → backend Pod.
-    - name: "Verify | e2e-local | read MetalLB demo Service VIP"
+    - name: "Verify | e2e-local | workload | write the runner-side kubeconfig"
+      ansible.builtin.copy:
+        dest: "{{ _workload_kubeconfig }}"
+        content: "{{ _verify_workload_kubeconfig.stdout }}"
+        mode: "0600"
+      no_log: true
+      diff: false
+      delegate_to: localhost
+
+    # ---- the pools answer from the external segment (Gate A outside) --------
+    # The host's only path to a pool address is the harness router's end of the
+    # external segment (see shared/tasks/ext6-ra-source.yml).
+    - name: "Verify | e2e-local | external | the workload pool"
       kubernetes.core.k8s_info:
         kubeconfig: "{{ _workload_kubeconfig }}"
-        api_version: v1
-        kind: Service
-        namespace: "{{ _metallb_namespace }}"
-        name: "{{ _metallb_demo_service }}"
-      register: _metallb_demo_svc
+        api_version: metallb.io/v1beta1
+        kind: IPAddressPool
+        namespace: metallb-system
+        name: metallb-config-v6
+      register: _verify_workload_pool
       delegate_to: localhost
       vars:
         ansible_python_interpreter: "{{ ansible_playbook_python }}"
 
-    - name: "Verify | e2e-local | assert MetalLB allocated a VIP"
+    - name: "Verify | e2e-local | external | each cluster's pool answers"
+      ansible.builtin.include_tasks: verify/external-probe.yml
+      loop:
+        - {cluster: "{{ _workload_cluster_name }}", kubeconfig: "{{ _workload_kubeconfig }}", range: "{{ _verify_workload_range }}"}
+        - {cluster: "{{ k8s_lab_management_cluster_name }}", kubeconfig: "{{ _mgmt_kubeconfig }}", range: "{{ management_cluster_metallb_vip_range_v6 }}"}
+      loop_control:
+        loop_var: _probe
+        label: "{{ _probe.cluster }}"
+
+    # ---- the gates left nothing behind ----------------------------------------
+    # Every gate object is a test hook removed on success, except Gate B's
+    # read-only ClusterRole.
+    - name: "Verify | e2e-local | gates | gate objects on both clusters"
+      kubernetes.core.k8s_info:
+        kubeconfig: "{{ item.0 }}"
+        api_version: "{{ item.1.rsplit('/', 1)[0] if '/' in item.1 else 'v1' }}"
+        kind: "{{ item.1.split('/') | last }}"
+      loop: "{{ [_workload_kubeconfig, _mgmt_kubeconfig] | product(_gate_kinds) | list }}"
+      loop_control:
+        label: "{{ item.0 | basename }} {{ item.1 }}"
+      register: _verify_gate_objects
+      delegate_to: localhost
+      vars:
+        ansible_python_interpreter: "{{ ansible_playbook_python }}"
+        _gate_kinds: [Pod, Service, ServiceAccount, ConfigMap, apps/v1/Deployment, rbac.authorization.k8s.io/v1/Role,
+                      rbac.authorization.k8s.io/v1/RoleBinding, rbac.authorization.k8s.io/v1/ClusterRole,
+                      rbac.authorization.k8s.io/v1/ClusterRoleBinding]
+
+    - name: "Verify | e2e-local | gates | only Gate B's ClusterRole remains"
       ansible.builtin.assert:
-        that:
-          - (_metallb_demo_svc.resources | length) == 1
-          - (_metallb_demo_svc.resources[0].status.loadBalancer.ingress | default([])) | length > 0
-          - "':' in (_metallb_demo_svc.resources[0].status.loadBalancer.ingress[0].ip | default(''))"
-        fail_msg: >-
-          MetalLB demo Service did not surface a VIP in
-          `status.loadBalancer.ingress[0].ip` (status: {{ (_metallb_demo_svc.resources | first | default({})).status | default('<no-svc>') }}).
-
-    - name: "Verify | e2e-local | bind MetalLB demo VIP fact"
-      ansible.builtin.set_fact:
-        _metallb_demo_vip: "{{ _metallb_demo_svc.resources[0].status.loadBalancer.ingress[0].ip }}"
-
-    - name: "Verify | e2e-local | external HTTP GET to MetalLB VIP from VM"
-      ansible.builtin.uri:
-        url: "http://[{{ _metallb_demo_vip }}]:{{ _metallb_demo_port }}/"
-        method: GET
-        return_content: true
-        status_code: 200
-        timeout: 15
-      register: _metallb_external_curl
-      retries: 6
-      delay: 5
-      until: _metallb_external_curl.status == 200
-
-    - name: "Verify | e2e-local | assert external GET body is 'ok'"
-      ansible.builtin.assert:
-        that:
-          - (_metallb_external_curl.content | default('')) is search('^ok')
-        fail_msg: >-
-          External HTTP GET to http://[{{ _metallb_demo_vip }}]:{{ _metallb_demo_port }}/
-          succeeded but returned unexpected body:
-          {{ _metallb_external_curl.content | default('<none>') }}
+        that: _left == (['cni-calico-config-gate-b'] if _kind == 'ClusterRole' else [])
+        fail_msg: "{{ item.item.0 | basename }}: {{ _kind }} objects left by the gates: {{ _left }}"
+        quiet: true
+      loop: "{{ _verify_gate_objects.results }}"
+      loop_control:
+        label: "{{ item.item.0 | basename }} {{ item.item.1 }}"
+      vars:
+        _kind: "{{ item.item.1.split('/') | last }}"
+        _left: >-
+          {{ item.resources | map(attribute='metadata.name')
+             | select('search', '-gate-[ab]$|-test$|-test-cluster-ready$') | list }}
 
     # ---- workload Nodes Ready via runner-reachable kubeconfig ---------------
     - name: "Verify | e2e-local | workload | runner-side Nodes via rewritten kubeconfig"
@@ -168,8 +144,7 @@
       delay: 5
       until: >-
         (_wl_nodes_runner.resources | default([])) | length ==
-        ((k8s_lab_workload_controlplane_count | int) +
-         (k8s_lab_workload_worker_count | int))
+        ((_workload_cp_count | int) + (_workload_worker_count | int))
       delegate_to: localhost
       vars:
         ansible_python_interpreter: "{{ ansible_playbook_python }}"
@@ -178,8 +153,7 @@
       ansible.builtin.assert:
         that:
           - (_wl_nodes_runner.resources | length) ==
-            ((k8s_lab_workload_controlplane_count | int) +
-             (k8s_lab_workload_worker_count | int))
+            ((_workload_cp_count | int) + (_workload_worker_count | int))
           - (_wl_nodes_runner.resources
               | map(attribute='status.conditions')
               | map('selectattr', 'type', 'eq', 'Ready')
@@ -195,12 +169,98 @@
              | map('selectattr', 'type', 'eq', 'Ready')
              | map('first') | list }}
 
-    # ---- self-hosted mgmt-1 CAPI snapshot ----------------------------------
-    # mgmt.kubeconfig points at mgmt-1 post-pivot. Snapshot CAPI CRs to
-    # confirm pivot landed cleanly + workload Cluster CR is reconciled
-    # against mgmt-1's CAPI controllers (not bootstrap's — bootstrap is
-    # gone).
-    - name: "Verify | e2e-local | mgmt-1 | snapshot CAPI objects"
+    # ---- node addresses and the service allocator, both clusters ------------
+    - name: "Verify | e2e-local | nodes | mgmt-1's nodes"
+      kubernetes.core.k8s_info:
+        kubeconfig: "{{ _mgmt_kubeconfig }}"
+        kind: Node
+      register: _verify_mgmt_nodes
+      delegate_to: localhost
+      vars:
+        ansible_python_interpreter: "{{ ansible_playbook_python }}"
+
+    - name: "Verify | e2e-local | nodes | provider ID, IPv4 and IPv6 InternalIPs and pod CIDRs"
+      ansible.builtin.assert:
+        that:
+          - item.spec.providerID == 'lxc:///' ~ item.metadata.name
+          - _internal | reject('search', ':') | list | length == 1
+          - _internal | select('search', ':') | list | length == 1
+          - item.spec.podCIDRs | reject('search', ':') | list | length == 1
+          - item.spec.podCIDRs | select('search', ':') | list | length == 1
+        fail_msg: >-
+          {{ item.metadata.name }}: providerID {{ item.spec.providerID | default('') }},
+          InternalIPs {{ _internal }}, podCIDRs {{ item.spec.podCIDRs | default([]) }}
+        quiet: true
+      loop: "{{ _wl_nodes_runner.resources + _verify_mgmt_nodes.resources }}"
+      loop_control:
+        label: "{{ item.metadata.name }}"
+      vars:
+        _internal: "{{ item.status.addresses | selectattr('type', 'eq', 'InternalIP') | map(attribute='address') | list }}"
+
+    # ---- node routing: eth0 for everything but replies to eth1 ---------------
+    - name: "Verify | e2e-local | routing | each node's IPv6 default routes, its route off the external link and on it"
+      ansible.builtin.command:
+        argv: [/snap/bin/lxc, exec, --project, "{{ k8s_lab_project_name }}", "{{ item.metadata.name }}", --,
+               sh, -c, "ip -6 route show default table main; echo ==; ip -6 route get {{ harness_offlink_client }};
+                        echo ==; ip -6 route get {{ _ext6_router }}"]
+      register: _verify_routing
+      changed_when: false
+      loop: "{{ _wl_nodes_runner.resources + _verify_mgmt_nodes.resources }}"
+      loop_control:
+        label: "{{ item.metadata.name }}"
+      become: true
+      vars:
+        # The harness router's address on the external link (::1 of the prefix).
+        _ext6_router: "{{ management_cluster_external_ipv6_prefix | regex_replace('::/\\d+$', '::1') }}"
+
+    - name: "Verify | e2e-local | routing | one default route in the main table and egress through eth0, the external link on eth1"
+      ansible.builtin.assert:
+        that:
+          - _defaults | length == 1
+          - _defaults[0] is search(' dev eth0 ')
+          - _egress is search(' dev eth0 ')
+          - _onlink is search(' dev eth1 ')
+        fail_msg: >-
+          {{ item.item.metadata.name }}: main-table defaults {{ _defaults }}; to the off-link client: {{ _egress }};
+          to the external link: {{ _onlink }}
+        quiet: true
+      loop: "{{ _verify_routing.results }}"
+      loop_control:
+        label: "{{ item.item.metadata.name }}"
+      vars:
+        _defaults: "{{ item.stdout.split('==')[0] | trim | split('\n') | reject('eq', '') | list }}"
+        _egress: "{{ item.stdout.split('==')[1] | trim }}"
+        _onlink: "{{ item.stdout.split('==')[2] | trim }}"
+
+    - name: "Verify | e2e-local | services | the default ServiceCIDR of each cluster"
+      kubernetes.core.k8s_info:
+        kubeconfig: "{{ item }}"
+        api_version: networking.k8s.io/v1
+        kind: ServiceCIDR
+        name: kubernetes
+      loop: ["{{ _workload_kubeconfig }}", "{{ _mgmt_kubeconfig }}"]
+      register: _verify_service_cidrs
+      delegate_to: localhost
+      vars:
+        ansible_python_interpreter: "{{ ansible_playbook_python }}"
+
+    - name: "Verify | e2e-local | services | Services get an IPv4 and an IPv6 ClusterIP"
+      ansible.builtin.assert:
+        that:
+          - _cidrs | reject('search', ':') | list | length == 1
+          - _cidrs | select('search', ':') | list | length == 1
+        fail_msg: "ServiceCIDR kubernetes via {{ item.item }}: {{ _cidrs }}"
+        quiet: true
+      loop: "{{ _verify_service_cidrs.results }}"
+      loop_control:
+        label: "{{ item.item | basename }}"
+      vars:
+        _cidrs: "{{ (item.resources | first | default({})).spec.cidrs | default([]) }}"
+
+    # ---- the Cluster API objects live on the self-hosted mgmt-1 -------------
+    # mgmt.kubeconfig points at mgmt-1 after the pivot: both clusters are
+    # managed there, every Machine has its Node, every LXC object is ready.
+    - name: "Verify | e2e-local | mgmt-1 | Cluster API objects"
       kubernetes.core.k8s_info:
         kubeconfig: "{{ _mgmt_kubeconfig }}"
         api_version: "{{ item.api_version }}"
@@ -209,23 +269,313 @@
       loop: "{{ _capi_kinds }}"
       loop_control:
         label: "{{ item.kind }}"
-      register: _capi_snapshot
+      register: _capi_objects
       delegate_to: localhost
       vars:
         ansible_python_interpreter: "{{ ansible_playbook_python }}"
 
-    - name: "Verify | e2e-local | print compact state"
-      ansible.builtin.debug:
-        msg:
-          - "{{ _helm_test.stdout_lines | default([]) }}"
-          - "{{ _cni_helm_test.stdout_lines | default([]) }}"
-          - "{{ _metallb_helm_test.stdout_lines | default([]) }}"
-          - "metallb VIP={{ _metallb_demo_vip | default('<unread>') }} external_status={{ _metallb_external_curl.status | default('<none>') }}"
-          - "workload kubeconfig = {{ _workload_kubeconfig }} ({{ _wl_nodes_runner.resources | default([]) | length }} Nodes Ready)"
-          - >-
-            {{ _capi_snapshot.results
-               | map(attribute='resources')
-               | map('default', [])
-               | map('map', attribute='metadata.name')
-               | map('list')
-               | list }}
+    - name: "Verify | e2e-local | mgmt-1 | both clusters managed there, every machine has its node"
+      ansible.builtin.assert:
+        that:
+          - _clusters | map(attribute='metadata.name') | sort == [k8s_lab_management_cluster_name, _workload_cluster_name] | sort
+          - _unavailable | length == 0
+          - _machines | length > 0
+          - _without_node | length == 0
+          - _unprovisioned | length == 0
+        fail_msg: >-
+          Clusters {{ _clusters | map(attribute='metadata.name') | list }}, not Available {{ _unavailable }};
+          Machines without a node {{ _without_node }}; LXC objects not provisioned {{ _unprovisioned }}
+      vars:
+        _clusters: "{{ _capi_objects.results[0].resources }}"
+        _machines: "{{ _capi_objects.results[1].resources }}"
+        _lxc: "{{ _capi_objects.results[2].resources + _capi_objects.results[3].resources }}"
+        _unavailable: >-
+          {{ _clusters | map(attribute='metadata.name')
+             | zip(_clusters | map(attribute='status.conditions', default=[])
+                   | map('selectattr', 'type', 'eq', 'Available') | map('map', attribute='status') | map('list'))
+             | rejectattr('1', 'eq', ['True']) | map(attribute='0') | list }}
+        _without_node: "{{ _machines | rejectattr('status.nodeRef', 'defined') | map(attribute='metadata.name') | list }}"
+        _unprovisioned: >-
+          {{ _lxc | map(attribute='status.initialization.provisioned', default=false)
+             | zip(_lxc | map(attribute='metadata.name')) | rejectattr('0', 'eq', true) | map(attribute='1') | list }}
+
+# Re-run safety and ownership: after the idempotence step (a second full run)
+# nothing was re-created or restarted, mgmt-1 is owned by Helm releases on
+# itself, and the roles refuse or do nothing where they must.
+- name: "Verify | e2e-local | re-run safety and ownership"
+  hosts: all
+  # The roles below read the host address, which the harness takes from facts.
+  gather_facts: true
+  become: false
+  vars:
+    _socket: /var/snap/lxd/common/lxd/unix.socket
+    _mgmt_kubeconfig: "{{ k8s_lab_artifacts_dir }}/mgmt.kubeconfig"
+    _mgmt_kubeconfig_host: "{{ k8s_lab_opt_root }}/etc/mgmt.kubeconfig"
+    _bootstrap_url: >-
+      http://localhost/1.0/instances/{{ k8s_lab_bootstrap_instance_name }}?project={{ k8s_lab_project_name }}
+  tasks:
+    - name: "Verify | e2e-local | rerun | the bootstrap instance is gone"
+      ansible.builtin.uri:
+        url: "{{ _bootstrap_url }}"
+        unix_socket: "{{ _socket }}"
+        status_code: 404
+      become: true
+
+    - name: "Verify | e2e-local | rerun | releases on mgmt-1"
+      ansible.builtin.command:
+        argv: [helm, list, --namespace, "{{ k8s_lab_cluster_namespace }}", --kubeconfig, "{{ _mgmt_kubeconfig }}", --output, json]
+      register: _verify_rerun_releases
+      changed_when: false
+      delegate_to: localhost
+
+    - name: "Verify | e2e-local | rerun | mgmt-1 owns its ClusterClass and Cluster releases"
+      ansible.builtin.assert:
+        that:
+          - _releases | selectattr('name', 'equalto', k8s_lab_management_cluster_name) | map(attribute='status') | list == ['deployed']
+          - _releases | selectattr('name', 'equalto', k8s_lab_management_cluster_name ~ '-class') | map(attribute='status') | list == ['deployed']
+        fail_msg: "releases on mgmt-1: {{ _releases | map(attribute='name') | list }}"
+      vars:
+        _releases: "{{ _verify_rerun_releases.stdout | from_json }}"
+
+    # ---- handoff and identity hygiene ---------------------------------------
+    - name: "Verify | e2e-local | handoff | read handoff.json"
+      ansible.builtin.slurp:
+        src: "{{ k8s_lab_artifacts_dir }}/handoff.json"
+      register: _verify_handoff
+      delegate_to: localhost
+
+    - name: "Verify | e2e-local | handoff | handoff.json holds exactly the management-side values"
+      ansible.builtin.assert:
+        that: _handoff == _expected
+        fail_msg: "handoff {{ _handoff }}, expected {{ _expected }}"
+      vars:
+        _handoff: "{{ _verify_handoff.content | b64decode | from_json }}"
+        _expected:
+          lxd_host_address: "{{ k8s_lab_lxd_host_address }}"
+          cluster_namespace: "{{ k8s_lab_cluster_namespace }}"
+          infrastructure_secret_name: "{{ k8s_lab_infrastructure_secret_name }}"
+          mgmt_kubeconfig_path: "{{ _mgmt_kubeconfig }}"
+          external_ipv6_prefix: "{{ management_cluster_external_ipv6_prefix }}"
+
+    - name: "Verify | e2e-local | identity | read the CAPN identity Secret on mgmt-1"
+      kubernetes.core.k8s_info:
+        kubeconfig: "{{ _mgmt_kubeconfig }}"
+        kind: Secret
+        namespace: "{{ k8s_lab_cluster_namespace }}"
+        name: "{{ k8s_lab_infrastructure_secret_name }}"
+      register: _verify_identity_secret
+      delegate_to: localhost
+      vars:
+        ansible_python_interpreter: "{{ ansible_playbook_python }}"
+      # The Secret carries the client key.
+      no_log: true
+
+    - name: "Verify | e2e-local | identity | stat the client key"
+      ansible.builtin.stat:
+        path: "{{ k8s_lab_opt_root }}/etc/capn_identity/client.key"
+      register: _verify_identity_key
+      become: true
+
+    - name: "Verify | e2e-local | identity | LXD trust entries"
+      ansible.builtin.uri:
+        url: http://localhost/1.0/certificates?recursion=1
+        unix_socket: "{{ _socket }}"
+      register: _verify_identity_trust
+      become: true
+
+    # Server-side apply leaves no last-applied annotation that would carry the key.
+    - name: "Verify | e2e-local | identity | key private, Secret applied server-side, one trusted identity"
+      ansible.builtin.assert:
+        that:
+          - _verify_identity_key.stat.mode == '0600'
+          - "'kubectl.kubernetes.io/last-applied-configuration' not in _meta.annotations | default({})"
+          - "'k8s-lab' in _meta.managedFields | map(attribute='manager')"
+          - _meta.labels['clusterctl.cluster.x-k8s.io/move'] | default('') == 'true'
+          - _trust | length == 1
+        fail_msg: >-
+          key mode {{ _verify_identity_key.stat.mode }}, annotations {{ (_meta.annotations | default({})).keys() | list }},
+          managers {{ _meta.managedFields | map(attribute='manager') | list }}, k8slab-capn trust entries {{ _trust | length }}
+      vars:
+        _meta: "{{ _verify_identity_secret.resources[0].metadata }}"
+        _trust: "{{ _verify_identity_trust.json.metadata | selectattr('name', 'match', '^k8slab-capn(-|$)') | list }}"
+
+    - name: "Verify | e2e-local | rerun | read the first run's record"
+      ansible.builtin.slurp:
+        src: "{{ k8s_lab_artifacts_dir }}/e2e-first-run.json"
+      register: _verify_rerun_first
+      delegate_to: localhost
+
+    - name: "Verify | e2e-local | rerun | instances now"
+      ansible.builtin.uri:
+        url: "http://localhost/1.0/instances?project={{ k8s_lab_project_name }}&recursion=1"
+        unix_socket: "{{ _socket }}"
+        return_content: true
+      register: _verify_rerun_instances
+      become: true
+
+    - name: "Verify | e2e-local | rerun | Machines now"
+      kubernetes.core.k8s_info:
+        kubeconfig: "{{ _mgmt_kubeconfig }}"
+        api_version: cluster.x-k8s.io/v1beta2
+        kind: Machine
+        namespace: "{{ k8s_lab_cluster_namespace }}"
+      register: _verify_rerun_machines
+      delegate_to: localhost
+      vars:
+        ansible_python_interpreter: "{{ ansible_playbook_python }}"
+
+    - name: "Verify | e2e-local | rerun | the second run re-created nothing"
+      ansible.builtin.assert:
+        that:
+          - _now_instances == _first.instances
+          - _now_machines == _first.machines
+        fail_msg: >-
+          instances first={{ _first.instances }} now={{ _now_instances }};
+          machines first={{ _first.machines }} now={{ _now_machines }}
+      vars:
+        _first: "{{ _verify_rerun_first.content | b64decode | from_json }}"
+        _now_instances: "{{ _verify_rerun_instances.json.metadata | items2dict(key_name='name', value_name='created_at') }}"
+        _now_machines: "{{ _verify_rerun_machines.resources | map(attribute='metadata') | items2dict(key_name='name', value_name='uid') }}"
+
+    - name: "Verify | e2e-local | rerun | without mgmt.kubeconfig the state refuses to bootstrap"
+      become: true
+      block:
+        - name: "Verify | e2e-local | rerun | move the host-side mgmt.kubeconfig away"
+          ansible.builtin.command:
+            argv: [mv, "{{ _mgmt_kubeconfig_host }}", "{{ _mgmt_kubeconfig_host }}.verify"]
+          changed_when: true
+
+        - name: "Verify | e2e-local | rerun | evaluate the state"
+          ansible.builtin.include_role:
+            name: management_cluster
+            tasks_from: state
+
+        - name: "Verify | e2e-local | rerun | the state should have refused"
+          ansible.builtin.fail:
+            msg: "state was {{ k8s_lab_management_state }} without mgmt.kubeconfig; expected a refusal"
+      rescue:
+        - name: "Verify | e2e-local | rerun | refused with the documented message"
+          ansible.builtin.assert:
+            that: ansible_failed_result.msg is search('Refusing to bootstrap over a live cluster')
+            fail_msg: "unexpected failure: {{ ansible_failed_result.msg | default(ansible_failed_result) }}"
+      always:
+        - name: "Verify | e2e-local | rerun | restore mgmt.kubeconfig"
+          ansible.builtin.command:
+            argv: [mv, "{{ _mgmt_kubeconfig_host }}.verify", "{{ _mgmt_kubeconfig_host }}"]
+          changed_when: true
+
+    # `apply: become` keeps the roles' own `become: false` on runner-side tasks
+    # (an `ansible_become` variable would override it).
+    - name: "Verify | e2e-local | rerun | state on the pivoted host"
+      ansible.builtin.include_role:
+        name: management_cluster
+        tasks_from: state
+        apply:
+          become: true
+
+    - name: "Verify | e2e-local | rerun | the state is self-hosted"
+      ansible.builtin.assert:
+        that: k8s_lab_management_state == 'self_hosted'
+
+    - name: "Verify | e2e-local | rerun | each bootstrap-stage entry point alone does nothing"
+      ansible.builtin.include_role:
+        name: "{{ item.role }}"
+        tasks_from: "{{ item.tasks_from }}"
+        apply:
+          become: true
+      loop:
+        - {role: bootstrap, tasks_from: main}
+        - {role: clusterctl, tasks_from: pivot}
+        - {role: bootstrap, tasks_from: destroy}
+      loop_control:
+        label: "{{ item.role }} : {{ item.tasks_from }}"
+
+    - name: "Verify | e2e-local | rerun | still no bootstrap instance"
+      ansible.builtin.uri:
+        url: "{{ _bootstrap_url }}"
+        unix_socket: "{{ _socket }}"
+        status_code: 404
+      become: true
+
+# Day-2 through the Terraform fixture, last because it replaces a worker and
+# then removes the workload cluster: scale the workers up and back, destroy both
+# roots, and nothing of the cluster is left on mgmt-1 or in LXD.
+- name: "Verify | e2e-local | workload day-2 through Terraform"
+  hosts: all
+  gather_facts: false
+  become: false
+  vars_files:
+    - vars/workload.yml
+  vars:
+    _fixture: "{{ harness_repo_root }}/tests/fixtures/terraform/workload-clusters/lab-default"
+    _workload_kubeconfig: "{{ k8s_lab_artifacts_dir }}/clusters/{{ _workload_cluster_name }}.kubeconfig"
+    _mgmt_kubeconfig: "{{ k8s_lab_artifacts_dir }}/mgmt.kubeconfig"
+    _ours: "^{{ _workload_cluster_name }}(-|$)"
+  tasks:
+    - name: "Verify | e2e-local | scale | workers up by one, then back"
+      ansible.builtin.include_tasks: verify/scale.yml
+      loop: ["{{ (_workload_worker_count | int) + 1 }}", "{{ _workload_worker_count }}"]
+      loop_control:
+        loop_var: _workers
+
+    # Two tasks, not a loop: a failed add-on destroy stops the run.
+    - name: "Verify | e2e-local | destroy | the add-on root"
+      community.general.terraform:
+        project_path: "{{ _fixture }}/addons"
+        state: absent
+        variables:
+          handoff_path: "{{ k8s_lab_artifacts_dir }}/handoff.json"
+      delegate_to: localhost
+
+    - name: "Verify | e2e-local | destroy | the cluster root"
+      community.general.terraform:
+        project_path: "{{ _fixture }}/cluster"
+        state: absent
+        variables:
+          handoff_path: "{{ k8s_lab_artifacts_dir }}/handoff.json"
+      delegate_to: localhost
+
+    - name: "Verify | e2e-local | destroy | no Cluster API object of the cluster left on mgmt-1"
+      kubernetes.core.k8s_info:
+        kubeconfig: "{{ _mgmt_kubeconfig }}"
+        api_version: "{{ _api[item] }}"
+        kind: "{{ item }}"
+        namespace: "{{ k8s_lab_cluster_namespace }}"
+      register: _verify_destroy_objects
+      retries: 30
+      delay: 10
+      until: _verify_destroy_objects.resources | map(attribute='metadata.name') | select('match', _ours) | list == []
+      loop: [Cluster, ClusterClass, Machine, LXCMachine, LXCCluster]
+      delegate_to: localhost
+      vars:
+        ansible_python_interpreter: "{{ ansible_playbook_python }}"
+        _api:
+          Cluster: cluster.x-k8s.io/v1beta2
+          ClusterClass: cluster.x-k8s.io/v1beta2
+          Machine: cluster.x-k8s.io/v1beta2
+          LXCMachine: infrastructure.cluster.x-k8s.io/v1alpha2
+          LXCCluster: infrastructure.cluster.x-k8s.io/v1alpha2
+
+    - name: "Verify | e2e-local | destroy | releases on mgmt-1"
+      ansible.builtin.command:
+        argv: [helm, list, --namespace, "{{ k8s_lab_cluster_namespace }}", --kubeconfig, "{{ _mgmt_kubeconfig }}", --output, json]
+      register: _verify_destroy_releases
+      changed_when: false
+      failed_when: _verify_destroy_releases.stdout | from_json | map(attribute='name') | select('match', _ours) | list != []
+      delegate_to: localhost
+
+    - name: "Verify | e2e-local | destroy | no instance of the cluster left in LXD"
+      ansible.builtin.uri:
+        url: "http://localhost/1.0/instances?project={{ k8s_lab_project_name }}"
+        unix_socket: /var/snap/lxd/common/lxd/unix.socket
+      register: _verify_destroy_instances
+      retries: 30
+      delay: 10
+      until: _verify_destroy_instances.json.metadata | map('basename') | select('match', _ours) | list == []
+      become: true
+
+    - name: "Verify | e2e-local | destroy | remove the runner-side kubeconfig"
+      ansible.builtin.file:
+        path: "{{ _workload_kubeconfig }}"
+        state: absent
+      delegate_to: localhost

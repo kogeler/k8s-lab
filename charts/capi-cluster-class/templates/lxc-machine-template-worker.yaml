@@ -1,27 +1,29 @@
-{{- include "capi-cluster-class.requireCAPN" . -}}
----
+{{- define "capi-cluster-class.spec.md-0" -}}
+{{- $w := .Values.worker -}}
+template:
+  spec:
+    instanceType: container
+    {{- with $w.flavor }}
+    flavor: {{ . | quote }}
+    {{- end }}
+    image:
+      {{- include "capi-cluster-class.image" $w.image | nindent 6 }}
+    profiles:
+      - capi-base
+      - capi-worker
+      {{- range $w.profilesExtra }}
+      - {{ . | quote }}
+      {{- end }}
+    {{- with $w.devicesExtra }}
+    devices:
+      {{- range . }}
+      - {{ . | quote }}
+      {{- end }}
+    {{- end }}
+{{- end -}}
 apiVersion: infrastructure.cluster.x-k8s.io/v1alpha2
 kind: LXCMachineTemplate
 metadata:
-  name: {{ include "capi-cluster-class.lxcMachineTemplateWorkerName" . }}
-  namespace: {{ .Release.Namespace }}
-  labels:
-    {{- include "capi-cluster-class.labels" . | nindent 4 }}
-    cluster.x-k8s.io/role: worker
+  {{- include "capi-cluster-class.metadata" (list . "md-0") | nindent 2 }}
 spec:
-  template:
-    spec:
-      instanceType: container
-      image:
-        name: {{ .Values.images.worker.ref | quote }}
-        {{- with .Values.images.worker.fingerprint }}
-        fingerprint: {{ . | quote }}
-        {{- end }}
-      profiles:
-        {{- include "capi-cluster-class.workerProfiles" . | nindent 8 }}
-      {{- with .Values.devicesExtra.worker }}
-      devices:
-        {{- range . }}
-        - {{ . | quote }}
-        {{- end }}
-      {{- end }}
+  {{- include "capi-cluster-class.spec.md-0" . | nindent 2 }}

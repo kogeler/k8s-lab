@@ -1,0 +1,8 @@
+---
+# Reference: the host and its LXD substrate. Safe to run on a live host.
+- name: "Substrate | host and LXD"
+  hosts: k8slab_host
+  become: true
+  roles:
+    - host
+    - lxd

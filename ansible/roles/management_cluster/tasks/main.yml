@@ -1,0 +1,83 @@
+---
+# The areas talk to a Kubernetes API from the runner; `kubeconfig` also writes
+# on the host. The `state` entry point (tasks_from: state) runs on the host.
+
+- name: "management-cluster | the management state is known"
+  ansible.builtin.assert:
+    that: k8s_lab_management_state is defined
+    fail_msg: "management_cluster needs the management state: run it with tasks_from: state first."
+    quiet: true
+
+# Listed twice in the reference playbook (before and after the pivot): a second
+# invocation against the same managing API has nothing to add.
+- name: "management-cluster | once per managing API in a play"
+  ansible.builtin.meta: end_role
+  when: (_management_cluster_converged_for | default('')) == management_cluster_kubeconfig
+
+- name: "management-cluster | cluster"
+  ansible.builtin.include_tasks:
+    file: cluster.yml
+    apply:
+      tags: ["management-cluster", "management_cluster", "management-cluster-cluster", "management_cluster_cluster"]
+      delegate_to: localhost
+      become: false
+      vars:
+        ansible_python_interpreter: "{{ ansible_playbook_python }}"
+  when:
+    - management_cluster_enabled | bool
+    - management_cluster_flow_control_cluster | bool
+  tags: ["management-cluster", "management_cluster", "management-cluster-cluster", "management_cluster_cluster"]
+
+- name: "management-cluster | kubeconfig"
+  ansible.builtin.include_tasks:
+    file: kubeconfig.yml
+    apply:
+      tags: ["management-cluster", "management_cluster", "management-cluster-kubeconfig", "management_cluster_kubeconfig"]
+  when:
+    - management_cluster_enabled | bool
+    - management_cluster_flow_control_kubeconfig | bool
+  tags: ["management-cluster", "management_cluster", "management-cluster-kubeconfig", "management_cluster_kubeconfig"]
+
+- name: "management-cluster | addons"
+  ansible.builtin.include_tasks:
+    file: addons.yml
+    apply:
+      tags: ["management-cluster", "management_cluster", "management-cluster-addons", "management_cluster_addons"]
+      delegate_to: localhost
+      become: false
+      vars:
+        ansible_python_interpreter: "{{ ansible_playbook_python }}"
+  when:
+    - management_cluster_enabled | bool
+    - management_cluster_flow_control_addons | bool
+  tags: ["management-cluster", "management_cluster", "management-cluster-addons", "management_cluster_addons"]
+
+- name: "management-cluster | gates"
+  ansible.builtin.include_tasks:
+    file: gates.yml
+    apply:
+      tags: ["management-cluster", "management_cluster", "management-cluster-gates", "management_cluster_gates"]
+      delegate_to: localhost
+      become: false
+      vars:
+        ansible_python_interpreter: "{{ ansible_playbook_python }}"
+  when:
+    - management_cluster_enabled | bool
+    - management_cluster_flow_control_gates | bool
+  tags: ["management-cluster", "management_cluster", "management-cluster-gates", "management_cluster_gates"]
+
+- name: "management-cluster | handoff"
+  ansible.builtin.include_tasks:
+    file: handoff.yml
+    apply:
+      tags: ["management-cluster", "management_cluster", "management-cluster-handoff", "management_cluster_handoff"]
+      delegate_to: localhost
+      become: false
+  when:
+    - management_cluster_enabled | bool
+    - management_cluster_flow_control_handoff | bool
+  tags: ["management-cluster", "management_cluster", "management-cluster-handoff", "management_cluster_handoff"]
+
+- name: "management-cluster | remember the managing API this play converged on"
+  ansible.builtin.set_fact:
+    _management_cluster_converged_for: "{{ management_cluster_kubeconfig }}"

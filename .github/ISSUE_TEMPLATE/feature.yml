@@ -1,14 +1,14 @@
 name: Feature / enhancement
-description: Propose a new feature, enhancement, or Stage 2 backlog item.
+description: Propose a new feature, an enhancement, or a roadmap item.
 labels: ["enhancement"]
 body:
   - type: markdown
     attributes:
       value: |
-        Please check `plans/PLAN-stage2-common.md` first — many likely
-        enhancements are already in the backlog with a design rationale.
-        See `CONTRIBUTING.md` for items that are intentionally out of scope
-        (privileged LXC, multi-CNI runtime toggles, host firewall, etc.).
+        Please check `ROADMAP.md` first — many likely enhancements are already
+        listed there. See `CONTRIBUTING.md` for what is intentionally out of
+        scope (site-specific data, privileged containers, raw manifest
+        application, rules in the host's firewall) and `doc/decisions/` for why.
   - type: textarea
     id: motivation
     attributes:
@@ -36,5 +36,5 @@ body:
       options:
         - label: I have read `CONTRIBUTING.md` and this is in scope.
           required: true
-        - label: I have searched the `plans/` directory for an existing entry.
+        - label: I have searched `ROADMAP.md` and the open issues for an existing entry.
           required: true

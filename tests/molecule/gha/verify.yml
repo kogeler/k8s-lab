@@ -1,9 +1,6 @@
 ---
-# gha scenario verify — defers to e2e-local verify. Same rationale as
-# converge.yml: keep the canonical acceptance assertions (helm tests
-# on workload, external Gate A curl through ext6-ra-peer, Nodes Ready
-# via runner-reachable kubeconfig, post-pivot CAPI snapshot) in one
-# place.
+- name: "Verify | gha | refuse outside GitHub Actions"
+  ansible.builtin.import_playbook: ci-only.yml
 
-- name: "Verify | gha | import e2e-local verify"
+- name: "Verify | gha | the e2e-local verify"
   ansible.builtin.import_playbook: ../e2e-local/verify.yml

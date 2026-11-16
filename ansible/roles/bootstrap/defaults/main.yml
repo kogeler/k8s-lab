@@ -1,0 +1,19 @@
+---
+bootstrap_project: "{{ k8s_lab_project_name }}"
+bootstrap_instance_name: "{{ k8s_lab_bootstrap_instance_name }}"
+bootstrap_image_alias: "debian/13/cloud"                         # on images.lxd.canonical.com (LXD's built-in registry)
+bootstrap_api_listen_address: "{{ k8s_lab_api_listen_address }}"  # host address the published k3s API listens on
+bootstrap_api_port: 16443                                        # host port of the published k3s API
+bootstrap_api_host: "{{ k8s_lab_lxd_host_address }}"             # how host and runner reach that API
+bootstrap_opt_root: "{{ k8s_lab_opt_root }}"
+bootstrap_artifacts_dir: "{{ k8s_lab_artifacts_dir }}"
+bootstrap_wait_timeout: 600                                      # seconds, for the addresses and for a Ready node
+# k3s's own networks, [IPv4, IPv6], apart from the internal network and the
+# clusters' Pod and Service networks; the DNS addresses lie in the service CIDRs.
+bootstrap_pod_cidrs: ["10.42.0.0/16", "fd42:77:42::/56"]
+bootstrap_service_cidrs: ["10.43.0.0/16", "fd42:77:43::/112"]
+bootstrap_cluster_dns: ["10.43.0.10", "fd42:77:43::a"]
+bootstrap_enabled: true
+bootstrap_flow_control_instance: true
+bootstrap_flow_control_k3s: true
+bootstrap_flow_control_kubeconfig: true

@@ -1,0 +1,69 @@
+---
+# bootstrap: a running, unprivileged instance serving a Ready k3s node.
+- name: "Verify | bootstrap | instance | read the bootstrap instance"
+  ansible.builtin.uri:
+    url: "http://localhost/1.0/instances/{{ k8s_lab_bootstrap_instance_name }}?project={{ k8s_lab_project_name }}&recursion=1"
+    unix_socket: "{{ _lxd_socket }}"
+  register: _verify_bootstrap_instance
+  become: true
+
+- name: "Verify | bootstrap | instance | running, with the API published on the bootstrap port"
+  ansible.builtin.assert:
+    that:
+      - _instance.status == 'Running'
+      - _proxies | map(attribute='listen') | select('eq', _listen) | list | length == 1
+    fail_msg: "status {{ _instance.status }}; proxy devices {{ _proxies }}; expected one listening on {{ _listen }}"
+  vars:
+    _instance: "{{ _verify_bootstrap_instance.json.metadata }}"
+    _proxies: "{{ _instance.expanded_devices | dict2items | map(attribute='value') | selectattr('type', 'eq', 'proxy') | list }}"
+    _listen: "tcp:{{ k8s_lab_api_listen_address }}:{{ _api_port }}"
+
+# The kernel's view of unprivileged: root inside the container is not root on the host.
+- name: "Verify | bootstrap | instance | read the UID map of the instance's init"
+  ansible.builtin.slurp:
+    src: "/proc/{{ _verify_bootstrap_instance.json.metadata.state.pid }}/uid_map"
+  register: _verify_bootstrap_uid_map
+  become: true
+
+- name: "Verify | bootstrap | instance | container root maps to a host UID other than 0"
+  ansible.builtin.assert:
+    that: (_verify_bootstrap_uid_map.content | b64decode).split()[1] != '0'
+    fail_msg: "uid_map: {{ _verify_bootstrap_uid_map.content | b64decode | trim }}"
+
+- name: "Verify | bootstrap | k3s | read the nodes through the host-side kubeconfig"
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ _kubeconfig_host }}"
+    kind: Node
+  register: _verify_bootstrap_nodes
+  become: true
+
+- name: "Verify | bootstrap | k3s | every node is Ready and runs the pinned k3s"
+  ansible.builtin.assert:
+    that:
+      - _versions == [k8s_lab_k3s_version]
+      - _ready == ['True']
+    fail_msg: "kubelet versions {{ _versions }}, Ready {{ _ready }}"
+  vars:
+    _nodes: "{{ _verify_bootstrap_nodes.resources }}"
+    _versions: "{{ _nodes | map(attribute='status.nodeInfo.kubeletVersion') | unique }}"
+    _ready: >-
+      {{ _nodes | map(attribute='status.conditions') | map('selectattr', 'type', 'eq', 'Ready') | map('list') | flatten
+         | map(attribute='status') | unique }}
+
+# The controllers reach IPv6 control-plane endpoints: their pods are dual-stack.
+- name: "Verify | bootstrap | k3s | read the Cluster API controller pods"
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ _kubeconfig_host }}"
+    kind: Pod
+    namespace: capi-system
+  register: _verify_bootstrap_capi_pods
+  become: true
+
+- name: "Verify | bootstrap | k3s | they have an IPv4 and an IPv6 pod address"
+  ansible.builtin.assert:
+    that:
+      - _ips | select('search', ':') | list | length > 0
+      - _ips | reject('search', ':') | list | length > 0
+    fail_msg: "pod IPs in capi-system: {{ _ips }}"
+  vars:
+    _ips: "{{ _verify_bootstrap_capi_pods.resources | map(attribute='status.podIPs') | flatten | map(attribute='ip') | list }}"

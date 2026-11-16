@@ -1,37 +1,34 @@
-# Artifacts directory: runtime kubeconfigs, generated tfvars, ephemeral trust material.
-# Contract (plan §14.1): file mode 0600, owner = runner user, not committed.
+# Runner-side kubeconfigs and the Terraform handoff (mode 0600, never committed).
 .artifacts/*
 !.artifacts/.gitkeep
 
-# Molecule runtime state
-.molecule/
-**/molecule/*/.molecule/
-
-# Vagrant runtime state
+# Vagrant runtime state, including the generated ssh-config
 .vagrant/
 **/.vagrant/
 
-# Terraform state (plan §14.3: local state only for test fixtures, not SoT)
+# Terraform state (local state only for the test fixtures)
 **/.terraform/
-**/.terraform.lock.hcl
+terraform/modules/**/.terraform.lock.hcl
 **/terraform.tfstate
 **/terraform.tfstate.backup
 **/terraform.tfstate.d/
 **/.terraform.tfstate.lock.info
+# Saved plans carry every value of the plan, secrets included.
+**/*.tfplan
+**/*.plan
 **/crash.log
 **/*.tfvars
 **/*.tfvars.json
-!tests/fixtures/**/example.tfvars.json
+# The test fixture's per-cluster values (no secrets).
+!tests/fixtures/terraform/**/terraform.tfvars
 
-# Ansible
+# Ansible (collections installed by `make deps`; ansible-lint's work directory)
 *.retry
-ansible/.vault_password
 ansible/collections/
-**/roles/*/tests/
+.ansible/
 
 # Helm
 charts/**/charts/
-charts/**/Chart.lock
 
 # Python
 __pycache__/
@@ -39,12 +36,10 @@ __pycache__/
 *.pyo
 .venv/
 venv/
-# Throwaway venv used to regenerate requirements-gha.txt (see header
-# of that file for the recipe). Should never be committed.
-.venv-gha-temp/
 
-# MkDocs build output
+# MkDocs build output, `make check` caches, Molecule state
 site/
+.cache/
 
 # Editor / OS
 .idea/
@@ -58,3 +53,5 @@ site/
 .env.local
 
 .claude
+
+tmp/

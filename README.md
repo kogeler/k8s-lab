@@ -1,213 +1,72 @@
-# k8s-lab — Cluster API + LXC/LXD Kubernetes laboratory on Debian or Ubuntu Linux
+# k8s-lab
 
 [![License: MIT](https://img.shields.io/github/license/kogeler/k8s-lab)](LICENSE)
 [![Latest release](https://img.shields.io/github/v/release/kogeler/k8s-lab?display_name=tag&sort=semver)](https://github.com/kogeler/k8s-lab/releases)
-[![Last commit](https://img.shields.io/github/last-commit/kogeler/k8s-lab/main)](https://github.com/kogeler/k8s-lab/commits/main)
-[![Docs](https://img.shields.io/badge/docs-k8s--lab.romancello.net-2088FF?logo=readthedocs&logoColor=white)](https://k8s-lab.romancello.net/)
-[![Kubernetes](https://img.shields.io/badge/kubernetes-v1.35-blue?logo=kubernetes&logoColor=white)](doc/03-stack.md)
-[![Cluster API](https://img.shields.io/badge/cluster--api-v1.12-326CE5)](doc/03-stack.md)
-[![CAPN](https://img.shields.io/badge/CAPN-v0.8-228B22)](doc/03-stack.md)
-[![OS](https://img.shields.io/badge/OS-Debian%20%7C%20Ubuntu-A81D33?logo=debian&logoColor=white)](doc/05-prerequisites.md)
+[![Lint](https://github.com/kogeler/k8s-lab/actions/workflows/lint.yml/badge.svg)](https://github.com/kogeler/k8s-lab/actions/workflows/lint.yml)
+[![E2E](https://github.com/kogeler/k8s-lab/actions/workflows/e2e.yml/badge.svg)](https://github.com/kogeler/k8s-lab/actions/workflows/e2e.yml)
+[![Docs](https://img.shields.io/badge/docs-k8s--lab.romancello.net-2088FF)](https://k8s-lab.romancello.net/)
 
-> **Production-grade Kubernetes platform on a single bare-metal/VM box** —
-> the same Cluster API pattern platform-engineering teams run in real
-> environments, made almost as turnkey as `minikube` to spin up.
->
-> Put LXD on the host. Run the bootstrap. You get a **self-hosted Cluster
-> API management cluster** that provisions any number of workload clusters
-> from a handful of Cluster API CRDs (`Cluster`, `ClusterClass`,
-> Kubeadm/KCP templates, CAPN infrastructure CRs) flexibly describing the
-> topology — Kubernetes version, control-plane size, worker pools,
-> networking. Real kubeadm, real CNI, real load balancer. Nodes are unprivileged LXC system containers:
-> **near-zero virtualisation overhead, seconds-not-minutes provisioning,
-> strong host isolation** — no VM tax.
->
-> - **Production patterns, lab footprint.** Real CAPI / CABPK / KCP / CAPN
->   management plane — not a `kind` / `minikube` / single-node k3s toy.
-> - **Declarative all the way down.** Every Kubernetes object ships through
->   Helm via Terraform; cluster lifecycle is CRD-driven.
-> - **Locally reproducible.** A Vagrant + libvirt harness runs the entire
->   canonical flow on a developer laptop — same code path as a real host.
-> - **Test any change at any layer.** Molecule scenarios cover every role
->   (substrate → bootstrap → pivot → workload → add-ons); chart-side
->   `helm.sh/hook: test` Pods (external-L2 reachability + CNI viability)
->   then gate `terraform apply` — a broken data plane fails the deploy
->   instead of silently shipping a half-working cluster.
+Building blocks for Kubernetes clusters on one Debian or Ubuntu host, managed
+by Cluster API: the nodes are unprivileged LXC system containers (LXD), a
+self-hosted management cluster creates and runs any number of workload
+clusters. The repository ships Ansible roles, Helm charts and Terraform
+modules, and a harness that runs the whole flow on a local VM; a deployment
+keeps its inventory, variables and Terraform state in a repository of its own.
 
----
+## How it works
 
-## What is k8s-lab?
+```text
+host (Debian/Ubuntu, LXD snap)
+│  Ansible: tests/playbooks/management.yml → your playbook
+├─ bootstrap instance: k3s ──clusterctl init──► creates mgmt-1 ──clusterctl move──► removed
+├─ mgmt-1: Cluster API + CAPN, Calico, MetalLB          (manages itself after the pivot)
+│    └─ Terraform, per workload cluster: <root>/cluster, then <root>/addons
+└─ workload clusters: Calico, MetalLB; gates checked on every change
 
-`k8s-lab` is a code repository for building a Kubernetes laboratory on a
-**single bare-metal Debian or Ubuntu Linux host** where the Kubernetes nodes are
-unprivileged LXC/LXD system containers, not virtual machines. The cluster
-lifecycle is managed end-to-end by Cluster API: a transient single-node `k3s`
-bootstrap cluster runs `clusterctl init`, then **pivots** management
-responsibility onto a self-hosted management cluster, which then provisions
-the actual workload cluster. After the pivot, the bootstrap LXC is destroyed.
-
-The project ships **only reusable building blocks** — Ansible roles, a
-Terraform module, Helm charts, and a local test harness. Concrete environment
-composition (inventories, secrets, environment-specific tfvars, site-specific
-root modules) lives in **separate private consumer repositories** that import
-this code. The boundary is a deliberate architectural rule, not a missing
-feature.
-
-## Who is this for?
-
-- **Homelab operators** with a single capable bare-metal host who want a real
-  multi-CP / multi-worker Kubernetes cluster with a real CNI, a real load
-  balancer, and a real CAPI control plane — without paying the VM tax.
-- **Cluster API contributors and CAPN users** looking for a reference
-  end-to-end pipeline for the LXC/LXD infrastructure provider.
-- **Platform engineers** evaluating LXC/LXD as a substrate for ephemeral
-  Kubernetes labs or per-developer environments.
-- **Educators** running a reproducible single-host CAPI demo.
-
-It is **not** a managed-Kubernetes alternative, a multi-host installer, a
-`kind`/`minikube` replacement, or a turnkey "one-command-deploy-to-production"
-tool.
-
-## What ships in this repo
-
-- **14 Ansible roles** — host bootstrap, LXD substrate, bootstrap management
-  cluster, CAPI/CAPN install, pivot, validation gates, local harness.
-- **1 Terraform module** (`terraform/modules/workload_cluster`) — Cluster API
-  objects, machine templates, guest networking, cluster add-ons (CNI, MetalLB)
-  via the `hashicorp/helm` provider.
-- **5 Helm charts** (`charts/`) — `capi-cluster-class`, `capi-workload-cluster`,
-  `cni-calico`, `metallb`, `metallb-config`. Every Kubernetes object the
-  project creates is delivered through one of these — **no raw manifests, no
-  `kubectl apply -f`**.
-- **A Molecule + Vagrant + libvirt test harness** that runs the same canonical
-  flow on a developer laptop as on the production host.
-- **A `Makefile`** that ties the local lifecycle together — `make lint`,
-  `make test-local-e2e`, `make deploy-workload`, `make reset-all`,
-  `make clean-local`.
-
-## How does the bootstrap → pivot flow work?
-
-```mermaid
-flowchart LR
-    subgraph host["Debian or Ubuntu Linux host"]
-        direction TB
-        snap["LXD snap (6/stable)"]
-        bridge["br-ext6 Linux bridge<br/>(external IPv6 ingress)"]
-    end
-
-    host -->|hosts LXC project<br/>capi-lab| boot
-
-    subgraph boot["1. Bootstrap (transient)"]
-        direction TB
-        k3s["capi-bootstrap-0<br/>k3s single-node LXC"]
-        k3s -->|clusterctl init| capi["CAPI + CAPN<br/>controllers"]
-    end
-
-    boot -->|helm install<br/>mgmt-1 Cluster CR| mgmt
-
-    subgraph mgmt["2. Management (self-hosted)"]
-        direction TB
-        mgmtnodes["mgmt-1 LXC nodes<br/>1 CP + 2 W"]
-        capi2["CAPI + CAPN<br/>self-hosted"]
-        mgmtnodes -.->|clusterctl move| capi2
-    end
-
-    boot -.->|destroyed by<br/>cleanup_bootstrap| trash[("/dev/null")]
-
-    mgmt -->|terraform apply<br/>workload_cluster| workload
-
-    subgraph workload["3. Workload"]
-        direction TB
-        wnodes["lab-default LXC nodes<br/>3 CP + 2 W"]
-        wnodes --> calico["Calico CNI<br/>dual-stack v4/v6"]
-        wnodes --> metallb["MetalLB L2<br/>IPv6 VIPs on eth1"]
-    end
+every node:  eth0 internal (dual-stack, default route, egress)
+             eth1 external (IPv6 from the router: NodePorts, MetalLB VIPs)
 ```
 
-See [`doc/02-architecture.md`](doc/02-architecture.md) for the canonical
-nine-step flow, the dual-NIC node design, and the Ansible / Terraform / Helm
-ownership split.
+## Quickstart
 
-## Documentation
-
-The full user-facing documentation is rendered as a MkDocs site at
-**<https://k8s-lab.romancello.net/>**. The same content lives under
-[`doc/`](doc/) for offline reading on GitHub. Common entry points:
-
-- [Overview](doc/01-overview.md) — core idea, goals, non-goals.
-- [Architecture](doc/02-architecture.md) — bootstrap and pivot flow, dual-NIC
-  model, layer ownership, validation gates.
-- [Stack](doc/03-stack.md) — every external dependency this repo pins.
-- [Quickstart (local)](doc/06-quickstart-local.md) — Vagrant + libvirt local
-  end-to-end workflow.
-- [Deployment guide](doc/07-deployment-guide.md) — real-host deployment through
-  a private consumer repository.
-- [Configuration reference](doc/08-configuration-reference.md) — project
-  globals, role inputs, Terraform inputs and outputs, chart values.
-
-The architectural source of truth lives under [`plans/`](plans/) — continuous
-`§N` numbering across all plan files. The `doc/` chapters summarise and
-operationalise those plans for end users.
-
-## Layout
-
-```
-ansible/       # 14 reusable roles (host, LXD substrate, bootstrap, pivot, harness)
-charts/        # 5 local wrapper Helm charts (CAPI CRs + cluster add-ons)
-clusterctl/    # Reserved; runtime clusterctl.yaml is rendered by roles
-doc/           # User-facing documentation (chapters 01..14)
-plans/         # Architectural plan files (source of truth)
-scripts/       # Local automation helpers
-terraform/     # workload_cluster module
-tests/         # Molecule scenarios + Vagrant harness + Terraform fixtures
-LICENSE        # MIT
-.artifacts/    # Runtime-only: kubeconfigs, tfvars handoff, ephemeral trust
-```
-
-## Local workflows
-
-All entry points are local-only by design. Real-environment composition
-(`make deploy TARGET=…`) lives in private consumer repositories.
+On a Linux machine with KVM, libvirt and Vagrant
+([prerequisites](doc/quickstart-local.md#prerequisites)):
 
 ```bash
-make lint                 # static checks: yamllint, ansible-lint, terraform fmt, helm lint
-make test-local-harness   # bring up Vagrant VM, verify harness prerequisites
-make test-local-e2e       # full local pipeline (plan §13.2)
-make deploy-workload      # terraform apply workload cluster on existing mgmt
-make reset-all            # full reverse destroy chain (plan §19.2)
-make clean-local          # tear down local harness state fast
+uv sync --locked --all-groups && source .venv/bin/activate
+make deps
+make test-e2e        # VM, host, LXD, mgmt-1, pivot, a workload cluster, checks: ~15 min
 ```
 
-## Conventions
-
-- **Two-NIC node design** — `eth0` = internal dual-stack (default route,
-  kubelet node IP, egress); `eth1` = external IPv6-only (ingress, NodePort,
-  MetalLB VIP).
-- **Unprivileged LXC only** for Kubernetes nodes (plan `§2.8`). Privileged
-  LXC is closed by design.
-- **Ansible owns** host / bootstrap / harness; **Terraform owns** Cluster API
-  objects, guest networking, kube-proxy policy, cluster add-ons (plan `§2.7`).
-- **Helm-first delivery** — every Kubernetes object goes through a chart in
-  `charts/`. Raw manifests / `kubectl apply -f` are forbidden (plan `§2.9`).
-- **Native-first Ansible** — `shell` / `command` / `script` only as a
-  documented last-resort fallback (plan `§2.6.1`).
-- **Binaries under `/opt/capi-lab`** — no custom APT repositories (plan
-  `§2.2`).
+On a real host: [deploy](doc/deploy.md).
 
 ## Status
 
-Stage 1 is closed as **v1.0**. The Stage 2 backlog
-([`plans/PLAN-stage2-common.md`](plans/PLAN-stage2-common.md)) lists opt-in
-items that may be built on top of the working substrate without regressing
-it.
+| | |
+|---|---|
+| Release | v2.0.0 ([changelog](CHANGELOG.md)) |
+| Versions | Kubernetes, Cluster API, CAPN, LXD, Calico, MetalLB and every tool: [versions](doc/reference/versions.md) |
+| Tested on every change | the whole flow, a second run that must change nothing, a scale and a destroy — on a Debian 13 VM and in CI (Ubuntu 26.04) |
+| Tested by drill | upgrades, scaling, rotation, reboot, backup and recovery, teardown: each [runbook](doc/runbooks/README.md) says when and what was not exercised |
 
-## License
+## Limitations
 
-`k8s-lab` is licensed under the [MIT License](LICENSE). The license applies
-to this repository's code and documentation. Third-party tools, providers,
-charts, collections, and container images keep their own licenses.
+- One host is one failure domain.
+- `mgmt-1` runs one control-plane machine by default; back it up.
+- Kubernetes versions are those CAPN publishes a node image for.
+- The roles write no host firewall rules; the host's firewall must let the
+  lab's bridges forward ([architecture](doc/architecture.md#network)).
 
-## Citation
+## Documentation
 
-A machine-readable citation file is provided at [`CITATION.cff`](CITATION.cff).
-GitHub renders a "Cite this repository" widget on the repo sidebar from it.
+[Architecture](doc/architecture.md) ·
+[Quickstart](doc/quickstart-local.md) ·
+[Deploy](doc/deploy.md) ·
+[Runbooks](doc/runbooks/README.md) ·
+[Troubleshooting](doc/troubleshooting.md) ·
+[Decisions](doc/decisions/README.md) ·
+[Reference](doc/reference/roles.md) ·
+[Development](doc/development.md) — also at <https://k8s-lab.romancello.net/>.
+
+[Contributing](CONTRIBUTING.md) · [Security](SECURITY.md) · [Roadmap](ROADMAP.md) ·
+[MIT license](LICENSE)

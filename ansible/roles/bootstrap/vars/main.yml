@@ -1,0 +1,13 @@
+---
+_bootstrap_lxd_socket: /var/snap/lxd/common/lxd/unix.socket
+_bootstrap_lxc: [/snap/bin/lxc, exec, --project, "{{ bootstrap_project }}", "{{ bootstrap_instance_name }}", --]
+_bootstrap_staging_dir: "{{ bootstrap_opt_root }}/etc/bootstrap"
+_bootstrap_kubeconfig_host: "{{ bootstrap_opt_root }}/etc/bootstrap.kubeconfig"
+_bootstrap_kubeconfig_runner: "{{ bootstrap_artifacts_dir }}/bootstrap.kubeconfig"
+# A name in k3s's serving certificate, pinned in the kubeconfig, so any address
+# that reaches the API is accepted.
+_bootstrap_tls_server_name: kubernetes.default.svc
+_bootstrap_k3s_files:
+  - {src: "{{ bootstrap_opt_root }}/bin/k3s", dest: /usr/local/bin/k3s, mode: "0755"}
+  - {src: "{{ _bootstrap_staging_dir }}/config.yaml", dest: /etc/rancher/k3s/config.yaml, mode: "0600"}
+  - {src: "{{ _bootstrap_staging_dir }}/k3s.service", dest: /etc/systemd/system/k3s.service, mode: "0644"}

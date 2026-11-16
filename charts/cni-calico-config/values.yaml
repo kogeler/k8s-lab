@@ -1,0 +1,18 @@
+# Pod CIDRs as [IPv4, IPv6]; they must be the Cluster's pod network.
+calico:
+  pods:
+    cidrBlocks:
+      - "10.244.0.0/16"
+      - "fd42:77:2::/56"
+
+# Gate B (`helm test`).
+tests:
+  # The servers and the client (Kubernetes' e2e test image: netexec, sh, dig, curl).
+  image: "registry.k8s.io/e2e-test-images/agnhost:2.66.1@sha256:6e2eef87d0dc77e070a7549bc5fdfa290c0fefe3359eb33c2ad1eda692fe66a4"
+  # Waits until every node is Ready.
+  kubectlImage: "registry.k8s.io/kubectl:v1.37.2@sha256:fe049faa65ae483ac200009a949a68fa4c9985daea12c9cb1195c9c7965301fc"
+  # The port the client fetches; the servers listen on 8080, so another value
+  # makes the gate fail (a negative test).
+  probePort: 8080
+  # For the nodes, then again for the endpoints.
+  timeoutSeconds: 600

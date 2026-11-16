@@ -1,0 +1,145 @@
+{{- /*
+API publication (files/attach.py): after every install and upgrade a hook Job
+adds an LXD proxy device to the load-balancer instance (host port -> its local
+6443) and waits until the API server answers. The device goes away with the
+instance, so nothing runs on uninstall. The ServiceAccount, its read access to
+the one kubeconfig Secret and the script are ordinary release objects.
+*/}}
+{{- $name := printf "%s-api-proxy" .Values.cluster.name -}}
+{{- $timeouts := .Values.apiProxy.timeoutSeconds -}}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "capi-workload-cluster.labels" . | nindent 4 }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ $name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "capi-workload-cluster.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    resourceNames: [{{ printf "%s-kubeconfig" .Values.cluster.name | quote }}]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ $name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "capi-workload-cluster.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ $name }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ $name }}
+    namespace: {{ .Release.Namespace }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "capi-workload-cluster.labels" . | nindent 4 }}
+data:
+  attach.py: |
+    {{- .Files.Get "files/attach.py" | trimSuffix "\n" | nindent 4 }}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ $name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "capi-workload-cluster.labels" . | nindent 4 }}
+  annotations:
+    # After a rollback too: the device follows the values of the revision
+    # rolled back to.
+    helm.sh/hook: post-install,post-upgrade,post-rollback
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+spec:
+  # One attempt, so its own failure message comes before the caller's Helm
+  # timeout; a Pod lost to a drain or an eviction is replaced.
+  backoffLimit: 0
+  podFailurePolicy:
+    rules:
+      - action: Ignore
+        onPodConditions:
+          - type: DisruptionTarget
+  template:
+    metadata:
+      labels:
+        {{- include "capi-workload-cluster.labels" . | nindent 8 }}
+        app.kubernetes.io/component: api-proxy
+      annotations:
+        # A changed script is a changed Pod.
+        checksum/script: {{ .Files.Get "files/attach.py" | sha256sum }}
+    spec:
+      restartPolicy: Never
+      serviceAccountName: {{ $name }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        runAsGroup: 65534
+        fsGroup: 65534
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: attach
+          image: {{ .Values.apiProxy.image | quote }}
+          imagePullPolicy: IfNotPresent
+          command: ["python3", "-I", "/opt/k8s-lab/attach.py"]
+          env:
+            - name: CLUSTER_NAME
+              value: {{ .Values.cluster.name | quote }}
+            - name: CLUSTER_NAMESPACE
+              value: {{ .Release.Namespace | quote }}
+            - name: KUBECONFIG_SECRET
+              value: {{ printf "%s-kubeconfig" .Values.cluster.name | quote }}
+            - name: PROXY_LISTEN
+              value: {{ include "capi-workload-cluster.apiProxyListen" . | quote }}
+            - name: TIMEOUT_LOADBALANCER
+              value: {{ $timeouts.loadBalancer | quote }}
+            - name: TIMEOUT_KUBECONFIG
+              value: {{ $timeouts.kubeconfig | quote }}
+            - name: TIMEOUT_PROXY
+              value: {{ $timeouts.proxy | quote }}
+            - name: TIMEOUT_LIVEZ
+              value: {{ $timeouts.livez | quote }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              memory: 64Mi
+          volumeMounts:
+            - name: script
+              mountPath: /opt/k8s-lab
+              readOnly: true
+            - name: identity
+              mountPath: /etc/capn-identity
+              readOnly: true
+      volumes:
+        - name: script
+          configMap:
+            name: {{ $name }}
+        # The Secret CAPN reads: the LXD endpoint, project, server certificate and client key.
+        - name: identity
+          secret:
+            secretName: {{ .Values.apiProxy.infrastructureSecretName | quote }}
+            defaultMode: 0440

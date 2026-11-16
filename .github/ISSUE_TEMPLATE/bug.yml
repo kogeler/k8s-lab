@@ -1,19 +1,21 @@
 name: Bug report
-description: Report a defect in an Ansible role, Terraform module, Helm chart, or the test harness.
+description: Report a defect in an Ansible role, a Terraform module, a Helm chart, or the test harness.
 labels: ["bug"]
 body:
   - type: markdown
     attributes:
       value: |
-        Before filing: please confirm `make lint` passes against `main` on a
-        clean clone, and that the failure reproduces on the local Vagrant +
-        libvirt harness (see `doc/06-quickstart-local.md`).
+        Before filing: please confirm `make check` passes against `main` on a
+        clean clone. For a defect in the code or the harness, check that it
+        reproduces on the local harness (`doc/quickstart-local.md`); for a
+        failure on a real host, attach the output of
+        `scripts/collect-diagnostics.sh` (`doc/troubleshooting.md`).
   - type: input
     id: commit
     attributes:
       label: Commit / release
       description: Git SHA, tag, or release this reproduces on.
-      placeholder: "e.g. v1.0 or f9d9a37"
+      placeholder: "e.g. v2.0.0 or a commit SHA"
     validations:
       required: true
   - type: dropdown
@@ -35,7 +37,7 @@ body:
     attributes:
       label: Component name
       description: Role / chart / module / scenario name.
-      placeholder: "e.g. lxd_host, charts/cni-calico, terraform/modules/workload_cluster"
+      placeholder: "e.g. lxd, charts/cni-calico, terraform/modules/workload_addons"
     validations:
       required: true
   - type: textarea
@@ -64,6 +66,14 @@ body:
     id: environment
     attributes:
       label: Environment
-      description: Host OS, Vagrant + libvirt versions if local, LXD channel, anything that deviates from `doc/05-prerequisites.md`.
+      description: Host OS, Vagrant + libvirt versions if local, LXD channel, anything that deviates from `doc/deploy.md` or `doc/quickstart-local.md`.
+    validations:
+      required: false
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Diagnostics
+      description: Output of `scripts/collect-diagnostics.sh` (it prints no kubeconfig; check it for anything site-specific before pasting).
+      render: shell
     validations:
       required: false

@@ -1,0 +1,8 @@
+---
+_capn_identity_socket: /var/snap/lxd/common/lxd/unix.socket
+# Trust entries named <this>-<first 12 hex digits of the fingerprint>; one with
+# another fingerprint is an identity a rotation replaced.
+_capn_identity_trust_name: k8slab-capn
+_capn_identity_key: "{{ capn_identity_dir }}/client.key"
+_capn_identity_crt: "{{ capn_identity_dir }}/client.crt"
+_capn_identity_rotating: "{{ capn_identity_rotate | bool and not (_capn_identity_rotated | default(false)) }}"

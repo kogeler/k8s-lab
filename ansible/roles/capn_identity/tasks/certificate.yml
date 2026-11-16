@@ -1,0 +1,40 @@
+---
+- name: "capn-identity | certificate | directory"
+  ansible.builtin.file:
+    path: "{{ capn_identity_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+
+# A missing key, or capn_identity_rotate, makes a new identity.
+- name: "capn-identity | certificate | private key"
+  community.crypto.openssl_privatekey:
+    path: "{{ _capn_identity_key }}"
+    type: RSA
+    size: 4096
+    force: "{{ _capn_identity_rotating }}"
+    owner: root
+    group: root
+    mode: "0600"
+  no_log: true
+
+- name: "capn-identity | certificate | signing request"
+  community.crypto.openssl_csr_pipe:
+    privatekey_path: "{{ _capn_identity_key }}"
+    common_name: k8s-lab-capn
+    extended_key_usage: [clientAuth]
+  register: _capn_identity_certificate_csr
+  changed_when: false
+
+# Renewed whenever the key changed; a valid certificate is kept.
+- name: "capn-identity | certificate | self-signed client certificate"
+  community.crypto.x509_certificate:
+    path: "{{ _capn_identity_crt }}"
+    privatekey_path: "{{ _capn_identity_key }}"
+    csr_content: "{{ _capn_identity_certificate_csr.csr }}"
+    provider: selfsigned
+    selfsigned_not_after: "+{{ capn_identity_validity_days }}d"
+    owner: root
+    group: root
+    mode: "0644"

@@ -1,169 +1,45 @@
 # -*- mode: ruby -*-
 # vi: set ft=ruby :
 #
-# Local Debian 13 Trixie test VM for k8s-lab.
-#
-# One NIC attached to a libvirt network defined in ./libvirt-networks/:
-#   * eth1 → mgmt-nat    (SSH + NAT egress; management plane)
-#
-# External IPv6 RA is served from inside the VM (see
-# `tests/molecule/shared/tasks/ext6-ra-source.yml`), not from libvirt.
-#
-# The `probe-ext6` network is defined here but attached only to the optional
-# probe VM (enabled with K8SLAB_PROBE=1).
-#
-# vagrant-libvirt docs:
-#   https://vagrant-libvirt.github.io/vagrant-libvirt/
+# The local test host: one Debian 13 VM with a spare disk for the LXD pool.
+# SSH and egress use vagrant-libvirt's management network (the VM's only NIC);
+# the external IPv6 network is simulated inside the VM by the Molecule prepare
+# step. Driven by the Makefile next to this file. What is not set here is
+# vagrant-libvirt's default (0.12: KVM, virtio disk and NIC, host-model CPU).
 
 Vagrant.configure("2") do |config|
-  config.vm.box = ENV.fetch("K8SLAB_BOX", "debian/trixie64")
+  config.vm.box = "debian/trixie64"
+  config.vm.box_version = "13.20260519.1"
+  # The version is pinned: the update check would only cost a lookup.
   config.vm.box_check_update = false
-  config.ssh.forward_agent = true
-
-  # --- Auto-ensure libvirt networks ---------------------------------------
-  #
-  # The VM NIC attaches to `k8slab-mgmt-nat` (XML in `libvirt-networks/`).
-  # The trigger below makes `vagrant up` self-sufficient: it defines +
-  # starts the libvirt network before the machine comes up. Makefile
-  # `networks` target remains a valid standalone entry point — the
-  # trigger is idempotent.
-  #
-  # Cleanup is explicitly NOT wired to `:before :destroy`: `destroy`
-  # leaves networks in place (so next `up` is fast); `make wipe` in the
-  # Makefile is the destructive counterpart.
-  network_xmls = {
-    "k8slab-mgmt-nat" => File.expand_path("libvirt-networks/mgmt-nat.xml", __dir__),
-  }
-  if ENV["K8SLAB_PROBE"] == "1"
-    network_xmls["k8slab-probe-ext6"] =
-      File.expand_path("libvirt-networks/probe-ext6.xml", __dir__)
-  end
-
-  config.trigger.before :up do |trigger|
-    trigger.name = "ensure k8s-lab libvirt networks defined + active"
-    trigger.ruby do |_env, _machine|
-      virsh = "virsh -c qemu:///system"
-      network_xmls.each do |net_name, xml_path|
-        unless File.exist?(xml_path)
-          raise "libvirt network XML missing: #{xml_path}"
-        end
-        # Defined?
-        unless system("#{virsh} net-info #{net_name} >/dev/null 2>&1")
-          unless system("#{virsh} net-define #{xml_path} >/dev/null")
-            raise "virsh net-define #{xml_path} failed — is the runner a " \
-                  "member of the `libvirt` group?"
-          end
-        end
-        # Active?
-        active = `#{virsh} net-info #{net_name} 2>/dev/null`.include?("Active:         yes")
-        unless active
-          unless system("#{virsh} net-start #{net_name} >/dev/null")
-            raise "virsh net-start #{net_name} failed"
-          end
-        end
-        # Autostart — best-effort, don't fail the trigger over it.
-        system("#{virsh} net-autostart #{net_name} >/dev/null 2>&1")
-      end
-    end
-  end
-
+  # The default /vagrant share needs NFS or rsync and sudo on the host; nothing
+  # in the guest uses it.
   config.vm.synced_folder ".", "/vagrant", disabled: true
 
-  # vCPU count — reused for libvirt.cpus and per-NIC virtio multiqueue.
-  vcpus = Integer(ENV.fetch("K8SLAB_VCPUS", "8"))
-
-  config.vm.provider :libvirt do |libvirt|
-    libvirt.driver         = "kvm"
-    libvirt.memory         = Integer(ENV.fetch("K8SLAB_MEM_MB", "12288"))
-    libvirt.cpus           = vcpus
-    libvirt.nested         = true
-    libvirt.cpu_mode       = "host-passthrough"
-    libvirt.machine_type   = "q35"
-    libvirt.disk_bus       = "virtio"
-    libvirt.nic_model_type = "virtio"
-    libvirt.default_prefix = "k8slab_"
-
-    # Virtio memballoon — host reclaims idle guest RAM when needed.
-    libvirt.memballoon_enabled = true
-    libvirt.memballoon_model   = "virtio"
-
-    # Do NOT set `libvirt.graphics_type = "none"` — it drops the video
-    # device and Debian 13 Trixie hangs in early boot (NICs never come
-    # up, domifstat tx_bytes stays 0).
-
-    # Virtio-RNG with /dev/urandom backing — avoids entropy starvation
-    # during snap install, apt key verification, TLS handshakes.
-    libvirt.random model: "random"
-
-    # Host-side qemu-guest-agent channel. Debian 13 box ships the guest
-    # side; this adds the virtio-serial unix socket so libvirt can drive
-    # fsfreeze / graceful shutdown / in-guest IP reporting.
-    libvirt.channel type: "unix",
-                    target_name: "org.qemu.guest_agent.0",
-                    target_type: "virtio"
-
-    # Disk IO tuning. cache=unsafe ignores guest fsyncs — huge speedup
-    # for apt/snap/mkfs (many small sync writes). Trade: host crash can
-    # leave qcow2 inconsistent; throw-away VM, just re-run `make destroy
-    # && make up`. io=threads compatible with any cache mode.
-    # discard+detect_zeroes keep qcow2 sparse as guest TRIMs.
-    libvirt.disk_driver cache: "unsafe",
-                        io: "threads",
-                        discard: "unmap",
-                        detect_zeroes: "unmap"
-
-    # Dedicated data disk backing the LXD Btrfs storage pool. The serial
-    # is what pins the device path inside the guest:
-    #   /dev/disk/by-id/virtio-k8slab-lxdpool
-    # Using by-id keeps the contract independent of kernel probe order.
-    # Formatting and mounting are done by the Molecule shared prepare step
-    # (not by Vagrant), so the disk reaches the guest raw.
-    libvirt.storage :file,
-                    size: ENV.fetch("K8SLAB_LXD_POOL_GB", "40") + "G",
-                    type: "qcow2",
-                    bus: "virtio",
-                    cache: "unsafe",
-                    io: "threads",
-                    discard: "unmap",
-                    detect_zeroes: "unmap",
-                    serial: "k8slab-lxdpool"
-  end
-
-  # --- host node ----------------------------------------------------------
+  # Machine `host`: the Makefile and the inventory (`ansible_host: host`) use
+  # this name; the guest hostname is the inventory's host name.
   config.vm.define "host" do |host|
     host.vm.hostname = "k8slab-host"
-
-    host.vm.network :private_network,
-                    libvirt__network_name: "k8slab-mgmt-nat",
-                    libvirt__dhcp_enabled: true,
-                    libvirt__forward_mode: "nat",
-                    libvirt__driver_queues: vcpus,
-                    autostart: true
   end
 
-  # --- optional probe node -----------------------------------------------
-  # Enabled with: K8SLAB_PROBE=1 vagrant up probe
-  if ENV["K8SLAB_PROBE"] == "1"
-    config.vm.define "probe", autostart: false do |probe|
-      probe.vm.hostname = "k8slab-probe"
-      probe.vm.provider :libvirt do |libvirt|
-        libvirt.memory = 1024
-        libvirt.cpus   = 1
-      end
+  config.vm.provider :libvirt do |libvirt|
+    libvirt.memory = Integer(ENV.fetch("K8SLAB_MEM_MB", "12288"))
+    libvirt.cpus   = Integer(ENV.fetch("K8SLAB_VCPUS", "8"))
+    # Domain and volume names start with it; the Makefile's destroy uses them.
+    libvirt.default_prefix = "k8slab_"
 
-      probe.vm.network :private_network,
-                       libvirt__network_name: "k8slab-mgmt-nat",
-                       libvirt__dhcp_enabled: true,
-                       libvirt__forward_mode: "nat",
-                       autostart: true
+    # Keep the default video device: without it Debian 13 hangs in early boot.
 
-      probe.vm.network :private_network,
-                       type: "dhcp",
-                       libvirt__network_name: "k8slab-probe-ext6",
-                       libvirt__dhcp_enabled: true,
-                       libvirt__forward_mode: "none",
-                       libvirt__guest_ipv6: true,
-                       autostart: true
-    end
+    # A throw-away VM: guest fsyncs (etcd, LXD) are not waited for, and the
+    # images stay sparse.
+    libvirt.disk_driver cache: "unsafe", discard: "unmap", detect_zeroes: "unmap"
+
+    # The LXD pool disk. Its serial names it in the guest:
+    # /dev/disk/by-id/virtio-k8slab-lxdpool (lxd_storage_source in
+    # tests/playbooks/group_vars/all.yml).
+    libvirt.storage :file,
+                    size: ENV.fetch("K8SLAB_LXD_POOL_GB", "40") + "G",
+                    serial: "k8slab-lxdpool",
+                    cache: "unsafe", discard: "unmap", detect_zeroes: "unmap"
   end
 end

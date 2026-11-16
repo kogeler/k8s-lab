@@ -1,0 +1,21 @@
+---
+# Required, no default: lxd_uplink_interface, lxd_storage_source.
+lxd_snap_channel: "6/stable"                         # changing it upgrades LXD in place, one way
+lxd_bridge_name: "br-ext6"                           # host bridge of the external network (node eth1)
+lxd_bridge_mtu: 1500
+lxd_project_name: "{{ k8s_lab_project_name }}"
+lxd_storage_pool_name: "capi-fast"                   # btrfs pool of every node's root disk
+lxd_network_name: "capi-int"                         # LXD bridge of the internal node network (node eth0)
+lxd_network_ipv4_address: "10.77.0.1/24"             # gateway address and prefix of the internal network
+lxd_network_ipv6_address: "fd42:77:1::1/64"
+lxd_network_dhcp_expiry: "168h"                      # node and load-balancer leases survive a long host outage
+lxd_listener_port: 8443                              # LXD API on the internal gateway address, for CAPN
+lxd_enabled: true
+lxd_flow_control_snap: true
+lxd_flow_control_bridge: true
+lxd_flow_control_registry: true
+lxd_flow_control_project: true
+lxd_flow_control_storage: true
+lxd_flow_control_network: true
+lxd_flow_control_listener: true
+lxd_flow_control_profiles: true

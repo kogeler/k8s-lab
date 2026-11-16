@@ -1,0 +1,47 @@
+---
+- name: "management-cluster | cluster | ClusterClass release"
+  kubernetes.core.helm:
+    kubeconfig: "{{ management_cluster_kubeconfig }}"
+    name: "{{ management_cluster_name }}-class"
+    chart_ref: "{{ _management_cluster_charts_dir }}/capi-cluster-class"
+    release_namespace: "{{ management_cluster_namespace }}"
+    create_namespace: false
+    wait: true
+    timeout: "{{ management_cluster_class_timeout }}"
+    values:
+      cluster:
+        name: "{{ management_cluster_name }}"
+      capn:
+        infrastructureSecretName: "{{ management_cluster_infrastructure_secret_name }}"
+      externalNetwork:
+        ipv6Prefix: "{{ management_cluster_external_ipv6_prefix }}"
+
+# Returns once the chart's post-install hook has published the API server and
+# the control plane answers.
+- name: "management-cluster | cluster | Cluster release"
+  kubernetes.core.helm:
+    kubeconfig: "{{ management_cluster_kubeconfig }}"
+    name: "{{ management_cluster_name }}"
+    chart_ref: "{{ _management_cluster_charts_dir }}/capi-workload-cluster"
+    release_namespace: "{{ management_cluster_namespace }}"
+    create_namespace: false
+    wait: true
+    timeout: "{{ management_cluster_cluster_timeout }}"
+    values:
+      cluster:
+        name: "{{ management_cluster_name }}"
+      kubernetes:
+        version: "{{ management_cluster_kubernetes_version }}"
+      topology:
+        controlPlane:
+          replicas: "{{ management_cluster_controlplane_count | int }}"
+        workers:
+          replicas: "{{ management_cluster_worker_count | int }}"
+      clusterNetwork:
+        pods:
+          cidrBlocks: "{{ management_cluster_pod_cidrs }}"
+        services:
+          cidrBlocks: "{{ management_cluster_service_cidrs }}"
+      apiProxy:
+        infrastructureSecretName: "{{ management_cluster_infrastructure_secret_name }}"
+        listenAddress: "{{ management_cluster_api_listen_address }}"

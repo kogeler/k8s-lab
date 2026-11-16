@@ -1,0 +1,14 @@
+---
+_management_cluster_charts_dir: "{{ role_path }}/../../../charts"
+_management_cluster_calico_namespace: "tigera-operator"
+_management_cluster_metallb_namespace: "metallb-system"
+_management_cluster_lxd_socket: "/var/snap/lxd/common/lxd/unix.socket"
+# The kubeconfigs of mgmt-1 and of the bootstrap cluster, on the host and on the
+# runner: the same paths roles bootstrap and clusterctl use, so not inputs.
+_management_cluster_kubeconfig_host: "{{ management_cluster_opt_root }}/etc/mgmt.kubeconfig"
+_management_cluster_kubeconfig_runner: "{{ management_cluster_artifacts_dir }}/mgmt.kubeconfig"
+_management_cluster_bootstrap_kubeconfig_host: "{{ management_cluster_opt_root }}/etc/bootstrap.kubeconfig"
+_management_cluster_bootstrap_kubeconfig_runner: "{{ management_cluster_artifacts_dir }}/bootstrap.kubeconfig"
+# The kubeconfig keeps the API server certificate's name while the URL points
+# at the published port.
+_management_cluster_tls_server_name: "kubernetes.default.svc"

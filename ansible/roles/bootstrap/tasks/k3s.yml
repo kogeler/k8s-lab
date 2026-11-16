@@ -1,0 +1,85 @@
+---
+- name: "bootstrap | k3s | staging directory"
+  ansible.builtin.file:
+    path: "{{ _bootstrap_staging_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+
+# k3s registers only the IPv4 of the default route; both families are named.
+- name: "bootstrap | k3s | addresses of eth0"
+  ansible.builtin.uri:
+    url: "http://localhost/1.0/instances/{{ bootstrap_instance_name }}/state?project={{ bootstrap_project }}"
+    unix_socket: "{{ _bootstrap_lxd_socket }}"
+  register: _bootstrap_k3s_state
+
+- name: "bootstrap | k3s | configuration and unit"
+  ansible.builtin.template:
+    src: "{{ item.src }}"
+    dest: "{{ _bootstrap_staging_dir }}/{{ item.dest }}"
+    owner: root
+    group: root
+    mode: "0600"
+  loop:
+    - {src: k3s-config.yaml.j2, dest: config.yaml}
+    - {src: k3s.service.j2, dest: k3s.service}
+  vars:
+    _global: "{{ _bootstrap_k3s_state.json.metadata.network.eth0.addresses | selectattr('scope', 'eq', 'global') | list }}"
+    _bootstrap_node_ip: >-
+      {{ (_global | selectattr('family', 'eq', 'inet') | map(attribute='address') | first) ~ ','
+         ~ (_global | selectattr('family', 'eq', 'inet6') | map(attribute='address') | first) }}
+
+- name: "bootstrap | k3s | checksums on the host"
+  ansible.builtin.stat:
+    path: "{{ item.src }}"
+    checksum_algorithm: sha256
+  loop: "{{ _bootstrap_k3s_files }}"
+  register: _bootstrap_k3s_host_files
+
+- name: "bootstrap | k3s | checksums in the container"
+  ansible.builtin.command:
+    argv: "{{ _bootstrap_lxc + ['sh', '-c', 'for f; do sha256sum \"$f\" 2>/dev/null || echo \"- $f\"; done', 'sh']
+              + (_bootstrap_k3s_files | map(attribute='dest') | list) }}"
+  register: _bootstrap_k3s_container_files
+  changed_when: false
+
+- name: "bootstrap | k3s | push what differs"
+  ansible.builtin.command:
+    argv: [/snap/bin/lxc, file, push, --project, "{{ bootstrap_project }}", --create-dirs, --uid=0, --gid=0,
+           "--mode={{ item.0.mode }}", "{{ item.0.src }}", "{{ bootstrap_instance_name }}{{ item.0.dest }}"]
+  loop: "{{ _bootstrap_k3s_files | zip(_bootstrap_k3s_host_files.results) | list }}"
+  loop_control:
+    label: "{{ item.0.dest }}"
+  when: item.1.stat.checksum != _in_container[item.0.dest] | default('')
+  register: _bootstrap_k3s_pushed
+  changed_when: true
+  vars:
+    _lines: "{{ _bootstrap_k3s_container_files.stdout_lines | map('split') | list }}"
+    _in_container: "{{ dict(_lines | map('last') | zip(_lines | map('first'))) }}"
+
+- name: "bootstrap | k3s | service state"
+  ansible.builtin.command:
+    argv: "{{ _bootstrap_lxc + ['systemctl', 'is-active', 'k3s'] }}"
+  register: _bootstrap_k3s_active
+  changed_when: false
+  failed_when: false
+
+# One start for a new instance; a restart only when a file of a running k3s changed.
+- name: "bootstrap | k3s | start, or restart after a change"
+  ansible.builtin.command:
+    argv: "{{ _bootstrap_lxc + ['sh', '-c', 'systemctl daemon-reload && systemctl enable k3s && systemctl --no-block ' ~ _action ~ ' k3s'] }}"
+  when: _bootstrap_k3s_active.stdout | trim != 'active' or _bootstrap_k3s_pushed is changed
+  changed_when: true
+  vars:
+    _action: "{{ 'restart' if _bootstrap_k3s_active.stdout | trim == 'active' else 'start' }}"
+
+- name: "bootstrap | k3s | the node is Ready"
+  ansible.builtin.command:
+    argv: "{{ _bootstrap_lxc + ['/usr/local/bin/k3s', 'kubectl', 'get', 'nodes', '-o',
+              'jsonpath={.items[*].status.conditions[?(@.type==\"Ready\")].status}'] }}"
+  register: _bootstrap_k3s_node
+  until: _bootstrap_k3s_node.rc == 0 and _bootstrap_k3s_node.stdout == 'True'
+  retries: "{{ (bootstrap_wait_timeout | int) // 5 }}"
+  delay: 5
+  changed_when: false

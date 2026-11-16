@@ -1,0 +1,12 @@
+# Managed by the k8s-lab clusterctl role.
+providers:
+  - name: incus
+    url: "https://github.com/lxc/cluster-api-provider-incus/releases/{{ clusterctl_capn_version }}/infrastructure-components.yaml"
+    type: InfrastructureProvider
+# The core provider manifest defaults the ClusterTopology gate to false, at
+# init and at every upgrade.
+CLUSTER_TOPOLOGY: "true"
+{% if clusterctl_cert_manager_timeout | length > 0 %}
+cert-manager:
+  timeout: "{{ clusterctl_cert_manager_timeout }}"
+{% endif %}

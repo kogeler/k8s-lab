@@ -1,0 +1,35 @@
+---
+- name: "bootstrap | the management state is known"
+  ansible.builtin.assert:
+    that: k8s_lab_management_state is defined
+    fail_msg: "bootstrap needs the management state: run management_cluster with tasks_from: state first."
+    quiet: true
+
+# Transient: once mgmt-1 manages itself there is nothing to create.
+- name: "bootstrap | nothing to do on a self-hosted management cluster"
+  ansible.builtin.meta: end_role
+  when: k8s_lab_management_state == 'self_hosted'
+
+- name: "bootstrap | instance"
+  ansible.builtin.include_tasks:
+    file: instance.yml
+    apply:
+      tags: ["bootstrap", "bootstrap-instance", "bootstrap_instance"]
+  when: [bootstrap_enabled | bool, bootstrap_flow_control_instance | bool]
+  tags: ["bootstrap", "bootstrap-instance", "bootstrap_instance"]
+
+- name: "bootstrap | k3s"
+  ansible.builtin.include_tasks:
+    file: k3s.yml
+    apply:
+      tags: ["bootstrap", "bootstrap-k3s", "bootstrap_k3s"]
+  when: [bootstrap_enabled | bool, bootstrap_flow_control_k3s | bool]
+  tags: ["bootstrap", "bootstrap-k3s", "bootstrap_k3s"]
+
+- name: "bootstrap | kubeconfig"
+  ansible.builtin.include_tasks:
+    file: kubeconfig.yml
+    apply:
+      tags: ["bootstrap", "bootstrap-kubeconfig", "bootstrap_kubeconfig"]
+  when: [bootstrap_enabled | bool, bootstrap_flow_control_kubeconfig | bool]
+  tags: ["bootstrap", "bootstrap-kubeconfig", "bootstrap_kubeconfig"]

@@ -1,0 +1,7 @@
+# Values for offline `helm lint` / `helm template` in `make check`.
+cluster:
+  name: "k8s-lab-ci"
+capn:
+  infrastructureSecretName: "incus-identity"
+externalNetwork:
+  ipv6Prefix: "2001:db8:42:100::/64"

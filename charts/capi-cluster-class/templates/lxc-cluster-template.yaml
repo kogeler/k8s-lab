@@ -1,120 +1,42 @@
-{{- include "capi-cluster-class.requireCAPN" . -}}
----
+{{- define "capi-cluster-class.spec.infra" -}}
+{{- $lb := .Values.loadBalancer -}}
+template:
+  spec:
+    {{- /* The Secret names the LXD endpoint and project. The capi-* profiles replace CAPN's kubeadm profile. */}}
+    secretRef:
+      name: {{ .Values.capn.infrastructureSecretName | quote }}
+    unprivileged: true
+    skipDefaultKubeadmProfile: true
+    cloudProviderNodePatch: false
+    {{- /* One HAProxy instance (CAPN's `lxc` mode); capi-base gives it a root disk and the internal NIC. */}}
+    loadBalancer:
+      lxc:
+        instanceSpec:
+          profiles:
+            - capi-base
+            {{- range $lb.profilesExtra }}
+            - {{ . | quote }}
+            {{- end }}
+          {{- with $lb.image }}
+          image:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with $lb.flavor }}
+          flavor: {{ . | quote }}
+          {{- end }}
+          {{- with $lb.target }}
+          target: {{ . | quote }}
+          {{- end }}
+        {{- /* CAPN's own template binds IPv4 only, but the endpoint may be IPv6. */}}
+        customHAProxyConfigTemplate: |
+          {{- .Files.Get "files/haproxy.cfg.tmpl" | trimSuffix "\n" | nindent 10 }}
+        {{- if $lb.disableHealthzCheck }}
+        disableHealthzCheck: true
+        {{- end }}
+{{- end -}}
 apiVersion: infrastructure.cluster.x-k8s.io/v1alpha2
 kind: LXCClusterTemplate
 metadata:
-  name: {{ include "capi-cluster-class.lxcClusterTemplateName" . }}
-  namespace: {{ .Release.Namespace }}
-  labels:
-    {{- include "capi-cluster-class.labels" . | nindent 4 }}
+  {{- include "capi-cluster-class.metadata" (list . "infra") | nindent 2 }}
 spec:
-  template:
-    spec:
-      # CAPN v1alpha2 LXCClusterSpec. Project scoping is owned by the
-      # identity Secret referenced here — there is no separate project
-      # field on LXCCluster (verified against CAPN v0.8.5 CRD).
-      secretRef:
-        name: {{ .Values.capn.infrastructureSecretName | quote }}
-      # Substrate-required: unprivileged LXC containers are the only
-      # supported MVP path (PLAN §2.8 / §3.1). Not exposed as a value.
-      unprivileged: true
-      # Substrate-required: role lxd_profiles already ships kubeadm
-      # prerequisites under capi-base / capi-controlplane / capi-worker
-      # (PLAN §13.6). Letting CAPN auto-create its own kubeadm profile
-      # would conflict on unprivileged containers.
-      skipDefaultKubeadmProfile: true
-      # Substrate-required for MVP: no external cloud-controller-manager
-      # — CAPN's cloud-init provider-id kubelet-arg substitution is
-      # sufficient. Stage 2 CCM wiring is a separate plan §.
-      cloudProviderNodePatch: false
-      # loadBalancer is a REQUIRED field on CAPN v1alpha2
-      # LXCClusterTemplate. For the `lxc` mode (haproxy LXC instance,
-      # MVP default) the chart hardcodes the substrate-required
-      # `instanceSpec.profiles: [capi-base, ...profilesExtra]`
-      # baseline — the LB container needs a root-disk device and an
-      # internal-net NIC, both of which `capi-base` (role
-      # lxd_profiles, PLAN §13.6) supplies. Without this CAPN aborts
-      # with "No root device could be found" at instance-creation
-      # time.
-      #
-      # Important: CAPN v0.8.x `lxc` creates one haproxy instance.
-      # There is no replicas field in LXCLoadBalancerInstance; true HA
-      # must use kubeVIP/OVN/external with a predeclared endpoint.
-      #
-      # CAPN v0.8.x LXCLoadBalancerSpec shape:
-      #   loadBalancer.lxc:
-      #     instanceSpec:        { profiles, image, flavor, target }
-      #     customHAProxyConfigTemplate: <string>
-      #     disableHealthzCheck:         <bool>
-      # consumer-tunable instanceSpec fields are exposed below. The
-      # profile baseline is fixed in templates/_helpers.tpl, and
-      # customHAProxyConfigTemplate is hardcoded here to preserve
-      # dual-stack LB behaviour.
-      #
-      # For the other modes (`kubeVIP`, `oci`, `ovn`, `external`) the
-      # block is passed through verbatim — those LB types do not spawn
-      # an LXD instance the chart has to provision.
-      loadBalancer:
-        {{- if hasKey .Values.loadBalancer "lxc" }}
-        {{- $lxc := .Values.loadBalancer.lxc | default dict }}
-        lxc:
-          instanceSpec:
-            profiles:
-              {{- include "capi-cluster-class.loadBalancerProfiles" . | nindent 14 }}
-            {{- with $lxc.image }}
-            image:
-              {{- toYaml . | nindent 14 }}
-            {{- end }}
-            {{- with $lxc.flavor }}
-            flavor: {{ . | quote }}
-            {{- end }}
-            {{- with $lxc.target }}
-            target: {{ . | quote }}
-            {{- end }}
-          # Substrate-required: CAPN v0.8.x may select an IPv6
-          # controlPlaneEndpoint for the LB instance, while its default
-          # HAProxy config binds only IPv4 because the internal IPv6 flag
-          # is never set. Bind both frontend families explicitly.
-          customHAProxyConfigTemplate: |
-            global
-              log /dev/log local0
-              log /dev/log local1 notice
-              daemon
-              maxconn 100000
-
-            defaults
-              log global
-              mode tcp
-              option dontlognull
-              timeout connect 5000
-              timeout client 50000
-              timeout server 50000
-              default-server init-addr none
-
-            frontend stats
-              mode http
-              bind 0.0.0.0:8404
-              bind :::8404 v6only
-              stats enable
-              stats uri /stats
-              stats refresh 1s
-              stats admin if TRUE
-
-            frontend control-plane
-              bind 0.0.0.0:{{ "{{" }} .FrontendControlPlanePort {{ "}}" }}
-              bind :::{{ "{{" }} .FrontendControlPlanePort {{ "}}" }} v6only
-              default_backend kube-apiservers
-
-            backend kube-apiservers
-              {{ "{{" }} if .EnableHealthzCheck -{{ "}}" }}
-              option httpchk GET /healthz
-              {{ "{{" }}- end {{ "}}" }}
-              {{ "{{" }}range $server, $backend := .BackendServers{{ "}}" }}
-              server {{ "{{" }} $server {{ "}}" }} {{ "{{" }} JoinHostPort $backend.Address $.BackendControlPlanePort {{ "}}" }} weight {{ "{{" }} $backend.Weight {{ "}}" }} check check-ssl verify none
-              {{ "{{" }}- end{{ "}}" }}
-          {{- if $lxc.disableHealthzCheck | default false }}
-          disableHealthzCheck: true
-          {{- end }}
-        {{- else }}
-        {{- toYaml .Values.loadBalancer | nindent 8 }}
-        {{- end }}
+  {{- include "capi-cluster-class.spec.infra" . | nindent 2 }}

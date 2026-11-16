@@ -1,0 +1,208 @@
+---
+# lxd: the daemon and its objects, and what the node profiles are for, shown by
+# a throwaway node. The role must never restart an instance.
+- name: "Verify | substrate | lxd | read the lxd snap"
+  ansible.builtin.command:
+    argv: [snap, list, lxd]
+  register: _verify_lxd_snap
+  changed_when: false
+
+- name: "Verify | substrate | lxd | lxd tracks its channel, automatic refreshes held"
+  ansible.builtin.assert:
+    that:
+      - _columns[3] == _verify_substrate_baseline.snap_channel
+      - "'held' in _columns[5].split(',')"
+    fail_msg: "snap list lxd: {{ _columns }}"
+  vars:
+    _columns: "{{ (_verify_lxd_snap.stdout_lines | last).split() }}"
+
+- name: "Verify | substrate | lxd | read the daemon, project, registry, pool and network"
+  ansible.builtin.uri:
+    url: "http://localhost/1.0{{ item }}"
+    unix_socket: "{{ _lxd_socket }}"
+  loop:
+    - ""
+    - "/projects/{{ k8s_lab_project_name }}"
+    - "/image-registries/{{ _verify_substrate_baseline.image_registry }}"
+    - "/storage-pools/{{ _verify_substrate_baseline.pool }}"
+    - "/storage-pools/{{ _verify_substrate_baseline.pool }}/resources"
+    - "/networks/{{ _verify_substrate_baseline.network }}"
+    - "/networks/{{ _verify_substrate_baseline.network }}/state"
+  loop_control:
+    label: "/1.0{{ item }}"
+  register: _verify_lxd_api
+  become: true
+
+# Capacity means the pool's filesystem is mounted, not only declared.
+- name: "Verify | substrate | lxd | restricted project, btrfs pool, managed dual-stack network, listener on its gateway"
+  ansible.builtin.assert:
+    that:
+      - _project.restricted == 'true' and _project['restricted.containers.privilege'] == 'unprivileged'
+      - _verify_substrate_baseline.image_registry in _project['restricted.registries'].split(',')
+      - _pool.status == 'Created' and _pool.driver == 'btrfs'
+      - "'user_subvol_rm_allowed' in _pool.config['btrfs.mount_options']"
+      - _results[4].json.metadata.space.total | int > 0
+      - _network.managed and _network.type == 'bridge' and _state.state == 'up'
+      - _gateways | map(attribute='family') | sort == ['inet', 'inet6']
+      - _results[0].json.metadata.config['core.https_address'] == _ipv4 ~ ':' ~ _verify_substrate_baseline.listener_port
+    fail_msg: >-
+      project {{ _project }}; pool {{ _pool.status }}/{{ _pool.driver }}/{{ _pool.config }};
+      network {{ _network.type }}/{{ _state.state }}/{{ _gateways }};
+      listener {{ _results[0].json.metadata.config['core.https_address'] | default('') }}
+  vars:
+    _results: "{{ _verify_lxd_api.results }}"
+    _project: "{{ _results[1].json.metadata.config }}"
+    _pool: "{{ _results[3].json.metadata }}"
+    _network: "{{ _results[5].json.metadata }}"
+    _state: "{{ _results[6].json.metadata }}"
+    _gateways: "{{ _state.addresses | rejectattr('scope', 'eq', 'link') | list }}"
+    _ipv4: "{{ _gateways | selectattr('family', 'eq', 'inet') | map(attribute='address') | first }}"
+
+- name: "Verify | substrate | lxd | the listener accepts connections"
+  ansible.builtin.wait_for:
+    host: "{{ _verify_lxd_api.results[0].json.metadata.config['core.https_address'] | split(':') | first }}"
+    port: "{{ _verify_substrate_baseline.listener_port }}"
+    timeout: 10
+
+# No MLD querier on this L2 segment: with snooping on, router advertisements stop reaching the nodes.
+- name: "Verify | substrate | lxd | read the external bridge and its uplink port"
+  ansible.builtin.slurp:
+    src: "/sys/class/net/{{ _verify_substrate_baseline.bridge }}/{{ item }}"
+  loop: [operstate, bridge/multicast_snooping, "brif/{{ lxd_uplink_interface }}/state"]
+  register: _verify_lxd_bridge
+
+- name: "Verify | substrate | lxd | the bridge is up, floods multicast and forwards on its uplink"
+  ansible.builtin.assert:
+    that: _values == ['up', '0', '3']
+    fail_msg: "{{ _verify_substrate_baseline.bridge }} operstate, multicast_snooping, uplink port state: {{ _values }}"
+  vars:
+    _values: "{{ _verify_lxd_bridge.results | map(attribute='content') | map('b64decode') | map('trim') | list }}"
+
+- name: "Verify | substrate | lxd | a throwaway node"
+  become: true
+  vars:
+    _node: k8s-lab-verify-node
+    _instance_url: "http://localhost/1.0/instances/{{ _node }}?project={{ k8s_lab_project_name }}"
+    _state_url: "http://localhost/1.0/instances/{{ _node }}/state?project={{ k8s_lab_project_name }}"
+  block:
+    - name: "Verify | substrate | lxd | node | start one from the node profiles"
+      community.general.lxd_container:
+        url: "unix:{{ _lxd_socket }}"
+        snap_url: "unix:{{ _lxd_socket }}"
+        project: "{{ k8s_lab_project_name }}"
+        name: "{{ _node }}"
+        profiles: "{{ _verify_substrate_baseline.node_profiles }}"
+        source: {type: image, mode: pull, server: "https://images.lxd.canonical.com", protocol: simplestreams, alias: debian/13/cloud}
+        state: started
+        wait_for_container: true
+        timeout: 600
+
+    - name: "Verify | substrate | lxd | node | eth0 gets a lease from the internal network"
+      ansible.builtin.uri:
+        url: "{{ _state_url }}"
+        unix_socket: "{{ _lxd_socket }}"
+      register: _verify_lxd_node_state
+      until: >-
+        _verify_lxd_node_state.json.metadata.network.eth0.addresses | default([])
+        | selectattr('family', 'eq', 'inet') | selectattr('scope', 'eq', 'global') | list | length > 0
+      retries: 30
+      delay: 4
+
+    - name: "Verify | substrate | lxd | node | read its eth1 and the kernel's view of its root"
+      ansible.builtin.uri:
+        url: "{{ _instance_url }}"
+        unix_socket: "{{ _lxd_socket }}"
+      register: _verify_lxd_node
+
+    - name: "Verify | substrate | lxd | node | eth1 is a port of the external bridge, root maps to an unprivileged uid"
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      loop:
+        - "/sys/class/net/{{ _verify_substrate_baseline.bridge }}/brif/{{ _verify_lxd_node.json.metadata.config['volatile.eth1.host_name'] }}"
+        - "/proc/{{ _verify_lxd_node_state.json.metadata.pid }}/uid_map"
+      register: _verify_lxd_node_paths
+      failed_when: not _verify_lxd_node_paths.stat.exists
+
+    - name: "Verify | substrate | lxd | node | read the uid map"
+      ansible.builtin.slurp:
+        src: "/proc/{{ _verify_lxd_node_state.json.metadata.pid }}/uid_map"
+      register: _verify_lxd_node_uid_map
+
+    - name: "Verify | substrate | lxd | node | /dev/kmsg and the host's kernel config are there for kubelet and kubeadm"
+      ansible.builtin.command:
+        argv: [/snap/bin/lxc, exec, --project, "{{ k8s_lab_project_name }}", "{{ _node }}", --,
+               sh, -c, 'test -c /dev/kmsg && test -r "/boot/config-$(uname -r)"']
+      changed_when: false
+
+    - name: "Verify | substrate | lxd | node | container root is not host root"
+      ansible.builtin.assert:
+        that: (_verify_lxd_node_uid_map.content | b64decode).split()[1] != '0'
+
+    # Drift on a profile in use, then the role again: the profile is restored,
+    # the node keeps running with the same init process.
+    - name: "Verify | substrate | lxd | node | a key added by hand to its profile"
+      ansible.builtin.uri:
+        url: "http://localhost/1.0/profiles/capi-worker?project={{ k8s_lab_project_name }}"
+        unix_socket: "{{ _lxd_socket }}"
+        method: PATCH
+        body_format: json
+        body: {config: {user.k8s-lab-verify: "drift"}}
+        status_code: [200, 202]
+      changed_when: true
+
+    - name: "Verify | substrate | lxd | node | the lxd role again"
+      ansible.builtin.include_role:
+        name: lxd
+        apply:
+          become: true
+
+    - name: "Verify | substrate | lxd | node | read the profile and the node again"
+      ansible.builtin.uri:
+        url: "{{ item }}"
+        unix_socket: "{{ _lxd_socket }}"
+      loop:
+        - "http://localhost/1.0/profiles/capi-worker?project={{ k8s_lab_project_name }}"
+        - "{{ _state_url }}"
+      register: _verify_lxd_after
+
+    - name: "Verify | substrate | lxd | node | profile restored, node not restarted"
+      ansible.builtin.assert:
+        that:
+          - "'user.k8s-lab-verify' not in _verify_lxd_after.results[0].json.metadata.config"
+          - _verify_lxd_after.results[1].json.metadata.status == 'Running'
+          - _verify_lxd_after.results[1].json.metadata.pid == _verify_lxd_node_state.json.metadata.pid
+        fail_msg: >-
+          profile config {{ _verify_lxd_after.results[0].json.metadata.config }};
+          node {{ _verify_lxd_after.results[1].json.metadata.status }}, init pid
+          {{ _verify_lxd_node_state.json.metadata.pid }} → {{ _verify_lxd_after.results[1].json.metadata.pid }}
+
+    - name: "Verify | substrate | lxd | node | the project refuses a privileged instance and a host path outside /boot"
+      ansible.builtin.uri:
+        url: "http://localhost/1.0/instances?project={{ k8s_lab_project_name }}"
+        unix_socket: "{{ _lxd_socket }}"
+        method: POST
+        body_format: json
+        body: "{{ {'name': 'k8s-lab-verify-' ~ item.key, 'source': {'type': 'none'}, 'profiles': ['capi-base']} | combine(item.value) }}"
+        # LXD answers a project restriction with 500 and this message.
+        status_code: [500]
+      register: _verify_lxd_forbidden
+      failed_when: >-
+        _verify_lxd_forbidden.status != 500
+        or 'Failed checking if instance creation allowed' not in (_verify_lxd_forbidden.json.error | default(''))
+      loop: "{{ _forbidden | dict2items }}"
+      loop_control:
+        label: "{{ item.key }}"
+      vars:
+        _forbidden:
+          privileged: {config: {security.privileged: "true"}}
+          etc: {devices: {etc: {type: disk, source: /etc, path: /mnt/etc}}}
+  always:
+    - name: "Verify | substrate | lxd | node | remove the throwaway instances"
+      community.general.lxd_container:
+        url: "unix:{{ _lxd_socket }}"
+        snap_url: "unix:{{ _lxd_socket }}"
+        project: "{{ k8s_lab_project_name }}"
+        name: "{{ item }}"
+        state: absent
+        force_stop: true
+      loop: ["{{ _node }}", k8s-lab-verify-privileged, k8s-lab-verify-etc]

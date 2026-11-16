@@ -1,0 +1,213 @@
+{{- /*
+Gate B (`helm test`): every node is Ready, and pods on two different workers
+answer over IPv4 and IPv6. First the operator has rolled Calico out at this
+chart's appVersion (the Installation reports it only once every calico-node
+runs it; an upgraded operator rolls the DaemonSet after its own release is
+ready). Then two agnhost netexec servers (a Deployment, one per worker) behind a
+dual-stack headless Service; a client Pod waits for the nodes (kubectl), then
+fetches every endpoint (files/gate-b.sh). Everything but the ClusterRole is a
+test resource, removed when the gate passes.
+*/}}
+{{- $name := printf "%s-gate-b" .Release.Name -}}
+{{- $labels := include "cni-calico-config.labels" . -}}
+{{- $replicas := 2 -}}
+# The gate's only permanent object and only cluster-scoped permissions: reading
+# nodes and the Installation.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- $labels | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["operator.tigera.io"]
+    resources: ["installations"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- $labels | nindent 4 }}
+  annotations:
+    {{- include "cni-calico-config.testHook" -10 | nindent 4 }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- $labels | nindent 4 }}
+  annotations:
+    {{- include "cni-calico-config.testHook" -10 | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ $name }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ $name }}
+    namespace: {{ .Release.Namespace }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- $labels | nindent 4 }}
+  annotations:
+    {{- include "cni-calico-config.testHook" -10 | nindent 4 }}
+data:
+  gate-b.sh: |
+    {{- .Files.Get "files/gate-b.sh" | trimSuffix "\n" | nindent 4 }}
+---
+# Before the servers start: Calico runs everywhere at this chart's version.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: {{ $name }}-calico-version
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- $labels | nindent 4 }}
+  annotations:
+    {{- include "cni-calico-config.testHook" -8 | nindent 4 }}
+spec:
+  serviceAccountName: {{ $name }}
+  restartPolicy: Never
+  containers:
+    - name: calico-version
+      image: {{ .Values.tests.kubectlImage | quote }}
+      args: ["wait", "installations.operator.tigera.io/default",
+             "--for=jsonpath={.status.calicoVersion}={{ .Chart.AppVersion }}",
+             "--timeout={{ .Values.tests.timeoutSeconds }}s", "--cache-dir=/tmp/kube"]
+      securityContext:
+        {{- include "cni-calico-config.containerSecurity" . | nindent 8 }}
+      resources:
+        {{- include "cni-calico-config.testResources" . | nindent 8 }}
+      volumeMounts:
+        - {name: tmp, mountPath: /tmp}
+  volumes:
+    - name: tmp
+      emptyDir: {}
+---
+# One server per worker. Helm does not wait for a Deployment hook: the client
+# retries until both answer or its deadline passes.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- $labels | nindent 4 }}
+  annotations:
+    {{- include "cni-calico-config.testHook" -5 | nindent 4 }}
+spec:
+  replicas: {{ $replicas }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: gate-b-server
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/instance: {{ .Release.Name }}
+        app.kubernetes.io/component: gate-b-server
+    spec:
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - {key: node-role.kubernetes.io/control-plane, operator: DoesNotExist}
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - topologyKey: kubernetes.io/hostname
+              labelSelector:
+                matchLabels:
+                  app.kubernetes.io/instance: {{ .Release.Name }}
+                  app.kubernetes.io/component: gate-b-server
+      automountServiceAccountToken: false
+      containers:
+        - name: netexec
+          image: {{ .Values.tests.image | quote }}
+          args: ["netexec", "--http-port=8080"]
+          ports:
+            - {name: http, containerPort: 8080}
+          readinessProbe:
+            tcpSocket:
+              port: http
+            periodSeconds: 2
+          securityContext:
+            {{- include "cni-calico-config.containerSecurity" . | nindent 12 }}
+          resources:
+            requests: {cpu: 10m, memory: 16Mi}
+            limits: {memory: 64Mi}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- $labels | nindent 4 }}
+  annotations:
+    {{- include "cni-calico-config.testHook" -5 | nindent 4 }}
+spec:
+  clusterIP: None
+  ipFamilyPolicy: RequireDualStack
+  ipFamilies: [IPv4, IPv6]
+  selector:
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: gate-b-server
+  ports:
+    - {name: http, port: 8080, targetPort: http}
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: {{ $name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- $labels | nindent 4 }}
+  annotations:
+    {{- include "cni-calico-config.testHook" 0 | nindent 4 }}
+spec:
+  serviceAccountName: {{ $name }}
+  restartPolicy: Never
+  initContainers:
+    - name: nodes-ready
+      image: {{ .Values.tests.kubectlImage | quote }}
+      args: ["wait", "--for=condition=Ready", "nodes", "--all", "--timeout={{ .Values.tests.timeoutSeconds }}s", "--cache-dir=/tmp/kube"]
+      securityContext:
+        {{- include "cni-calico-config.containerSecurity" . | nindent 8 }}
+      resources:
+        {{- include "cni-calico-config.testResources" . | nindent 8 }}
+      volumeMounts:
+        - {name: tmp, mountPath: /tmp}
+  containers:
+    - name: client
+      image: {{ .Values.tests.image | quote }}
+      command: ["sh", "/opt/k8s-lab/gate-b.sh"]
+      env:
+        - {name: SERVICE, value: {{ $name | quote }}}
+        - {name: REPLICAS, value: {{ $replicas | quote }}}
+        - {name: PORT, value: {{ .Values.tests.probePort | quote }}}
+        - {name: TIMEOUT, value: {{ .Values.tests.timeoutSeconds | quote }}}
+      securityContext:
+        {{- include "cni-calico-config.containerSecurity" . | nindent 8 }}
+      resources:
+        {{- include "cni-calico-config.testResources" . | nindent 8 }}
+      volumeMounts:
+        - {name: script, mountPath: /opt/k8s-lab, readOnly: true}
+  volumes:
+    - name: script
+      configMap:
+        name: {{ $name }}
+    - name: tmp
+      emptyDir: {}

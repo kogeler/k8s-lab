@@ -1,18 +1,8 @@
 ---
-# GHA-runner-specific cleanup. The ubuntu-latest image ships with
-# Docker, swap, and ~10 GiB of preinstalled bloat (Android SDK, .NET,
-# Haskell, …) that would either conflict with our LXD substrate or
-# starve us of disk. Runs once per converge — idempotent on re-apply.
-#
-# Scoped strictly to this file: nothing here touches Vagrant or any
-# other harness path.
-
-- name: "gha | runner-cleanup | stop and disable Docker daemon"
-  # Docker's iptables-NAT rules and the `docker0` bridge race with
-  # kube-proxy in the LXC nodes and frequently break Service routing
-  # in opaque ways. `systemctl stop` removes most of Docker's added
-  # rules — but the FORWARD chain policy it pins (`DROP`) persists
-  # until daemon restart, which is what wedges LXC egress (see below).
+# The runner image ships Docker, swap and several GiB of toolchains that either
+# conflict with the LXD substrate or take the disk it needs.
+- name: "gha | runner-cleanup | stop Docker"
+  # Its NAT rules and bridge break Service routing inside the LXC nodes.
   ansible.builtin.systemd:
     name: "{{ item }}"
     state: stopped
@@ -23,58 +13,36 @@
     - containerd.service
   failed_when: false
 
-- name: "gha | runner-cleanup | explicit ACCEPT at top of FORWARD chain"
-  # The single iptables touchpoint we DO take, and only because of an
-  # observed concrete failure (CI run 25787813025 + 25790660361):
-  # Docker pins `iptables -P FORWARD DROP` at daemon start and the
-  # graceful shutdown does NOT revert it. Pods inside the bootstrap
-  # LXC then fail every sandbox-image pull from docker.io / quay.io
-  # with `dial tcp ...:443: i/o timeout` because the kernel drops
-  # bridge-forwarded packets at the iptables FORWARD hook before
-  # LXD's `inet lxd` nftables ACCEPT can act.
-  #
-  # We do NOT change the chain POLICY (could affect Docker if it
-  # later restarts on the same runner) and we do NOT flush anything.
-  # The single inserted explicit ACCEPT at position 1 takes precedence
-  # over the residual `DROP` policy without touching any other state.
-  # ansible.builtin.iptables is properly idempotent — it checks for
-  # an equivalent rule via `iptables -C` before inserting.
+- name: "gha | runner-cleanup | accept forwarded traffic"
+  # Docker sets the iptables FORWARD policy to DROP and stopping it does not
+  # restore it; bridged LXC egress is then dropped before LXD's own nftables
+  # rules see it. One ACCEPT rule on top, policy untouched (runner only).
   ansible.builtin.iptables:
     chain: FORWARD
     jump: ACCEPT
     action: insert
 
-- name: "gha | runner-cleanup | disable swap"
-  # kubeadm refuses to bring up a kubelet with swap on by default; the
-  # CAPN-spawned kubeadm join would fail. `swapoff -a` is idempotent.
+- name: "gha | runner-cleanup | active swap"
   ansible.builtin.command:
-    cmd: "swapoff -a"
-  register: _gha_swapoff
-  changed_when: "'swapoff' in _gha_swapoff.stdout"
-  failed_when: false
+    cmd: swapon --show --noheadings
+  register: _gha_swap
+  changed_when: false
 
-- name: "gha | runner-cleanup | comment swap entries in /etc/fstab"
-  # Persist swap-off across systemd-mounted swap units. The runner is
-  # ephemeral so a /etc/fstab edit is purely defensive — a future
-  # `systemctl daemon-reload + swapon -a` would otherwise reactivate
-  # the swap file the image ships with.
+- name: "gha | runner-cleanup | swap off"
+  # kubeadm refuses to start a kubelet with swap on.
+  ansible.builtin.command:
+    cmd: swapoff -a
+  changed_when: true
+  when: _gha_swap.stdout | length > 0
+
+- name: "gha | runner-cleanup | no swap entries in fstab"
   ansible.builtin.replace:
     path: /etc/fstab
     regexp: '^([^#].*\sswap\s+.*)$'
     replace: '# \1'
 
-- name: "gha | runner-cleanup | reclaim disk via apt purge of bloat"
-  # ubuntu-latest pre-installs ~5–10 GiB of toolchains we do not use.
-  # Purging recovers space on `/`, which is where snap's LXD storage
-  # cache lives (the pool itself moves to /mnt — see loopback-pool.yml).
-  #
-  # List trimmed to packages actually present in the current
-  # ubuntu-latest image (verified by `apt --simulate` output in CI run
-  # 25787813025): every entry below caused at least one package to be
-  # marked for removal. Two previously-listed candidates — `aws-cli`
-  # and `mongodb-org` — are no longer on the image (aws-cli ships as
-  # a manual /usr/local/aws-cli install, mongodb was dropped from the
-  # runner-images baseline) and were trimmed.
+- name: "gha | runner-cleanup | purge preinstalled packages"
+  # Space on / for the snap and image caches.
   ansible.builtin.apt:
     name:
       - "google-chrome-stable"
@@ -91,24 +59,8 @@
     purge: true
   failed_when: false
 
-- name: "gha | runner-cleanup | reclaim disk via rm of preinstalled toolchains"
-  # Apt does not track these — they live under /usr/local or /opt and
-  # are dropped onto the image by GitHub's runner-images build pipeline.
-  # `rm -rf` on a missing path returns 0, so the loop is idempotent.
-  # Owned by this playbook (not the workflow YAML) so the disk-reclaim
-  # contract has a single source of truth: `tests/molecule/gha/`.
-  #
-  # List trimmed to paths actually present on the current ubuntu-latest
-  # image (verified by `ansible.builtin.file: state=absent` results in
-  # CI run 25787813025: each entry below returned `changed: true`).
-  # `/opt/ghc` was on the original list but the runner-images project
-  # no longer ships GHC at that path on ubuntu-latest 24.04 — removed.
-  #
-  # `diff: false` is a per-task override of the scenario-wide
-  # `[diff] always=true` (set in molecule.yml). The android SDK tree
-  # alone is ~30k files; with diff on, `file: state=absent` emits one
-  # diff line per removed file and the CI log balloons to >200k lines
-  # for a single task. Diff is still on everywhere else.
+- name: "gha | runner-cleanup | remove preinstalled toolchains"
+  # No per-file diff: the Android SDK alone is tens of thousands of files.
   ansible.builtin.file:
     path: "{{ item }}"
     state: absent

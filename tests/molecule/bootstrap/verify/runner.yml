@@ -1,0 +1,52 @@
+---
+# The runner-side bootstrap kubeconfig and the management state: what the next
+# role and the next run start from.
+- name: "Verify | bootstrap | runner | stat the runner-side bootstrap kubeconfig"
+  ansible.builtin.stat:
+    path: "{{ _kubeconfig_runner }}"
+  register: _verify_bootstrap_kubeconfig_stat
+  delegate_to: localhost
+
+- name: "Verify | bootstrap | runner | read the bootstrap kubeconfig"
+  ansible.builtin.slurp:
+    src: "{{ _kubeconfig_runner }}"
+  register: _verify_bootstrap_runner_kubeconfig
+  delegate_to: localhost
+  # The kubeconfig carries admin credentials.
+  no_log: true
+
+- name: "Verify | bootstrap | runner | read the nodes from the runner through the bootstrap kubeconfig"
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ _kubeconfig_runner }}"
+    kind: Node
+  register: _verify_bootstrap_runner_nodes
+  delegate_to: localhost
+  vars:
+    ansible_python_interpreter: "{{ ansible_playbook_python }}"
+
+# Same node UIDs as through the host-side kubeconfig: the published port leads to this bootstrap cluster.
+- name: "Verify | bootstrap | runner | the bootstrap kubeconfig is private and reaches the cluster through the published port"
+  ansible.builtin.assert:
+    that:
+      - _verify_bootstrap_kubeconfig_stat.stat.mode == '0600'
+      - _servers == ['https://' ~ k8s_lab_lxd_host_address ~ ':' ~ _api_port]
+      - _runner_uids == _verify_bootstrap_nodes.resources | map(attribute='metadata.uid') | sort
+    fail_msg: "mode {{ _verify_bootstrap_kubeconfig_stat.stat.mode }}, servers {{ _servers }}, node UIDs {{ _runner_uids }}"
+  vars:
+    _servers: >-
+      {{ (_verify_bootstrap_runner_kubeconfig.content | b64decode | from_yaml).clusters
+         | map(attribute='cluster.server') | unique }}
+    _runner_uids: "{{ _verify_bootstrap_runner_nodes.resources | map(attribute='metadata.uid') | sort }}"
+
+# Read-only entry point; it reads LXD over the root-owned socket.
+- name: "Verify | bootstrap | state | evaluate the management state"
+  ansible.builtin.include_role:
+    name: management_cluster
+    tasks_from: state
+    apply:
+      become: true
+
+- name: "Verify | bootstrap | state | a re-run resumes this bootstrap instead of starting over"
+  ansible.builtin.assert:
+    that: k8s_lab_management_state == 'bootstrapping'
+    fail_msg: "management state is {{ k8s_lab_management_state }}, expected bootstrapping"

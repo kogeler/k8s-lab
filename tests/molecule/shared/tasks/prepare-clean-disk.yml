@@ -1,43 +1,27 @@
 ---
-# Ensure the dedicated LXD-pool block device is free of filesystem /
-# partition signatures so LXD can format it in place with `mkfs.btrfs`.
-#
-# Test-harness only: production hosts are expected to provide a clean
-# disk (installer image, operator, etc.). Included from scenarios whose
-# role drives LXD to format the device (currently lxd_storage_pools).
-#
-# Inputs (from shared vars):
-#   k8s_lab_lxd_pool_device      — /dev/disk/by-id/virtio-k8slab-lxdpool
-#   k8s_lab_lxd_pool_mountpoint  — path mounted by prepare-btrfs-pool.yml (if ever)
-
-- name: "Prepare | clean-disk | assert inputs"
-  ansible.builtin.assert:
-    that:
-      - k8s_lab_lxd_pool_device is string
-      - k8s_lab_lxd_pool_device | length > 0
-      - k8s_lab_lxd_pool_mountpoint is string
-      - k8s_lab_lxd_pool_mountpoint | length > 0
-    fail_msg: "prepare-clean-disk.yml: lxd_pool_* inputs must be set"
-
-# Unmount + drop the fstab entry first: otherwise `wipefs` on a live
-# mount quietly succeeds against the kernel block device but the
-# mounted filesystem keeps running and re-writes signatures on next
-# mount. `ansible.posix.mount state=absent` is the declarative form
-# (unmount + remove fstab in one module call).
-- name: "Prepare | clean-disk | unmount + drop fstab entry"
-  ansible.posix.mount:
-    path:    "{{ k8s_lab_lxd_pool_mountpoint }}"
-    state:   absent
+# Hand LXD a signature-free disk for its pool (`lxd_storage_source`): a disk an
+# earlier pool left formatted makes LXD refuse it. Skipped when a pool already
+# uses the disk (a scenario run on a host that already has the substrate).
+- name: "Prepare | clean-disk | storage pools LXD already has"
+  # failed_when: before the first run LXD is not installed, so there are none.
+  ansible.builtin.command:
+    argv: [/snap/bin/lxc, storage, list, --format, json]
+  register: _prepare_clean_disk_pools
+  changed_when: false
   failed_when: false
 
-# wipefs is the canonical way to erase filesystem signatures. Ansible
-# has `community.general.filesystem state=absent` but the module only
-# removes the signature it knows about, not partition tables or stray
-# superblocks. `wipefs -a -f` is a documented shell fallback (plan
-# §2.6.1): no native module covers this exact operation and we want
-# the blast radius contained to the declared device.
-- name: "Prepare | clean-disk | wipefs -a"
+- name: "Prepare | clean-disk | wipe signatures"
   ansible.builtin.command:
-    cmd: "wipefs -a -f {{ k8s_lab_lxd_pool_device }}"
-  register: _prepare_clean_disk_wipefs_register
-  changed_when: _prepare_clean_disk_wipefs_register.stdout | length > 0
+    argv: [wipefs, -a, "{{ lxd_storage_source }}"]
+  register: _prepare_clean_disk_wipefs
+  changed_when: _prepare_clean_disk_wipefs.stdout | length > 0
+  when: lxd_storage_source not in _sources
+  vars:
+    _pools: "{{ (_prepare_clean_disk_pools.stdout | from_json) if _prepare_clean_disk_pools.rc == 0 else [] }}"
+    # After formatting, LXD keeps the device path only in `volatile.initial_source`
+    # (`source` becomes the filesystem UUID); the key contains a dot, so match
+    # keys rather than attribute paths.
+    _sources: >-
+      {{ _pools | map(attribute='config') | map('dict2items') | flatten
+         | selectattr('key', 'in', ['source', 'volatile.initial_source'])
+         | map(attribute='value') | list }}

@@ -1,0 +1,106 @@
+---
+# The pool of `_probe.cluster` answers from outside the cluster: the probe chart
+# (tests/fixtures/charts/external-probe) asks for the last address of that
+# cluster's pool; the host fetches it over the external link, and the client off
+# the link fetches it through the harness router, which takes the reply only
+# from the external link. The probe's NodePort answers on a node's external
+# address and not on its internal one. The pools are disjoint, so an answer
+# comes from that cluster.
+- name: "Verify | e2e-local | external | {{ _probe.cluster }}"
+  vars:
+    _address: "{{ _probe.range.split('-') | last }}"
+    _fetch: "import sys, urllib.request as u; print(u.urlopen(sys.argv[1], timeout=10).read().decode())"
+  block:
+    - name: "Verify | e2e-local | external | install the probe on {{ _probe.cluster }}"
+      kubernetes.core.helm:
+        kubeconfig: "{{ _probe.kubeconfig }}"
+        name: k8s-lab-external-probe
+        chart_ref: "{{ _probe_chart }}"
+        release_namespace: default
+        wait: true
+        timeout: 5m
+        values:
+          address: "{{ _address }}"
+      delegate_to: localhost
+      vars:
+        ansible_python_interpreter: "{{ ansible_playbook_python }}"
+
+    - name: "Verify | e2e-local | external | GET /hostname from the host at {{ _address }}"
+      ansible.builtin.uri:
+        url: "http://[{{ _address }}]/hostname"
+        return_content: true
+        timeout: 10
+      register: _verify_external
+      retries: 24
+      delay: 5
+      until: _verify_external.status == 200
+
+    - name: "Verify | e2e-local | external | the probe answered on {{ _probe.cluster }}"
+      ansible.builtin.assert:
+        that: _verify_external.content is search('^k8s-lab-external-probe-')
+        fail_msg: "http://[{{ _address }}]/hostname answered {{ _verify_external.content }}"
+        quiet: true
+
+    - name: "Verify | e2e-local | external | GET /hostname from the client off the external link at {{ _address }}"
+      ansible.builtin.command:
+        argv: [ip, netns, exec, k8slab-offlink, python3, -c, "{{ _fetch }}", "http://[{{ _address }}]/hostname"]
+      register: _verify_offlink
+      changed_when: false
+      retries: 12
+      delay: 5
+      until: _verify_offlink.rc == 0 and _verify_offlink.stdout is search('^k8s-lab-external-probe-')
+      become: true
+
+    - name: "Verify | e2e-local | nodeport | the probe's Service and Pod on {{ _probe.cluster }}"
+      kubernetes.core.k8s_info:
+        kubeconfig: "{{ _probe.kubeconfig }}"
+        kind: "{{ item }}"
+        namespace: default
+        label_selectors: "{{ [] if item == 'Service' else ['app.kubernetes.io/instance=k8s-lab-external-probe'] }}"
+        name: "{{ 'k8s-lab-external-probe' if item == 'Service' else omit }}"
+      loop: [Service, Pod]
+      register: _verify_probe_objects
+      delegate_to: localhost
+      vars:
+        ansible_python_interpreter: "{{ ansible_playbook_python }}"
+
+    - name: "Verify | e2e-local | nodeport | addresses of the Pod's node in LXD"
+      ansible.builtin.uri:
+        url: "http://localhost/1.0/instances/{{ _verify_probe_objects.results[1].resources[0].spec.nodeName }}/state?project={{ k8s_lab_project_name }}"
+        unix_socket: /var/snap/lxd/common/lxd/unix.socket
+      register: _verify_probe_node
+      become: true
+
+    - name: "Verify | e2e-local | nodeport | answers on the node's external address"
+      ansible.builtin.uri:
+        url: "http://[{{ _eth1 }}]:{{ _port }}/hostname"
+        return_content: true
+        timeout: 10
+      register: _verify_nodeport
+      retries: 6
+      delay: 5
+      until: _verify_nodeport.status == 200 and _verify_nodeport.content is search('^k8s-lab-external-probe-')
+      vars: &nodeport_vars
+        _port: "{{ _verify_probe_objects.results[0].resources[0].spec.ports[0].nodePort }}"
+        _global: "{{ _verify_probe_node.json.metadata.network }}"
+        _eth1: "{{ _global.eth1.addresses | selectattr('family', 'eq', 'inet6') | selectattr('scope', 'eq', 'global') | map(attribute='address') | first }}"
+        _eth0: "{{ _global.eth0.addresses | selectattr('family', 'eq', 'inet6') | selectattr('scope', 'eq', 'global') | map(attribute='address') | first }}"
+
+    - name: "Verify | e2e-local | nodeport | does not answer on the node's internal address"
+      ansible.builtin.wait_for:
+        host: "{{ _eth0 }}"
+        port: "{{ _port | int }}"
+        state: stopped
+        timeout: 10
+      vars: *nodeport_vars
+  always:
+    - name: "Verify | e2e-local | external | remove the probe from {{ _probe.cluster }}"
+      kubernetes.core.helm:
+        kubeconfig: "{{ _probe.kubeconfig }}"
+        name: k8s-lab-external-probe
+        release_namespace: default
+        state: absent
+        wait: true
+      delegate_to: localhost
+      vars:
+        ansible_python_interpreter: "{{ ansible_playbook_python }}"

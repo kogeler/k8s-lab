@@ -1,0 +1,57 @@
+---
+# host: the kernel state nested Kubernetes nodes need, no swap, the Python
+# library the host-side Kubernetes tasks import, and the pinned tools.
+- name: "Verify | substrate | host | read the loaded kernel modules and the active swap"
+  ansible.builtin.slurp:
+    src: "{{ item }}"
+  loop: [/proc/modules, /proc/swaps]
+  register: _verify_substrate_proc
+
+- name: "Verify | substrate | host | the modules the nodes need are loaded, and swap is off"
+  ansible.builtin.assert:
+    that:
+      - _missing | length == 0
+      - (_verify_substrate_proc.results[1].content | b64decode).splitlines() | length == 1
+    fail_msg: "kernel modules not loaded: {{ _missing }}; /proc/swaps: {{ _verify_substrate_proc.results[1].content | b64decode }}"
+  vars:
+    _loaded: "{{ (_verify_substrate_proc.results[0].content | b64decode).splitlines() | map('split') | map('first') | list }}"
+    _missing: "{{ _verify_substrate_baseline.kernel_modules | difference(_loaded) }}"
+
+- name: "Verify | substrate | host | read the sysctls"
+  ansible.builtin.slurp:
+    src: "/proc/sys/{{ item | replace('.', '/') }}"
+  loop: "{{ _verify_substrate_baseline.sysctl | list }}"
+  register: _verify_substrate_sysctl
+
+- name: "Verify | substrate | host | each sysctl holds its value"
+  ansible.builtin.assert:
+    that: (item.content | b64decode | trim | int) == (_verify_substrate_baseline.sysctl[item.item] | int)
+    fail_msg: "{{ item.item }} is {{ item.content | b64decode | trim }}, expected {{ _verify_substrate_baseline.sysctl[item.item] }}"
+  loop: "{{ _verify_substrate_sysctl.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+
+- name: "Verify | substrate | host | the host's Python imports the Kubernetes client"
+  ansible.builtin.command:
+    argv: [python3, -c, "import kubernetes"]
+  changed_when: false
+
+- name: "Verify | substrate | host | run each pinned binary"
+  ansible.builtin.command:
+    argv: "{{ [k8s_lab_opt_root ~ '/bin/' ~ item.name] + item.args }}"
+  loop:
+    - {name: "kubectl", args: ["version", "--client", "--output=yaml"], pin: "{{ k8s_lab_kubectl_version }}"}
+    - {name: "clusterctl", args: ["version", "--output=yaml"], pin: "{{ k8s_lab_clusterctl_version }}"}
+    - {name: "k3s", args: ["--version"], pin: "{{ k8s_lab_k3s_version }}"}
+  loop_control:
+    label: "{{ item.name }}"
+  register: _verify_substrate_binaries
+  changed_when: false
+
+- name: "Verify | substrate | host | each binary reports its pinned version"
+  ansible.builtin.assert:
+    that: item.item.pin in item.stdout
+    fail_msg: "{{ item.item.name }} does not report {{ item.item.pin }}: {{ item.stdout[:200] }}"
+  loop: "{{ _verify_substrate_binaries.results }}"
+  loop_control:
+    label: "{{ item.item.name }}"

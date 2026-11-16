@@ -1,0 +1,15 @@
+---
+# management.yml up to the CAPN identity: the substrate, then the
+# bootstrap-stage roles in the same order and with the same state guard.
+- name: "Converge | bootstrap | substrate"
+  ansible.builtin.import_playbook: ../../playbooks/substrate.yml
+
+- name: "Converge | bootstrap | bootstrap cluster, providers, CAPN identity"
+  hosts: k8slab_host
+  become: true
+  tasks:
+    - name: "Converge | bootstrap | state"
+      ansible.builtin.import_role: {name: management_cluster, tasks_from: state}
+    - {name: "Converge | bootstrap | bootstrap cluster", ansible.builtin.import_role: {name: bootstrap}}
+    - {name: "Converge | bootstrap | providers", ansible.builtin.import_role: {name: clusterctl}}
+    - {name: "Converge | bootstrap | CAPN identity", ansible.builtin.import_role: {name: capn_identity}}

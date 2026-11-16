@@ -1,0 +1,75 @@
+---
+argument_specs:
+  main:
+    short_description: Host packages, kernel settings, the opt root and the pinned binaries
+    description:
+      - Prepares an x86_64 Debian 13+ or Ubuntu 22.04+ host for LXD and the Kubernetes nodes inside it.
+      - Fails before changing anything when the host has swap on.
+    options:
+      k8s_lab_opt_root:
+        type: path
+        required: true
+        description: Host directory for pinned binaries (bin/) and role state (etc/).
+      k8s_lab_kubectl_version:
+        type: str
+        required: true
+        description: kubectl release, for example v1.37.2.
+      k8s_lab_kubectl_sha256:
+        type: str
+        required: true
+        description: sha256 of the linux/amd64 kubectl binary of that release (its kubectl.sha256).
+      k8s_lab_clusterctl_version:
+        type: str
+        required: true
+        description: Cluster API release of clusterctl and of the core and kubeadm providers.
+      k8s_lab_clusterctl_sha256:
+        type: str
+        required: true
+        description: "sha256 of clusterctl-linux-amd64 of that release (upstream publishes none: compute it with sha256sum)."
+      k8s_lab_k3s_version:
+        type: str
+        required: true
+        description: k3s release of the bootstrap cluster, for example v1.37.2+k3s1.
+      k8s_lab_k3s_sha256:
+        type: str
+        required: true
+        description: sha256 of the amd64 k3s binary of that release (row k3s of its sha256sum-amd64.txt).
+      host_opt_root:
+        type: path
+        description: Directory the role creates, with bin/ (the binaries) and etc/ (other roles' state).
+      host_kubectl_version:
+        type: str
+        description: kubectl release installed into bin/.
+      host_kubectl_sha256:
+        type: str
+        description: Its sha256; a mismatch fails the download.
+      host_clusterctl_version:
+        type: str
+        description: clusterctl release installed into bin/.
+      host_clusterctl_sha256:
+        type: str
+        description: Its sha256.
+      host_k3s_version:
+        type: str
+        description: k3s release installed into bin/ (copied into the bootstrap instance).
+      host_k3s_sha256:
+        type: str
+        description: Its sha256.
+      host_enabled:
+        type: bool
+        description: Run the role at all.
+      host_flow_control_preflight:
+        type: bool
+        description: OS, architecture and swap checks.
+      host_flow_control_packages:
+        type: bool
+        description: APT packages.
+      host_flow_control_kernel:
+        type: bool
+        description: Kernel modules and sysctls.
+      host_flow_control_dirs:
+        type: bool
+        description: The opt root and its etc/ directory.
+      host_flow_control_binaries:
+        type: bool
+        description: kubectl, clusterctl and k3s in bin/.

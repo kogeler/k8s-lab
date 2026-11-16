@@ -1,0 +1,10 @@
+---
+_clusterctl_bin: "{{ clusterctl_opt_root }}/bin/clusterctl"
+_clusterctl_kubectl: "{{ clusterctl_opt_root }}/bin/kubectl"
+_clusterctl_config: "{{ clusterctl_opt_root }}/etc/clusterctl/clusterctl.yaml"
+# The four providers by the `type` of their clusterctl Provider object.
+_clusterctl_providers:
+  CoreProvider: {flag: --core, name: cluster-api, version: "{{ clusterctl_capi_version }}"}
+  BootstrapProvider: {flag: --bootstrap, name: kubeadm, version: "{{ clusterctl_capi_version }}"}
+  ControlPlaneProvider: {flag: --control-plane, name: kubeadm, version: "{{ clusterctl_capi_version }}"}
+  InfrastructureProvider: {flag: --infrastructure, name: incus, version: "{{ clusterctl_capn_version }}"}

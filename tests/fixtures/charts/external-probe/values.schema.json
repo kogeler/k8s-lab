@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["address", "image"],
+  "properties": {
+    "global": { "type": "object" },
+    "address": { "type": "string", "pattern": "^[0-9a-fA-F:]*:[0-9a-fA-F:]*$" },
+    "image": { "type": "string", "minLength": 1 }
+  }
+}

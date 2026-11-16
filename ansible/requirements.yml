@@ -1,25 +1,14 @@
 ---
-# Minimum collection set required by roles in this repo.
-#
-# Bounds policy (plan §2.11):
-#   * lower bound = currently used stable upstream release at time of pin;
-#   * NO artificial upper bound blocking the next major — we track upstream;
-#   * bump + verify on `curl -sfL https://api.github.com/repos/<o>/<r>/releases/latest`
-#     and record new pins inline in PLAN-stage1-common.md §8 / §8a.
+# Direct collection dependencies, lower bounds only. The exact versions that are
+# installed, transitive ones included, are in requirements.lock.yml (`make deps`);
+# `make deps-upgrade` re-resolves that file from this one.
 collections:
   - name: ansible.posix
-    version: ">=2.1.0"
+    version: ">=2.2.2"
   - name: community.general
-    version: ">=12.6.0"
+    version: ">=14.0.1"
   - name: community.crypto
-    version: ">=3.2.0"
-  # kubernetes.core ships k8s / k8s_info modules used by Phase 4 roles
-  # that talk to the bootstrap k3s cluster (bootstrap_clusterctl,
-  # bootstrap_capn_secret) and downstream Phase 5+ work that touches
-  # CAPI / CAPN CRDs. Hard requirement on the EXECUTOR node (the host
-  # the module runs on — for our roles, the LXD host VM): the
-  # `kubernetes` PyPI package, installed via `apt install
-  # python3-kubernetes` on Debian Trixie. Added to the shared Molecule
-  # prepare playbook so test scenarios get it for free.
+    version: ">=3.5.1"
+  # kubernetes.core needs the `kubernetes` Python package wherever its modules run.
   - name: kubernetes.core
-    version: ">=6.4.0"
+    version: ">=6.6.0"

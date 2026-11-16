@@ -1,0 +1,16 @@
+---
+- name: "clusterctl | config | directory"
+  ansible.builtin.file:
+    path: "{{ _clusterctl_config | dirname }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+
+- name: "clusterctl | config | clusterctl.yaml"
+  ansible.builtin.template:
+    src: clusterctl.yaml.j2
+    dest: "{{ _clusterctl_config }}"
+    owner: root
+    group: root
+    mode: "0600"

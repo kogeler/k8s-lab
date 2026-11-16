@@ -1,0 +1,40 @@
+---
+- name: "capn-identity | the management state is known"
+  ansible.builtin.assert:
+    that: k8s_lab_management_state is defined
+    fail_msg: "capn_identity needs the management state: run management_cluster with tasks_from: state first."
+    quiet: true
+
+# Listed before and after the pivot; once per managing API in a play.
+- name: "capn-identity | once per managing API in a play"
+  ansible.builtin.meta: end_role
+  when: (_capn_identity_converged_for | default('')) == capn_identity_kubeconfig
+
+- name: "capn-identity | certificate"
+  ansible.builtin.include_tasks:
+    file: certificate.yml
+    apply:
+      tags: ["capn-identity", "capn_identity", "capn-identity-certificate", "capn_identity_certificate"]
+  when: [capn_identity_enabled | bool, capn_identity_flow_control_certificate | bool]
+  tags: ["capn-identity", "capn_identity", "capn-identity-certificate", "capn_identity_certificate"]
+
+- name: "capn-identity | trust"
+  ansible.builtin.include_tasks:
+    file: trust.yml
+    apply:
+      tags: ["capn-identity", "capn_identity", "capn-identity-trust", "capn_identity_trust"]
+  when: [capn_identity_enabled | bool, capn_identity_flow_control_trust | bool]
+  tags: ["capn-identity", "capn_identity", "capn-identity-trust", "capn_identity_trust"]
+
+- name: "capn-identity | secret"
+  ansible.builtin.include_tasks:
+    file: secret.yml
+    apply:
+      tags: ["capn-identity", "capn_identity", "capn-identity-secret", "capn_identity_secret"]
+  when: [capn_identity_enabled | bool, capn_identity_flow_control_secret | bool]
+  tags: ["capn-identity", "capn_identity", "capn-identity-secret", "capn_identity_secret"]
+
+- name: "capn-identity | remember the managing API and a rotation done in this play"
+  ansible.builtin.set_fact:
+    _capn_identity_converged_for: "{{ capn_identity_kubeconfig }}"
+    _capn_identity_rotated: "{{ capn_identity_rotate | bool }}"

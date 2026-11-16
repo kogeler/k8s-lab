@@ -1,0 +1,16 @@
+# Managed by the k8s-lab bootstrap role.
+# A single node for the Cluster API controllers: no ingress, load balancer,
+# network policy or cloud controller. Dual-stack, so the controllers reach the
+# IPv6 control-plane endpoints of the clusters they create.
+write-kubeconfig-mode: "0600"
+# Both families of eth0; on its own k3s registers only the IPv4.
+node-ip: "{{ _bootstrap_node_ip }}"
+disable: [traefik, servicelb]
+disable-network-policy: true
+disable-cloud-controller: true
+cluster-cidr: "{{ bootstrap_pod_cidrs | join(',') }}"
+service-cidr: "{{ bootstrap_service_cidrs | join(',') }}"
+cluster-dns: "{{ bootstrap_cluster_dns | join(',') }}"
+flannel-ipv6-masq: true
+kubelet-arg:
+  - "feature-gates=KubeletInUserNamespace=true"

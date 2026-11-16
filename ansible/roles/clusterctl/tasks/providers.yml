@@ -1,0 +1,51 @@
+---
+# The providers on the API behind `_clusterctl_against`: init what is missing,
+# upgrade what is older than its pin, refuse what is newer (no downgrades).
+- name: "clusterctl | providers | installed providers"
+  ansible.builtin.command:
+    argv: ["{{ _clusterctl_kubectl }}", --kubeconfig, "{{ _clusterctl_against }}", get,
+           providers.clusterctl.cluster.x-k8s.io, --all-namespaces, -o, json]
+  register: _clusterctl_providers_installed
+  changed_when: false
+  failed_when:
+    - _clusterctl_providers_installed.rc != 0
+    - "'have a resource type' not in _clusterctl_providers_installed.stderr"
+
+- name: "clusterctl | providers | init, upgrade or refuse"
+  vars:
+    _items: "{{ (_clusterctl_providers_installed.stdout | from_json)['items'] if _clusterctl_providers_installed.rc == 0 else [] }}"
+    _versions: "{{ dict(_items | map(attribute='type') | zip(_items | map(attribute='version'))) }}"
+    _missing: >-
+      {% for type, p in _clusterctl_providers.items() if type not in _versions %}{{ p.flag }}={{ p.name }}:{{ p.version }} {% endfor %}
+    _older: >-
+      {% for type, p in _clusterctl_providers.items() if type in _versions and _versions[type] is version(p.version, '<')
+      %}{{ p.flag }}={{ p.name }}:{{ p.version }} {% endfor %}
+    _newer: >-
+      {% for type, p in _clusterctl_providers.items() if type in _versions and _versions[type] is version(p.version, '>')
+      %}{{ p.name }} {{ _versions[type] }} (pin {{ p.version }}); {% endfor %}
+    _common_args: ["--config={{ _clusterctl_config }}", "--kubeconfig={{ _clusterctl_against }}", --wait-providers]
+    # A loop that renders nothing is None, not '', under native templating.
+    _init_args: "{{ (_missing | default('', true)).split() }}"
+    _upgrade_args: "{{ (_older | default('', true)).split() }}"
+  block:
+    - name: "clusterctl | providers | none is newer than its pin"
+      ansible.builtin.assert:
+        that: (_newer | default('', true)) | trim == ''
+        fail_msg: "Installed providers are newer than the pins, and clusterctl does not downgrade: {{ _newer }}"
+        quiet: true
+
+    - name: "clusterctl | providers | init the missing ones"
+      ansible.builtin.command:
+        argv: "{{ [_clusterctl_bin, 'init'] + _common_args + _init_args }}"
+      when: _init_args | length > 0
+      changed_when: true
+      async: "{{ clusterctl_timeout }}"
+      poll: 10
+
+    - name: "clusterctl | providers | upgrade the older ones"
+      ansible.builtin.command:
+        argv: "{{ [_clusterctl_bin, 'upgrade', 'apply'] + _common_args + _upgrade_args }}"
+      when: _upgrade_args | length > 0
+      changed_when: true
+      async: "{{ clusterctl_timeout }}"
+      poll: 10

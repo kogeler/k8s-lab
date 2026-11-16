@@ -1,0 +1,24 @@
+---
+- name: "clusterctl | the management state is known"
+  ansible.builtin.assert:
+    that: k8s_lab_management_state is defined
+    fail_msg: "clusterctl needs the management state: run management_cluster with tasks_from: state first."
+    quiet: true
+
+- name: "clusterctl | config"
+  ansible.builtin.include_tasks:
+    file: config.yml
+    apply:
+      tags: ["clusterctl", "clusterctl-config", "clusterctl_config"]
+  when: [clusterctl_enabled | bool, clusterctl_flow_control_config | bool]
+  tags: ["clusterctl", "clusterctl-config", "clusterctl_config"]
+
+- name: "clusterctl | providers"
+  ansible.builtin.include_tasks:
+    file: providers.yml
+    apply:
+      tags: ["clusterctl", "clusterctl-providers", "clusterctl_providers"]
+  vars:
+    _clusterctl_against: "{{ clusterctl_kubeconfig }}"
+  when: [clusterctl_enabled | bool, clusterctl_flow_control_providers | bool]
+  tags: ["clusterctl", "clusterctl-providers", "clusterctl_providers"]

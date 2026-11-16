@@ -1,0 +1,84 @@
+---
+argument_specs:
+  main:
+    short_description: LXD and the objects Cluster API nodes run on
+    description:
+      - Installs LXD from its snap, bridges an uplink to the external network, and creates the
+        image registry, the restricted project, the btrfs pool, the internal network, the API
+        listener and the node profiles.
+      - Never restarts an instance. Refuses to re-address a network with instances on it and to
+        move an existing pool to another device.
+    options:
+      k8s_lab_project_name:
+        type: str
+        required: true
+        description: LXD project every cluster instance lives in.
+      lxd_uplink_interface:
+        type: str
+        required: true
+        description:
+          - Host interface bridged to the external network (node eth1). It loses its own addresses,
+            so it must not be the interface of the default route.
+      lxd_storage_source:
+        type: str
+        required: true
+        description:
+          - Block device of the btrfs pool, preferably a /dev/disk/by-id path. LXD formats it; it must
+            not be mounted. The pool keeps this device for its whole life.
+      lxd_snap_channel:
+        type: str
+        description: Snap channel of LXD. Changing it refreshes LXD in place; there is no way back.
+      lxd_bridge_name:
+        type: str
+        description: Name of the host bridge of the external network.
+      lxd_bridge_mtu:
+        type: int
+        description: MTU of that bridge.
+      lxd_project_name:
+        type: str
+        description: The LXD project.
+      lxd_storage_pool_name:
+        type: str
+        description: Name of the btrfs pool of the node root disks.
+      lxd_network_name:
+        type: str
+        description: Name of the internal LXD bridge network.
+      lxd_network_ipv4_address:
+        type: str
+        description: Gateway address and prefix of the internal network, IPv4 (NAT, DHCP).
+      lxd_network_ipv6_address:
+        type: str
+        description: Gateway address and prefix of the internal network, IPv6 (NAT, router advertisements).
+      lxd_network_dhcp_expiry:
+        type: str
+        description: IPv4 lease time on the internal network, e.g. 168h; node addresses outlive a host outage this long.
+      lxd_listener_port:
+        type: int
+        description: Port of the LXD API on the internal gateway address (CAPN's endpoint).
+      lxd_enabled:
+        type: bool
+        description: Run the role at all.
+      lxd_flow_control_snap:
+        type: bool
+        description: The snapd and lxd snaps, the refresh hold, the daemon readiness.
+      lxd_flow_control_bridge:
+        type: bool
+        description: The external bridge and its uplink (systemd-networkd).
+      lxd_flow_control_registry:
+        type: bool
+        description: The image registry of the node images.
+      lxd_flow_control_project:
+        type: bool
+        description: The restricted project.
+      lxd_flow_control_storage:
+        type: bool
+        description: The btrfs pool.
+      lxd_flow_control_network:
+        type: bool
+        description: The internal network.
+      lxd_flow_control_listener:
+        type: bool
+        description: The LXD API listener on the internal gateway address.
+      lxd_flow_control_profiles:
+        type: bool
+        description: The node and bootstrap profiles.

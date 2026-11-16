@@ -1,0 +1,64 @@
+---
+# Providers on mgmt-1, then the move of the Cluster API objects onto it;
+# nothing to do once mgmt-1 manages itself.
+- name: "clusterctl | pivot | the management state is known"
+  ansible.builtin.assert:
+    that: k8s_lab_management_state is defined
+    fail_msg: "clusterctl needs the management state: run management_cluster with tasks_from: state first."
+    quiet: true
+
+- name: "clusterctl | pivot | nothing to do on a self-hosted management cluster"
+  ansible.builtin.meta: end_role
+  when: k8s_lab_management_state == 'self_hosted'
+
+- name: "clusterctl | pivot | configuration"
+  ansible.builtin.include_tasks: config.yml
+
+- name: "clusterctl | pivot | mgmt-1 answers"
+  ansible.builtin.command:
+    argv: ["{{ _clusterctl_kubectl }}", --kubeconfig, "{{ clusterctl_target_kubeconfig }}", get, --raw, /livez]
+  register: _clusterctl_pivot_target
+  until: _clusterctl_pivot_target.rc == 0
+  retries: 30
+  delay: 10
+  changed_when: false
+
+- name: "clusterctl | pivot | providers on mgmt-1"
+  ansible.builtin.include_tasks: providers.yml
+  vars:
+    _clusterctl_against: "{{ clusterctl_target_kubeconfig }}"
+
+- name: "clusterctl | pivot | where the Cluster is"
+  ansible.builtin.command:
+    argv: ["{{ _clusterctl_kubectl }}", --kubeconfig, "{{ item }}", get, clusters.cluster.x-k8s.io,
+           --namespace, "{{ clusterctl_cluster_namespace }}", "{{ clusterctl_cluster_name }}", --ignore-not-found, -o, name]
+  loop: ["{{ clusterctl_kubeconfig }}", "{{ clusterctl_target_kubeconfig }}"]
+  register: _clusterctl_pivot_before
+  changed_when: false
+
+- name: "clusterctl | pivot | move the Cluster API objects to mgmt-1"
+  ansible.builtin.command:
+    argv: ["{{ _clusterctl_bin }}", move, "--kubeconfig={{ clusterctl_kubeconfig }}",
+           "--to-kubeconfig={{ clusterctl_target_kubeconfig }}", "--namespace={{ clusterctl_cluster_namespace }}"]
+  when: _clusterctl_pivot_before.results[0].stdout | length > 0
+  changed_when: true
+  async: "{{ clusterctl_timeout }}"
+  poll: 10
+
+- name: "clusterctl | pivot | where the Cluster is now"
+  ansible.builtin.command:
+    argv: ["{{ _clusterctl_kubectl }}", --kubeconfig, "{{ item }}", get, clusters.cluster.x-k8s.io,
+           --namespace, "{{ clusterctl_cluster_namespace }}", "{{ clusterctl_cluster_name }}", --ignore-not-found, -o, name]
+  loop: ["{{ clusterctl_kubeconfig }}", "{{ clusterctl_target_kubeconfig }}"]
+  register: _clusterctl_pivot_after
+  changed_when: false
+
+- name: "clusterctl | pivot | the Cluster is on mgmt-1 and gone from the source"
+  ansible.builtin.assert:
+    that:
+      - _clusterctl_pivot_after.results[0].stdout | length == 0
+      - _clusterctl_pivot_after.results[1].stdout | length > 0
+    fail_msg: >-
+      After the move Cluster/{{ clusterctl_cluster_name }} is
+      {{ 'still on the source' if _clusterctl_pivot_after.results[0].stdout else 'not on the source' }} and
+      {{ 'on' if _clusterctl_pivot_after.results[1].stdout else 'missing from' }} mgmt-1.

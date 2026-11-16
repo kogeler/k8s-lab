@@ -1,12 +1,5 @@
-# k8s-lab — local developer Makefile.
-#
-# Scope contract (plan §13):
-#   * only local workflows live here;
-#   * no `deploy TARGET=...` / `destroy TARGET=...` for real sites —
-#     those belong in private consumer repos.
-#
-# Targets delegate to tests/molecule/Makefile for scenario runs and to
-# tests/vagrant/debian13 for the shared local VM lifecycle.
+# k8s-lab developer targets. Only local workflows live here; deployments of a
+# real site belong in the consumer's own repository.
 
 SHELL := /bin/bash
 .ONESHELL:
@@ -17,258 +10,224 @@ REPO_ROOT     := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
 ANSIBLE_DIR   := $(REPO_ROOT)/ansible
 MOLECULE_DIR  := $(REPO_ROOT)/tests/molecule
 VAGRANT_DIR   := $(REPO_ROOT)/tests/vagrant/debian13
-TF_FIXTURES   := $(REPO_ROOT)/tests/fixtures/terraform
+ARTIFACTS_DIR := $(REPO_ROOT)/.artifacts
+HANDOFF       := $(ARTIFACTS_DIR)/handoff.json
+# The workload fixture: the cluster root, then the add-on root.
+WORKLOAD_DIR    := $(REPO_ROOT)/tests/fixtures/terraform/workload-clusters/lab-default
+WORKLOAD_ROOTS  := $(WORKLOAD_DIR)/cluster $(WORKLOAD_DIR)/addons
 
-# Project-local Ansible collection store (gitignored). Every invocation —
-# from any subdirectory — resolves collections through this absolute path.
 ANSIBLE_COLLECTIONS_DIR := $(ANSIBLE_DIR)/collections
 export ANSIBLE_COLLECTIONS_PATH := $(ANSIBLE_COLLECTIONS_DIR)
 
-# Python-side tooling (ansible, ansible-lint, molecule, yamllint) is
-# expected to come from a Python virtualenv that the caller has already
-# activated (`source <venv>/bin/activate`). We don't hardcode the venv
-# location — the caller owns it.
-ANSIBLE        ?= ansible
+# Python tools come from the project's uv environment (`uv run make ...`);
+# the rest from PATH (versions in .tool-versions).
 ANSIBLE_PLAY   ?= ansible-playbook
 ANSIBLE_GALAXY ?= ansible-galaxy
 ANSIBLE_LINT   ?= ansible-lint
 YAMLLINT       ?= yamllint
-MOLECULE       ?= molecule
-# Non-Python tools are expected to be on the system PATH.
+MKDOCS         ?= mkdocs
+PYTHON         ?= python3
 TERRAFORM      ?= terraform
 TFLINT         ?= tflint
+TERRAFORM_DOCS ?= terraform-docs
 HELM           ?= helm
-VAGRANT        ?= vagrant
+KUBECONFORM    ?= kubeconform
+SHELLCHECK     ?= shellcheck
+ACTIONLINT     ?= actionlint
+UV             ?= uv
+
+# VARS=alt-vars.yml runs a scenario with tests/playbooks/alt-vars.yml on top.
+VARS ?=
 
 .DEFAULT_GOAL := help
 
 .PHONY: help
 help: ## Show this help
-	@awk 'BEGIN {FS = ":.*##"; printf "\nTargets:\n"} /^[a-zA-Z0-9_.-]+:.*##/ {printf "  \033[36m%-28s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
+	@awk 'BEGIN {FS = ":.*##"; printf "Targets:\n"} /^[a-zA-Z0-9_.-]+:.*##/ {printf "  \033[36m%-18s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
 
-# --------------------------------------------------------------------------
-# Linting
-# --------------------------------------------------------------------------
+# ---- Dependencies -----------------------------------------------------------
 
-.PHONY: lint
-lint: lint-yaml lint-ansible lint-terraform lint-helm ## Run all static checks
-
-.PHONY: lint-yaml
-lint-yaml: ## yamllint across repo
-	cd $(REPO_ROOT) && $(YAMLLINT) -c .yamllint .
-
-.PHONY: lint-ansible
-lint-ansible: ## ansible-lint across roles
-	cd $(ANSIBLE_DIR) && $(ANSIBLE_LINT) roles/
-
-.PHONY: lint-terraform
-lint-terraform: ## terraform fmt -check + validate on modules and fixtures
-	find $(REPO_ROOT)/terraform $(TF_FIXTURES) -type d \( -name '.terraform' -prune \) -o -name '*.tf' -print0 \
-		| xargs -0 -I{} dirname {} | sort -u | while read d; do \
-			echo "== terraform fmt -check $$d" ; \
-			$(TERRAFORM) -chdir=$$d fmt -check -recursive ; \
-		done
-
-.PHONY: lint-helm
-lint-helm: ## helm lint for all local wrapper charts
-	for chart in $(REPO_ROOT)/charts/*/ ; do \
-		[ -f "$$chart/Chart.yaml" ] || continue ; \
-		$(HELM) lint "$$chart" ; \
-	done
-
-# --------------------------------------------------------------------------
-# Local harness lifecycle
-# --------------------------------------------------------------------------
-
-.PHONY: test-local-harness
-test-local-harness: ## Bring up / verify the shared Vagrant VM and mocked networks
-	$(MAKE) -C $(VAGRANT_DIR) up
-	$(MAKE) -C $(MOLECULE_DIR) harness-smoke
-
-.PHONY: test-local-e2e
-test-local-e2e: ## Full local pipeline (plan §13.2); may take significant time
-	$(MAKE) -C $(VAGRANT_DIR) up
-	$(MAKE) -C $(MOLECULE_DIR) e2e-local-vagrant-converge
-	$(MAKE) -C $(MOLECULE_DIR) e2e-local-vagrant-verify
-
-# --------------------------------------------------------------------------
-# Phase 5 — workload cluster (PLAN §16.6)
-# --------------------------------------------------------------------------
-#
-# Deploys the workload cluster end-to-end via the single Terraform module
-# `terraform/modules/workload_cluster` invoked from the test fixture
-# `tests/fixtures/terraform/workload-clusters/lab-default/`. The module
-# reads `.artifacts/mgmt.auto.tfvars.json` (emitted by Phase 4
-# export_artifacts) — threaded explicitly via -var-file because Terraform
-# auto-loads *.auto.tfvars.json only from cwd, not from the repo-root
-# .artifacts/ where Phase 4 deposits the handoff.
-#
-# Runner deps: terraform, helm, kubectl on PATH (no Python venv needed
-# for these targets).
-
-WORKLOAD_TF_DIR := $(TF_FIXTURES)/workload-clusters/lab-default
-MGMT_TFVARS     := $(REPO_ROOT)/.artifacts/mgmt.auto.tfvars.json
-ARTIFACTS_DIR   := $(REPO_ROOT)/.artifacts
-
-.PHONY: deploy-workload
-deploy-workload: ## Terraform apply workload cluster on existing mgmt (CAPI + CNI + MetalLB + helm tests)
-	@test -f $(MGMT_TFVARS) \
-	  || { echo "ERROR: $(MGMT_TFVARS) missing — run Phase 4 first (make test-local-e2e)"; exit 1; }
-	cd $(WORKLOAD_TF_DIR) \
-	  && $(TERRAFORM) init -upgrade \
-	  && $(TERRAFORM) apply -auto-approve -var-file=$(MGMT_TFVARS)
-
-.PHONY: workload-kubeconfig
-workload-kubeconfig: ## Materialise rewritten workload kubeconfig to .artifacts/clusters/<cluster>.kubeconfig
-	@mkdir -p $(ARTIFACTS_DIR)/clusters
-	@cd $(WORKLOAD_TF_DIR) \
-	  && cluster_name="$$($(TERRAFORM) output -raw cluster_name)" \
-	  && out="$(ARTIFACTS_DIR)/clusters/$${cluster_name}.kubeconfig" \
-	  && umask 077 \
-	  && $(TERRAFORM) output -raw kubeconfig >"$$out" \
-	  && echo "wrote $$out"
-
-# --------------------------------------------------------------------------
-# Destroy / clean graph (PLAN §19.2)
-# --------------------------------------------------------------------------
-#
-# Naming convention:
-#   destroy-*  operates on running infra (TF state, helm releases, VM,
-#              libvirt domains). Each destroy auto-cascades the clean-*
-#              targets that the destruction itself makes stale, so the
-#              operator never has to remember which files to wipe
-#              afterwards. After any destroy-*, the corresponding next-
-#              cycle command (deploy-workload, vagrant up, …) just works.
-#
-#   clean-*    file/directory deletes only. Idempotent against absent
-#              state (run safely with no infra at all).
-#
-#   compound   `clean-local` = "I want to start over fast" (destroys VM,
-#              cleans every artefact). `reset-all` = "exercise the full
-#              destroy chain end-to-end" (TF destroy on the live workload
-#              first, then VM destroy + cleans).
-
-# ---- DESTROY ----------------------------------------------------------------
-
-.PHONY: destroy-workload
-destroy-workload: ## Destroy workload — TF destroy if tfstate exists, helm uninstall fallback against .artifacts/mgmt.kubeconfig otherwise + cascade clean-{tfstate,workload-kubeconfig}
-	@# Three branches:
-	@#   (1) TF state present  → reverse the same TF route used to deploy;
-	@#   (2) no TF state but mgmt.kubeconfig + tfvars present → workload was
-	@#       installed via Molecule e2e-local converge (kubernetes.core.helm
-	@#       direct, no TF state). helm uninstall the two top-level releases
-	@#       in reverse-order (workload Cluster CR first → CAPI cascade-deletes
-	@#       Machines + LXC instances; then per-cluster ClusterClass);
-	@#       cni-calico / metallb / metallb-config live INSIDE the workload
-	@#       cluster and disappear with it — no separate uninstall needed;
-	@#   (3) neither: no infra to destroy, just clean stale files.
-	@if [ -f $(WORKLOAD_TF_DIR)/terraform.tfstate ] && [ -f $(MGMT_TFVARS) ]; then \
-	  echo "== terraform destroy on workload fixture" ; \
-	  ( cd $(WORKLOAD_TF_DIR) && $(TERRAFORM) destroy -auto-approve -var-file=$(MGMT_TFVARS) ) ; \
-	elif [ -f $(ARTIFACTS_DIR)/mgmt.kubeconfig ] && [ -f $(MGMT_TFVARS) ]; then \
-	  cluster_name=$$(jq -r '.k8s_lab_workload_cluster_name // "lab-default"' $(MGMT_TFVARS)) ; \
-	  echo "== no TF state — helm-uninstall fallback for workload '$$cluster_name' on .artifacts/mgmt.kubeconfig" ; \
-	  $(HELM) uninstall "$$cluster_name" -n capi-clusters --kubeconfig $(ARTIFACTS_DIR)/mgmt.kubeconfig --wait --timeout 15m 2>&1 || true ; \
-	  $(HELM) uninstall "$$cluster_name-class" -n capi-clusters --kubeconfig $(ARTIFACTS_DIR)/mgmt.kubeconfig --wait --timeout 5m 2>&1 || true ; \
-	else \
-	  echo "== skip destroy: neither TF tfstate nor .artifacts/mgmt.kubeconfig present" ; \
-	fi
-	@$(MAKE) clean-tfstate clean-workload-kubeconfig
-
-.PHONY: destroy-vm
-destroy-vm: ## Destroy local Vagrant VM + libvirt orphans; cascades clean-{mgmt-bundle,workload-kubeconfig,tfstate}
-	$(MAKE) -C $(VAGRANT_DIR) destroy
-	@$(MAKE) clean-mgmt-bundle clean-workload-kubeconfig clean-tfstate
-
-# ---- CLEAN (file-only, idempotent) -----------------------------------------
-
-.PHONY: clean-tfstate
-clean-tfstate: ## Wipe local Terraform state in workload fixture (.terraform/, tfstate*, lock files)
-	@rm -rf $(WORKLOAD_TF_DIR)/.terraform \
-	        $(WORKLOAD_TF_DIR)/.terraform.lock.hcl \
-	        $(WORKLOAD_TF_DIR)/terraform.tfstate \
-	        $(WORKLOAD_TF_DIR)/terraform.tfstate.backup \
-	        $(WORKLOAD_TF_DIR)/.terraform.tfstate.lock.info
-	@echo "== cleaned: $(WORKLOAD_TF_DIR) terraform state"
-
-.PHONY: clean-mgmt-bundle
-clean-mgmt-bundle: ## Remove .artifacts/mgmt.{kubeconfig,auto.tfvars.json} + harness-vm-id
-	@rm -f $(ARTIFACTS_DIR)/mgmt.kubeconfig \
-	       $(ARTIFACTS_DIR)/mgmt.auto.tfvars.json \
-	       $(ARTIFACTS_DIR)/harness-vm-id
-	@echo "== cleaned: mgmt handoff bundle"
-
-.PHONY: clean-workload-kubeconfig
-clean-workload-kubeconfig: ## Remove .artifacts/clusters/*.kubeconfig (stale per-workload debug copies from Molecule e2e-local)
-	@find $(ARTIFACTS_DIR)/clusters -mindepth 1 -name '*.kubeconfig' -delete 2>/dev/null || true
-	@echo "== cleaned: per-cluster debug kubeconfigs in $(ARTIFACTS_DIR)/clusters/"
-
-.PHONY: clean-molecule
-clean-molecule: ## Remove ~/.ansible/tmp/molecule.* scratch directories
-	@find $$HOME/.ansible/tmp -maxdepth 1 -type d -name 'molecule.*' -exec rm -rf {} + 2>/dev/null || true
-	@echo "== cleaned: ~/.ansible/tmp/molecule.*"
-
-# ---- COMPOUND ---------------------------------------------------------------
-
-.PHONY: clean-local
-clean-local: ## "Start over" — destroys VM and cascades every clean-*. Fast; does NOT exercise terraform destroy on the live workload.
-	@$(MAKE) destroy-vm
-	@$(MAKE) clean-molecule
-	@echo "== local harness reset complete"
-
-.PHONY: reset-all
-reset-all: ## Full PLAN §19.2 reverse — terraform destroy on live workload, THEN destroy-vm + clean-molecule. Slow; exercises every destroy step.
-	@$(MAKE) destroy-workload
-	@$(MAKE) destroy-vm
-	@$(MAKE) clean-molecule
-	@echo "== full destroy chain complete"
-
-# --------------------------------------------------------------------------
-# Convenience
-# --------------------------------------------------------------------------
-
-# --------------------------------------------------------------------------
-# Documentation bundle for LLM crawlers
-# --------------------------------------------------------------------------
-#
-# `make docs-llm` regenerates llms-full.txt by concatenating every chapter
-# under doc/ in reading order (README first, then 01..14). The bundle is
-# committed so it is fetchable as a single file at the canonical GitHub raw
-# URL — the llms.txt convention assumes a flat, single-URL "everything"
-# pointer for LLM ingestion.
-
-.PHONY: docs-llm
-docs-llm: ## Regenerate llms-full.txt from doc/*.md in reading order
-	@( \
-	  echo "# k8s-lab — full documentation snapshot" ; \
-	  echo "" ; \
-	  echo "> Concatenated bundle of every chapter under doc/, in reading order." ; \
-	  echo "> Regenerate with 'make docs-llm'. Canonical source: https://github.com/kogeler/k8s-lab" ; \
-	  echo "" ; \
-	  for f in $(REPO_ROOT)/doc/README.md $$(ls $(REPO_ROOT)/doc/[0-9][0-9]-*.md | sort) ; do \
-	    rel=$${f#$(REPO_ROOT)/} ; \
-	    echo "" ; \
-	    echo "---" ; \
-	    echo "" ; \
-	    echo "<!-- source: $$rel -->" ; \
-	    echo "" ; \
-	    cat "$$f" ; \
-	    echo "" ; \
-	  done \
-	) > $(REPO_ROOT)/llms-full.txt
-	@lines=$$(wc -l < $(REPO_ROOT)/llms-full.txt) ; \
-	 bytes=$$(wc -c < $(REPO_ROOT)/llms-full.txt) ; \
-	 echo "== wrote llms-full.txt ($$lines lines, $$bytes bytes)"
+COLLECTIONS_LOCK := $(ANSIBLE_DIR)/requirements.lock.yml
 
 .PHONY: deps
-deps: ## Install Ansible collections into ansible/collections (project-local)
-	# --force makes the install authoritative for the project tree — without
-	# it ansible-galaxy happily "skips" anything already present in venv's
-	# bundled site-packages, leaving holes in our local collections path.
-	$(ANSIBLE_GALAXY) collection install --force \
-		-r $(ANSIBLE_DIR)/requirements.yml \
-		-p $(ANSIBLE_COLLECTIONS_DIR)
+deps: ## Install the locked Ansible collections and the Helm chart dependencies
+	$(ANSIBLE_GALAXY) collection install --force --no-deps \
+		-r $(COLLECTIONS_LOCK) -p $(ANSIBLE_COLLECTIONS_DIR)
+	for c in $(REPO_ROOT)/charts/*/; do
+	  if grep -q '^dependencies:' $$c/Chart.yaml; then $(HELM) dependency update $$c; fi
+	done
 
-.PHONY: tree
-tree: ## Print top-level repo layout (best effort)
-	@command -v tree >/dev/null && tree -L 2 -I '.git|.terraform|.molecule|.vagrant|.artifacts' $(REPO_ROOT) || ls -la $(REPO_ROOT)
+.PHONY: deps-upgrade
+deps-upgrade: ## Re-resolve uv.lock and the collection lock from the direct requirements
+	cd $(REPO_ROOT) && $(UV) lock --upgrade
+	scratch=$(REPO_ROOT)/.cache/collections-resolve
+	rm -rf $$scratch; mkdir -p $$scratch; trap 'rm -rf "$$scratch"' EXIT
+	ANSIBLE_COLLECTIONS_PATH=$$scratch $(ANSIBLE_GALAXY) collection install \
+		-r $(ANSIBLE_DIR)/requirements.yml -p $$scratch >/dev/null
+	ANSIBLE_COLLECTIONS_PATH=$$scratch $(ANSIBLE_GALAXY) collection list -p $$scratch --format json \
+		| jq -r '"# Exact versions of every collection, transitive ones included.",
+		         "# Generated by `make deps-upgrade` from requirements.yml; do not edit.",
+		         "---", "collections:",
+		         (to_entries[0].value | to_entries | sort_by(.key)[]
+		          | "  - name: \(.key)\n    version: \"\(.value.version)\"")' \
+		> $$scratch/requirements.lock.yml
+	mv $$scratch/requirements.lock.yml $(COLLECTIONS_LOCK)
+	@echo "== rewrote uv.lock and $(COLLECTIONS_LOCK); run 'make deps' to install"
+
+# ---- Static and render-time checks (CI runs the same target) ---------------
+
+TF_MODULES   := $(addprefix $(REPO_ROOT)/terraform/modules/,workload_cluster workload_addons workload_addons/modules/access)
+CHECK_CACHE  := $(REPO_ROOT)/.cache/check
+SITE_DIR     ?= $(REPO_ROOT)/.cache/site
+# Schema catalogs at fixed commits; rendered for the pinned Kubernetes version.
+KUBERNETES_VERSION := $(shell sed -n 's/^k8s_lab_kubernetes_version: *"v\([^"]*\)"/\1/p' $(REPO_ROOT)/tests/playbooks/group_vars/all.yml)
+KUBECONFORM_K8S_SCHEMAS := https://raw.githubusercontent.com/yannh/kubernetes-json-schema/6ea44f54bb5cdedb2f61fba42c9b342e97959262/{{.NormalizedKubernetesVersion}}-standalone{{.StrictSuffix}}/{{.ResourceKind}}{{.KindSuffix}}.json
+KUBECONFORM_CRD_SCHEMAS := https://raw.githubusercontent.com/datreeio/CRDs-catalog/3e8a8916ca1b7af6464606c2c2f5869dbafa9653/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json
+# CAPN publishes no JSON schemas; CRDs themselves have none in the default catalog.
+KUBECONFORM_SKIP := LXCClusterTemplate,LXCMachineTemplate,CustomResourceDefinition
+
+.PHONY: check
+check: ## Every static and render-time check; needs `make deps` first
+	@echo "== yamllint"
+	$(YAMLLINT) -c .yamllint .
+	@echo "== ansible-lint"
+	ANSIBLE_ROLES_PATH=$(ANSIBLE_DIR)/roles $(ANSIBLE_LINT) ansible/ tests/molecule/ tests/playbooks/
+	@echo "== reference playbooks: syntax, variable contract"
+	ANSIBLE_ROLES_PATH=$(ANSIBLE_DIR)/roles $(ANSIBLE_PLAY) --syntax-check -i tests/inventory/hosts.yml \
+		tests/playbooks/substrate.yml tests/playbooks/management.yml
+	$(PYTHON) scripts/check_variable_contract.py
+	@echo "== generated reference pages (doc/reference)"
+	$(PYTHON) scripts/gen_reference.py --check
+	@echo "== terraform fmt / validate / tflint / test; module READMEs"
+	for d in $(TF_MODULES) $(WORKLOAD_ROOTS); do
+	  export TF_DATA_DIR=$(CHECK_CACHE)/terraform/$$(echo $${d#$(REPO_ROOT)/} | tr / _)
+	  $(TERRAFORM) -chdir=$$d fmt -check -recursive
+	  # A root's committed lock is enforced; a module has none and resolves the newest providers.
+	  case $$d in */terraform/modules/*) lock=-upgrade ;; *) lock=-lockfile=readonly ;; esac
+	  $(TERRAFORM) -chdir=$$d init -backend=false -input=false $$lock >/dev/null
+	  $(TERRAFORM) -chdir=$$d validate
+	  $(TFLINT) --chdir=$$d --config=$(REPO_ROOT)/.tflint.hcl
+	  if [ -d $$d/tests ]; then $(TERRAFORM) -chdir=$$d test; fi
+	done
+	for d in $(TF_MODULES); do
+	  $(TERRAFORM_DOCS) markdown table --lockfile=false --output-file README.md --output-check $$d \
+	    || { echo "regenerate: $(TERRAFORM_DOCS) markdown table --lockfile=false --output-file README.md $$d" >&2; exit 1; }
+	done
+	@echo "== helm lint / template / kubeconform"
+	mkdir -p $(CHECK_CACHE)/kubeconform
+	for c in $(REPO_ROOT)/charts/*/ $(REPO_ROOT)/tests/fixtures/charts/*/; do
+	  values=""; if [ -f $$c/ci/default-values.yaml ]; then values="-f $$c/ci/default-values.yaml"; fi
+	  $(HELM) lint $$c $$values
+	  $(HELM) template k8s-lab $$c $$values \
+	    | $(KUBECONFORM) -strict -summary -kubernetes-version $(KUBERNETES_VERSION) -cache $(CHECK_CACHE)/kubeconform \
+	        -schema-location '$(KUBECONFORM_K8S_SCHEMAS)' -schema-location '$(KUBECONFORM_CRD_SCHEMAS)' \
+	        -skip $(KUBECONFORM_SKIP)
+	done
+	@echo "== Calico: the version cni-calico vendors is cni-calico-config's appVersion (Gate B waits for it)"
+	op=$$(sed -n '/^dependencies:/,$$s/^ *version: *"\{0,1\}\([^"]*\)"\{0,1\}$$/\1/p' charts/cni-calico/Chart.yaml)
+	app=$$(sed -n 's/^appVersion: *"\{0,1\}\([^"]*\)"\{0,1\}$$/\1/p' charts/cni-calico-config/Chart.yaml)
+	[ "$$op" = "$$app" ] \
+	  || { echo "cni-calico vendors tigera-operator '$$op', cni-calico-config has appVersion '$$app'" >&2; exit 1; }
+	@echo "== ClusterClass template names; the API-publication hook script"
+	tests/charts/class-names.sh $(HELM)
+	$(PYTHON) -I -c 'import sys; compile(open(sys.argv[1]).read(), sys.argv[1], "exec")' \
+	  charts/capi-workload-cluster/files/attach.py
+	@echo "== shellcheck; shell scripts are committed executable"
+	git ls-files -z --cached --others --exclude-standard '*.sh' \
+	  | while IFS= read -r -d '' f; do if [ -e "$$f" ]; then printf '%s\0' "$$f"; fi; done \
+	  | xargs -0 -r $(SHELLCHECK)
+	git ls-files -s -- '*.sh' \
+	  | awk '$$1 != "100755" { print "not executable in git (git update-index --chmod=+x): " $$4; bad = 1 } END { exit bad }'
+	@echo "== actionlint"
+	$(ACTIONLINT)
+	@echo "== docs: named targets, variables and paths exist; mkdocs build --strict"
+	$(PYTHON) scripts/check_docs.py
+	NO_MKDOCS_2_WARNING=1 $(MKDOCS) build --strict --quiet -d $(CHECK_CACHE)/site
+
+# ---- Local test host and scenarios -----------------------------------------
+
+.PHONY: vm-up
+vm-up: ## Start the local test VM (Vagrant + libvirt) and write its SSH config
+	$(MAKE) -C $(VAGRANT_DIR) up
+
+.PHONY: vm-reboot
+vm-reboot: ## Reboot the local test VM and wait until it answers again
+	$(MAKE) -C $(VAGRANT_DIR) reboot
+
+.PHONY: vm-destroy
+vm-destroy: ## Remove the local test VM, then everything `clean` removes
+	$(MAKE) -C $(VAGRANT_DIR) destroy
+	$(MAKE) clean
+
+.PHONY: test-substrate
+test-substrate: vm-up ## Substrate scenario: substrate.yml, idempotence, verify [VARS=alt-vars.yml]
+	$(MAKE) -C $(MOLECULE_DIR) substrate-test VARS=$(VARS)
+
+.PHONY: test-bootstrap
+test-bootstrap: vm-up ## Bootstrap scenario: substrate + bootstrap cluster up to the CAPN identity [VARS=alt-vars.yml]
+	$(MAKE) -C $(MOLECULE_DIR) bootstrap-test VARS=$(VARS)
+
+# alt-vars.yml covers the substrate and bootstrap scenarios only: the empty VARS
+# keeps one given on the command line or in the environment out of this run.
+.PHONY: test-e2e
+test-e2e: vm-up ## Full flow on the local VM: management.yml, workload via Terraform, idempotence, verify
+	$(MAKE) -C $(MOLECULE_DIR) e2e-local-test VARS=
+
+.PHONY: test-gha
+test-gha: ## The e2e scenario on a GitHub Actions runner (refuses to run anywhere else)
+	@if [ "$${GITHUB_ACTIONS:-}" != "true" ]; then
+	  echo "ERROR: test-gha runs only in GitHub Actions; use test-e2e locally." >&2
+	  exit 1
+	fi
+	$(MAKE) -C $(MOLECULE_DIR) gha-test
+
+# ---- Workload cluster (Terraform fixture root on the running mgmt-1) -------
+
+.PHONY: deploy-workload
+deploy-workload: ## Terraform apply of the workload fixture: the cluster root, then the add-on root
+	@test -f $(HANDOFF) \
+	  || { echo "ERROR: $(HANDOFF) missing; run the management playbook first (make test-e2e)" >&2; exit 1; }
+	for d in $(WORKLOAD_ROOTS); do
+	  $(TERRAFORM) -chdir=$$d init -input=false
+	  $(TERRAFORM) -chdir=$$d apply -auto-approve -input=false
+	done
+
+.PHONY: destroy-workload
+destroy-workload: ## Terraform destroy of the workload fixture (add-on root only while its API answers), then remove its state
+	addons=$(WORKLOAD_DIR)/addons
+	if [ -f $$addons/terraform.tfstate ]; then
+	  url=$$($(TERRAFORM) -chdir=$$addons output -raw api_server_url 2>/dev/null || true)
+	  # Any HTTP status, 401 included, means the API server answers; curl prints 000 otherwise.
+	  if [ -n "$$url" ] && [ "$$(curl -sk -o /dev/null -m 10 -w '%{http_code}' "$$url/livez" || true)" != 000 ]; then
+	    $(TERRAFORM) -chdir=$$addons init -input=false >/dev/null
+	    $(TERRAFORM) -chdir=$$addons destroy -auto-approve -input=false
+	  else
+	    echo "== the workload API ($${url:-not in the state}) does not answer: skipping the add-on root, its objects go with the cluster"
+	  fi
+	fi
+	cluster=$(WORKLOAD_DIR)/cluster
+	if [ -f $$cluster/terraform.tfstate ]; then
+	  $(TERRAFORM) -chdir=$$cluster init -input=false >/dev/null
+	  $(TERRAFORM) -chdir=$$cluster destroy -auto-approve -input=false
+	else
+	  echo "== no Terraform state in $$cluster: nothing to destroy"
+	fi
+	for d in $(WORKLOAD_ROOTS); do rm -rf $$d/.terraform $$d/terraform.tfstate*; done
+	rm -f $(ARTIFACTS_DIR)/clusters/*.kubeconfig
+
+# ---- Cleanup and docs -------------------------------------------------------
+
+# No $(MAKE) in a recipe that does work itself: with .ONESHELL, make would run
+# the whole recipe under `make -n`.
+.PHONY: clean
+clean: ## Forget runner-side state: .artifacts/, fixture Terraform state, Molecule state
+	find $(ARTIFACTS_DIR) -mindepth 1 -not -name .gitkeep -delete
+	for d in $(WORKLOAD_ROOTS); do rm -rf $$d/.terraform $$d/terraform.tfstate*; done
+	rm -rf $(REPO_ROOT)/.cache/molecule
+
+.PHONY: docs
+docs: ## Build the site into SITE_DIR (.cache/site), with llms.txt and llms-full.txt
+	NO_MKDOCS_2_WARNING=1 $(MKDOCS) build --strict --quiet -d $(SITE_DIR)
+	$(PYTHON) scripts/llms_full.py > $(SITE_DIR)/llms-full.txt
+	cp $(REPO_ROOT)/llms.txt $(SITE_DIR)/llms.txt
+	echo "== $(SITE_DIR): site, llms.txt, llms-full.txt ($$(wc -l < $(SITE_DIR)/llms-full.txt) lines)"

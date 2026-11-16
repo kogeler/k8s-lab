@@ -1,0 +1,38 @@
+---
+- name: "capn-identity | trust | fingerprint of the certificate"
+  community.crypto.x509_certificate_info:
+    path: "{{ _capn_identity_crt }}"
+  register: _capn_identity_trust_certificate
+
+# LXD names are unique per authentication method: each identity carries its
+# fingerprint in its name, so a new one can be trusted next to the old one.
+- name: "capn-identity | trust | the certificate's trust entry"
+  vars:
+    _fingerprint: "{{ _capn_identity_trust_certificate.fingerprints.sha256 | replace(':', '') | lower }}"
+  block:
+    - name: "capn-identity | trust | read its trust entry"
+      ansible.builtin.uri:
+        url: "http://localhost/1.0/certificates/{{ _fingerprint }}"
+        unix_socket: "{{ _capn_identity_socket }}"
+        status_code: [200, 404]
+      register: _capn_identity_trust_entry
+
+    # A client restricted to the one project.
+    - name: "capn-identity | trust | add the certificate"
+      ansible.builtin.command:
+        argv: [/snap/bin/lxc, config, trust, add, "{{ _capn_identity_crt }}", --type, client, --restricted,
+               --projects, "{{ capn_identity_project }}", --name, "{{ _capn_identity_trust_name }}-{{ _fingerprint[:12] }}"]
+      when: _capn_identity_trust_entry.status == 404
+      changed_when: true
+
+- name: "capn-identity | trust | restricted to the project"
+  ansible.builtin.uri:
+    url: "http://localhost/1.0/certificates/{{ _capn_identity_trust_entry.json.metadata.fingerprint }}"
+    unix_socket: "{{ _capn_identity_socket }}"
+    method: PATCH
+    body_format: json
+    body: {restricted: true, projects: ["{{ capn_identity_project }}"]}
+  when:
+    - _capn_identity_trust_entry.status == 200
+    - not _capn_identity_trust_entry.json.metadata.restricted or _capn_identity_trust_entry.json.metadata.projects != [capn_identity_project]
+  changed_when: true

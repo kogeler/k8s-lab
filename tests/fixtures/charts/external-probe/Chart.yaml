@@ -1,0 +1,8 @@
+apiVersion: v2
+name: external-probe
+description: |
+  Test fixture: an agnhost netexec server behind an IPv6 LoadBalancer Service on
+  one fixed pool address. The e2e verify installs it, fetches the address from
+  outside the cluster and uninstalls it.
+type: application
+version: 2.0.0
