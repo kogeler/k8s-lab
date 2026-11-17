@@ -1,134 +1,190 @@
 {{/*
-CR-name rotation contract (PLAN §16.2).
-
-Every object rendered by this chart carries a version slug derived from
-Chart.Version so that a `helm upgrade` with a bumped version produces a
-distinct name and side-steps the CAPI webhook immutability rule on
-ClusterClass/*Template objects that are already referenced by a Cluster.
-
-The slug replaces "." with "-" to land inside DNS-1123-subdomain-safe
-characters even under stricter downstream validators; the transform is
-deterministic so charts/capi-workload-cluster (PLAN §16.3) and the
-Terraform wrapper (PLAN §16.4) can reproduce the exact ClusterClass
-name from the same inputs.
+Name of a template object: <cluster>-<kind>-<8 hex of the sha256 of its spec>.
+Templates are immutable once a Cluster uses them; a changed spec is a new
+object, an unchanged spec keeps its name. Argument: (list $ "<kind>"), where
+"capi-cluster-class.spec.<kind>" renders the spec.
 */}}
+{{- define "capi-cluster-class.templateName" -}}
+{{- $root := index . 0 -}}
+{{- $kind := index . 1 -}}
+{{- $spec := include (printf "capi-cluster-class.spec.%s" $kind) $root -}}
+{{- printf "%s-%s-%s" $root.Values.cluster.name $kind (sha256sum $spec | trunc 8) -}}
+{{- end -}}
 
-{{- define "capi-cluster-class.versionSlug" -}}
-{{- .Chart.Version | replace "." "-" | lower | trunc 63 | trimSuffix "-" -}}
+{{/* Metadata of every object; `$kind` selects the spec. */}}
+{{- define "capi-cluster-class.metadata" -}}
+{{- $root := index . 0 -}}
+name: {{ include "capi-cluster-class.templateName" . }}
+namespace: {{ $root.Release.Namespace }}
+labels:
+  helm.sh/chart: {{ printf "%s-%s" $root.Chart.Name $root.Chart.Version }}
+  app.kubernetes.io/name: {{ $root.Chart.Name }}
+  app.kubernetes.io/instance: {{ $root.Release.Name }}
+  app.kubernetes.io/managed-by: {{ $root.Release.Service }}
+  app.kubernetes.io/part-of: cluster-api
 {{- end -}}
 
 {{/*
-"{prefix}-{versionSlug}". Used as ClusterClass name and as the common
-suffix for every other object — see individual template files.
+kubelet flags every node needs, then the extras (argument: the extras list).
+Unprivileged containers cannot open /dev/kmsg; KubeletInUserNamespace lets the
+kubelet start anyway. The node addresses come from /etc/sysconfig/kubelet
+(capi-cluster-class.nodeCommands).
 */}}
-{{- define "capi-cluster-class.classFullName" -}}
-{{- printf "%s-%s" .Values.clusterClass.name (include "capi-cluster-class.versionSlug" .) | trunc 63 | trimSuffix "-" -}}
-{{- end -}}
-
-{{/*
-Sub-object names. Each keeps the classFullName suffix so bumping the
-chart version cascades through every referenced template simultaneously.
-*/}}
-{{- define "capi-cluster-class.lxcClusterTemplateName" -}}
-{{- printf "%s-infra" (include "capi-cluster-class.classFullName" .) | trunc 63 | trimSuffix "-" -}}
-{{- end -}}
-
-{{- define "capi-cluster-class.lxcMachineTemplateCPName" -}}
-{{- printf "%s-cp" (include "capi-cluster-class.classFullName" .) | trunc 63 | trimSuffix "-" -}}
-{{- end -}}
-
-{{- define "capi-cluster-class.lxcMachineTemplateWorkerName" -}}
-{{- printf "%s-md0" (include "capi-cluster-class.classFullName" .) | trunc 63 | trimSuffix "-" -}}
-{{- end -}}
-
-{{- define "capi-cluster-class.kubeadmControlPlaneTemplateName" -}}
-{{- printf "%s-kcp" (include "capi-cluster-class.classFullName" .) | trunc 63 | trimSuffix "-" -}}
-{{- end -}}
-
-{{- define "capi-cluster-class.kubeadmConfigTemplateWorkerName" -}}
-{{- printf "%s-md0-bootstrap" (include "capi-cluster-class.classFullName" .) | trunc 63 | trimSuffix "-" -}}
-{{- end -}}
-
-{{/*
-Substrate-required LXD profile baselines. These names are owned by
-role lxd_profiles (PLAN §13.6) and MUST appear on every CAPN-managed
-instance — they carry the kubeadm / systemd / cloud-init overrides
-the unprivileged LXC path relies on. Consumers extend via
-`.Values.profilesExtra.{controlplane,worker}`; the baseline itself is
-not user-tunable per memory rule "Chart-required values are hardcoded".
-*/}}
-{{- define "capi-cluster-class.controlPlaneProfiles" -}}
-- capi-base
-- capi-controlplane
-{{- range .Values.profilesExtra.controlplane }}
-- {{ . }}
-{{- end }}
-{{- end -}}
-
-{{- define "capi-cluster-class.workerProfiles" -}}
-- capi-base
-- capi-worker
-{{- range .Values.profilesExtra.worker }}
-- {{ . }}
+{{- define "capi-cluster-class.kubeletArgs" -}}
+- name: feature-gates
+  value: KubeletInUserNamespace=true
+- name: provider-id
+  value: "lxc:///{{ "{{" }} v1.local_hostname {{ "}}" }}"
+{{- with . }}
+{{ toYaml . }}
 {{- end }}
 {{- end -}}
 
 {{/*
-Substrate-required LXD profile baseline for the haproxy load balancer
-LXC instance that CAPN spawns when `loadBalancer.lxc` mode is selected.
-The LB instance must carry a profile that supplies a root disk device
-and at least the internal-net NIC (so haproxy can reach control-plane
-backends via capi-int) — without it CAPN aborts with
-"No root device could be found" at instance-creation time.
+Files every node needs. eth1 is the external network. systemd-networkd takes
+its router advertisements and puts the routes they bring into their own table
+(4200: outside Calico's route-table range 1-250 and the kernel's 253-255), so
+the main table keeps one default route, via eth0, plus the external prefix
+on-link through eth1. Connections that arrive on
+eth1 are marked (bit 0x100: kube-proxy uses 0x4000 and 0x8000, Calico
+0xffff0000), their replies take the mark, and the mark selects that table: what
+arrives on eth1 is answered through eth1, everything else leaves through eth0. A
+rule on the source address cannot do this: a reply to a VIP is forwarded Pod
+traffic, whose source becomes the VIP only after routing.
 
-`capi-base` (owned by role lxd_profiles, PLAN §13.6) is the minimal
-profile that ships both prerequisites; consumer extras append after the
-baseline through `loadBalancer.lxc.profilesExtra`. Like the CP / worker
-baselines, this list is NOT user-tunable: the baseline is a hard
-substrate invariant, only the extras are.
+The marks live in this node's own network namespace, in two chains of its own
+in `ip6 mangle` (the image has ip6tables-nft, no nft), loaded in one
+transaction before the kubelet starts. The host's firewall never sees them. The
+kubelet requires them: a node that cannot load them does not join, and its
+journal says why.
+
+systemd-networkd keeps the routing rules other components add (Calico's
+WireGuard or egress gateway would): by default it deletes every rule it was not
+told about.
 */}}
-{{- define "capi-cluster-class.loadBalancerProfiles" -}}
-- capi-base
-{{- range (((.Values.loadBalancer | default dict).lxc | default dict).profilesExtra | default list) }}
-- {{ . }}
+{{- define "capi-cluster-class.nodeFiles" -}}
+- path: /etc/systemd/networkd.conf.d/50-k8s-lab.conf
+  owner: root:root
+  permissions: "0644"
+  content: |
+    [Network]
+    ManageForeignRoutingPolicyRules=no
+- path: /etc/systemd/network/30-capi-ext.network
+  owner: root:root
+  permissions: "0644"
+  content: |
+    [Match]
+    Name=eth1
+
+    [Network]
+    DHCP=no
+    LinkLocalAddressing=ipv6
+    IPv6AcceptRA=yes
+
+    [IPv6AcceptRA]
+    RouteTable=4200
+
+    # The external segment itself stays on-link in the main table: neighbours on
+    # it (other clusters' VIPs, other hosts) are reached directly, not through
+    # the internal network and the host.
+    [Route]
+    Destination={{ .Values.externalNetwork.ipv6Prefix }}
+
+    [RoutingPolicyRule]
+    Family=ipv6
+    FirewallMark=0x100/0x100
+    Table=4200
+    Priority=1000
+- path: /etc/k8s-lab/ext-reply.rules
+  owner: root:root
+  permissions: "0644"
+  content: |
+    *mangle
+    :K8S-LAB-EXT-REPLY - [0:0]
+    -A K8S-LAB-EXT-REPLY -i eth1 -j CONNMARK --set-xmark 0x100/0x100
+    -A K8S-LAB-EXT-REPLY ! -i eth1 -m connmark --mark 0x100/0x100 -j MARK --set-xmark 0x100/0x100
+    :K8S-LAB-EXT-REPLY-OUT - [0:0]
+    -A K8S-LAB-EXT-REPLY-OUT -m connmark --mark 0x100/0x100 -j MARK --set-xmark 0x100/0x100
+    -A PREROUTING -j K8S-LAB-EXT-REPLY
+    -A OUTPUT -j K8S-LAB-EXT-REPLY-OUT
+    COMMIT
+- path: /usr/local/sbin/k8s-lab-ext-reply
+  owner: root:root
+  permissions: "0755"
+  content: |
+    #!/bin/sh
+    # Loads the eth1 reply marks (k8s-lab-ext-reply.service); says why it cannot.
+    set -u
+    if ! command -v ip6tables-nft-restore >/dev/null; then
+      echo "k8s-lab: this node image has no ip6tables-nft-restore, which the eth1 reply marks need" >&2
+      exit 1
+    fi
+    # A restart must not add the jumps twice; the restore re-creates both chains
+    # empty and fills them. On a fresh boot there are none to remove.
+    ip6tables-nft -t mangle -D PREROUTING -j K8S-LAB-EXT-REPLY 2>/dev/null
+    ip6tables-nft -t mangle -D OUTPUT -j K8S-LAB-EXT-REPLY-OUT 2>/dev/null
+    if ! ip6tables-nft-restore --noflush /etc/k8s-lab/ext-reply.rules; then
+      echo "k8s-lab: loading the eth1 reply marks failed; the host must load the kernel modules nft_compat, xt_connmark and xt_mark (role host does)" >&2
+      exit 1
+    fi
+- path: /etc/systemd/system/k8s-lab-ext-reply.service
+  owner: root:root
+  permissions: "0644"
+  content: |
+    [Unit]
+    Description=k8s-lab: answer through eth1 what arrives on it
+    Before=kubelet.service
+
+    [Service]
+    Type=oneshot
+    RemainAfterExit=yes
+    ExecStart=/usr/local/sbin/k8s-lab-ext-reply
+
+    [Install]
+    WantedBy=multi-user.target
+- path: /etc/systemd/system/kubelet.service.d/20-k8s-lab-ext-reply.conf
+  owner: root:root
+  permissions: "0644"
+  content: |
+    [Unit]
+    Requires=k8s-lab-ext-reply.service
+    After=k8s-lab-ext-reply.service
+{{- end -}}
+
+{{/*
+Commands every node runs before kubeadm, then the extras (argument: the extras
+list): restart systemd-networkd (it reads networkd.conf only when it starts; the
+eth0 lease and the eth1 addresses come back within seconds, and the address
+loop below waits for them), load the reply marks (the unit also runs at every
+boot, before the kubelet), then give the kubelet both global eth0 addresses,
+IPv4 first. LXD hands them out at boot, so they are read here; the kubelet unit
+of the CAPN image reads KUBELET_EXTRA_ARGS from /etc/sysconfig/kubelet.
+*/}}
+{{- define "capi-cluster-class.nodeCommands" -}}
+- systemctl restart systemd-networkd
+- systemctl daemon-reload
+- systemctl enable --now k8s-lab-ext-reply.service
+- |
+  set -eu
+  for _ in $(seq 1 120); do
+    v4=$(ip -o -4 addr show dev eth0 scope global | awk '{split($4,a,"/"); print a[1]; exit}')
+    v6=$(ip -o -6 addr show dev eth0 scope global | awk '$0 !~ /(temporary|deprecated|tentative)/ {split($4,a,"/"); print a[1]; exit}')
+    if [ -n "$v4" ] && [ -n "$v6" ]; then break; fi
+    sleep 1
+  done
+  test -n "$v4"
+  test -n "$v6"
+  mkdir -p /etc/sysconfig
+  printf 'KUBELET_EXTRA_ARGS=--node-ip=%s,%s\n' "$v4" "$v6" > /etc/sysconfig/kubelet
+{{- with . }}
+{{ toYaml . }}
 {{- end }}
 {{- end -}}
 
-{{/*
-Common labels attached to every rendered object.
-*/}}
-{{- define "capi-cluster-class.labels" -}}
-helm.sh/chart: {{ printf "%s-%s" .Chart.Name .Chart.Version }}
-app.kubernetes.io/name: {{ .Chart.Name }}
-app.kubernetes.io/instance: {{ .Release.Name }}
-app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
-app.kubernetes.io/managed-by: {{ .Release.Service }}
-app.kubernetes.io/part-of: cluster-api
-{{- end -}}
-
-{{/*
-CAPI / CAPN API availability gates. A chart install against a
-bootstrap cluster that has not yet been `clusterctl init`-ed or has a
-different infrastructure provider aborts with a readable error instead
-of silently producing zero objects.
-*/}}
-{{- define "capi-cluster-class.requireCAPI" -}}
-{{- if not (.Capabilities.APIVersions.Has "cluster.x-k8s.io/v1beta2/ClusterClass") -}}
-{{- fail "CAPI core v1beta2 (cluster.x-k8s.io/v1beta2) is not served by the target cluster. Run `clusterctl init` with CAPI v1.10+ before installing this chart." -}}
-{{- end -}}
-{{- end -}}
-
-{{- define "capi-cluster-class.requireCAPN" -}}
-{{- if not (.Capabilities.APIVersions.Has "infrastructure.cluster.x-k8s.io/v1alpha2/LXCClusterTemplate") -}}
-{{- fail "CAPN v1alpha2 (infrastructure.cluster.x-k8s.io/v1alpha2) is not served by the target cluster. Install cluster-api-provider-incus v0.8+ via `clusterctl init --infrastructure incus` first." -}}
-{{- end -}}
-{{- end -}}
-
-{{- define "capi-cluster-class.requireKubeadm" -}}
-{{- if not (.Capabilities.APIVersions.Has "controlplane.cluster.x-k8s.io/v1beta2/KubeadmControlPlaneTemplate") -}}
-{{- fail "KubeadmControlPlane provider v1beta2 is not served by the target cluster. Re-run `clusterctl init` with the kubeadm control-plane + bootstrap providers." -}}
-{{- end -}}
-{{- if not (.Capabilities.APIVersions.Has "bootstrap.cluster.x-k8s.io/v1beta2/KubeadmConfigTemplate") -}}
-{{- fail "KubeadmConfig bootstrap provider v1beta2 is not served by the target cluster. Re-run `clusterctl init` with the kubeadm bootstrap provider." -}}
-{{- end -}}
+{{/* The LXD image of a machine class (argument: its image value). */}}
+{{- define "capi-cluster-class.image" -}}
+name: {{ .ref | quote }}
+{{- with .fingerprint }}
+fingerprint: {{ . | quote }}
+{{- end }}
 {{- end -}}

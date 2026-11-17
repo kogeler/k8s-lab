@@ -1,0 +1,21 @@
+---
+# What Terraform roots cannot know about the management side, read with
+# jsondecode(file()). Workload values belong to each root.
+- name: "management-cluster | handoff | runner directory"
+  ansible.builtin.file:
+    path: "{{ management_cluster_handoff_path | dirname }}"
+    state: directory
+    mode: "0700"
+
+- name: "management-cluster | handoff | handoff.json"
+  ansible.builtin.copy:
+    content: "{{ _handoff | to_nice_json(indent=2, sort_keys=True) }}"
+    dest: "{{ management_cluster_handoff_path }}"
+    mode: "0600"
+  vars:
+    _handoff:
+      lxd_host_address: "{{ management_cluster_api_host }}"
+      cluster_namespace: "{{ management_cluster_namespace }}"
+      infrastructure_secret_name: "{{ management_cluster_infrastructure_secret_name }}"
+      mgmt_kubeconfig_path: "{{ _management_cluster_kubeconfig_runner }}"
+      external_ipv6_prefix: "{{ management_cluster_external_ipv6_prefix }}"

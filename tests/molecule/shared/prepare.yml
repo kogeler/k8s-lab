@@ -1,0 +1,38 @@
+---
+# Harness-only preparation of the test host: the Kubernetes Python client for
+# the verify tasks that read the clusters on the host, the external network's
+# router advertisement source, a client off the external link, and a clean pool
+# disk. (Everything the roles need, they install themselves.)
+- name: "Prepare | harness"
+  hosts: all
+  gather_facts: true
+  become: true
+  vars:
+    # The uplink the playbook bridges to the external network is the router's
+    # link; the peer end, outside the bridge, is the router.
+    _ext6_ra_uplink: "{{ lxd_uplink_interface }}"
+    _ext6_ra_peer: "{{ lxd_uplink_interface }}-peer"
+    _ext6_prefix: "{{ management_cluster_external_ipv6_prefix }}"
+  tasks:
+    - name: "Prepare | harness | Kubernetes Python client for the verify tasks"
+      ansible.builtin.apt:
+        name: python3-kubernetes
+        state: present
+        install_recommends: false
+        update_cache: true
+        cache_valid_time: 3600
+
+    - name: "Prepare | harness | external IPv6 router advertisement source"
+      ansible.builtin.include_tasks: tasks/ext6-ra-source.yml
+
+    - name: "Prepare | harness | IPv6 client off the external link"
+      ansible.builtin.include_tasks: tasks/offlink-client.yml
+
+    - name: "Prepare | harness | pool disk"
+      ansible.builtin.include_tasks: tasks/prepare-clean-disk.yml
+
+  handlers:
+    - name: "Prepare | harness | reload systemd-networkd"
+      ansible.builtin.command:
+        argv: [networkctl, reload]
+      changed_when: true

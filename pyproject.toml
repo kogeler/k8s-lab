@@ -1,0 +1,21 @@
+# Python tooling for the runner: Ansible, the Kubernetes client its modules need,
+# Molecule, the linters and MkDocs. Not a package. Install with
+# `uv sync --locked --all-groups`.
+[project]
+name = "k8s-lab"
+version = "2.0.0"
+description = "Runner tooling for the k8s-lab Ansible roles, Molecule harness and docs"
+requires-python = ">=3.13"
+dependencies = [
+  "ansible-core>=2.22.0",
+  "jsonpatch>=1.47",
+  "kubernetes>=37.0.2",
+]
+
+[dependency-groups]
+test = ["molecule>=26.11.0"]
+lint = ["ansible-lint>=26.11.0", "yamllint>=1.38.0"]
+docs = ["mkdocs-material>=9.8.1"]
+
+[tool.uv]
+package = false

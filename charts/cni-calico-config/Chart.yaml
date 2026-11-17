@@ -1,0 +1,17 @@
+apiVersion: v2
+name: cni-calico-config
+description: |
+  Calico configuration: the dual-stack Installation and the APIServer, and Gate B
+  as `helm test` (every node Ready; pods on two workers reachable over IPv4 and
+  IPv6). Installed after charts/cni-calico, whose operator creates the CRDs.
+type: application
+
+version: 2.0.0
+
+# The Calico release Gate B waits for: the tigera-operator version that
+# charts/cni-calico vendors (`make check` compares them).
+appVersion: v3.33.1
+
+sources:
+  - https://github.com/projectcalico/calico
+  - https://docs.tigera.io/calico/latest/getting-started/kubernetes/helm

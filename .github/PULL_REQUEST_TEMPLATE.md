@@ -1,35 +1,25 @@
 <!--
-Thanks for the PR. Please confirm the items below before requesting review.
-See CONTRIBUTING.md for the project scope and policy.
+See CONTRIBUTING.md and doc/development.md ("Done").
 -->
 
 ## What changes and why
 
-<!-- 1-3 sentences focused on the why. The diff already shows the what. -->
-
-## Affected layer
-
-- [ ] Ansible role(s):
-- [ ] Helm chart(s):
-- [ ] Terraform module:
-- [ ] Molecule / Vagrant harness:
-- [ ] Documentation under `doc/`:
-- [ ] Plan section(s) `§N` updated:
+<!-- 1-3 sentences on the why; the diff shows the what. -->
 
 ## Test evidence
 
-<!--
-Per project policy: no untested commits. Paste evidence below — Molecule
-converge output, terraform plan, helm test result, or harness e2e log.
--->
+<!-- The recap lines of the runs: make check, the affected scenario with
+idempotence, make test-e2e on a fresh VM when roles, playbooks, charts,
+modules or the harness changed. -->
 
 ```
 ```
 
 ## Checklist
 
-- [ ] `make lint` passes locally.
-- [ ] Matching Molecule scenario converges + verifies on the local Vagrant VM.
-- [ ] If this changes a variable contract, `doc/08-configuration-reference.md` is updated in the same PR.
-- [ ] If this changes architectural behaviour, the relevant `plans/PLAN-stage*.md §N` is updated in the same PR.
-- [ ] No raw manifests / `kubectl apply -f` paths introduced.
+- [ ] `make check` passes.
+- [ ] The affected scenario ran with idempotence; `make test-e2e` on a fresh VM if roles, playbooks, charts, modules or the harness changed.
+- [ ] Docs of what changed are updated; generated pages regenerated.
+- [ ] A change to `k8s_lab_*` variables updates `doc/variable-contract.md` and `tests/playbooks/group_vars/all.yml`.
+- [ ] An entry under `## [Unreleased]` at the top of `CHANGELOG.md` (heading created if missing).
+- [ ] No raw manifest application introduced.

@@ -1,0 +1,25 @@
+---
+# The repository's only OS gate; swap fails the node kubelets much later.
+- name: "host | preflight | supported OS and architecture"
+  ansible.builtin.assert:
+    that:
+      - ansible_facts['architecture'] == 'x86_64'
+      - >-
+        (ansible_facts['distribution'] == 'Debian' and ansible_facts['distribution_major_version'] | int >= 13)
+        or (ansible_facts['distribution'] == 'Ubuntu' and ansible_facts['distribution_major_version'] | int >= 22)
+    fail_msg: >-
+      k8s-lab runs on x86_64 Debian 13+ or Ubuntu 22.04+; this host is
+      {{ ansible_facts['distribution'] }} {{ ansible_facts['distribution_version'] }}
+      on {{ ansible_facts['architecture'] }}.
+
+- name: "host | preflight | read active swap"
+  ansible.builtin.slurp:
+    src: /proc/swaps
+  register: _host_preflight_swaps
+
+- name: "host | preflight | swap is off"
+  ansible.builtin.assert:
+    that: (_host_preflight_swaps.content | b64decode).splitlines() | length <= 1
+    fail_msg: >-
+      Swap is on: the kubelets in the nodes will not start. Turn it off
+      (swapoff -a), remove its entries from /etc/fstab, and run again.

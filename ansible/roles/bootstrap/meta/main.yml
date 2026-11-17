@@ -1,0 +1,21 @@
+---
+galaxy_info:
+  role_name: bootstrap
+  namespace: k8slab
+  author: k8s-lab contributors
+  description: The transient k3s bootstrap cluster in an unprivileged LXD container, and its guarded removal.
+  license: MIT
+  min_ansible_version: "2.19"
+  platforms:
+    - name: Debian
+      versions:
+        - trixie
+    - name: Ubuntu
+      versions:
+        - jammy
+        - noble
+        - resolute
+
+dependencies:
+  # The project, network and profiles the instance is created from.
+  - role: lxd

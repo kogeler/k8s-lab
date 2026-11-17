@@ -1,113 +1,24 @@
-{{- include "capi-cluster-class.requireKubeadm" . -}}
+{{- define "capi-cluster-class.spec.md-0-boot" -}}
 {{- $w := .Values.worker -}}
-{{- range $arg := $w.kubeletExtraArgs }}
-{{- if or (eq $arg.name "feature-gates") (eq $arg.name "node-ip") (eq $arg.name "provider-id") }}
-{{- fail (printf "worker.kubeletExtraArgs must not set reserved arg %q; this chart hardcodes feature-gates, provider-id, and dynamic dual-stack node-ip for the unprivileged-LXC substrate." $arg.name) }}
-{{- end }}
-{{- end }}
----
+template:
+  spec:
+    format: cloud-config
+    joinConfiguration:
+      nodeRegistration:
+        kubeletExtraArgs:
+          {{- include "capi-cluster-class.kubeletArgs" $w.kubeletExtraArgs | nindent 10 }}
+    files:
+      {{- include "capi-cluster-class.nodeFiles" . | nindent 6 }}
+    preKubeadmCommands:
+      {{- include "capi-cluster-class.nodeCommands" $w.preKubeadmCommands | nindent 6 }}
+    {{- with $w.postKubeadmCommands }}
+    postKubeadmCommands:
+      {{- toYaml . | nindent 6 }}
+    {{- end }}
+{{- end -}}
 apiVersion: bootstrap.cluster.x-k8s.io/v1beta2
 kind: KubeadmConfigTemplate
 metadata:
-  name: {{ include "capi-cluster-class.kubeadmConfigTemplateWorkerName" . }}
-  namespace: {{ .Release.Namespace }}
-  labels:
-    {{- include "capi-cluster-class.labels" . | nindent 4 }}
-    cluster.x-k8s.io/role: worker
+  {{- include "capi-cluster-class.metadata" (list . "md-0-boot") | nindent 2 }}
 spec:
-  template:
-    spec:
-      # Substrate-required baseline (see kubeadm-control-plane-template
-      # for rationale). Also satisfies CAPI v1beta2 CRD constraint
-      # `spec.template.spec.minProperties >= 1` when no tuning knob is
-      # overridden.
-      format: cloud-config
-      # Substrate-required `kubeletExtraArgs` baseline (same rationale
-      # as KubeadmControlPlaneTemplate): `KubeletInUserNamespace=true`
-      # tells kubelet to ignore oomWatcher init failure under
-      # unprivileged userns where /dev/kmsg open is not permitted.
-      # Without it kubelet enters Restart=always crash loop on every
-      # CAPN-spawned worker. Consumer extras append after baseline.
-      joinConfiguration:
-        nodeRegistration:
-          kubeletExtraArgs:
-            - name: feature-gates
-              value: "KubeletInUserNamespace=true"
-            - name: provider-id
-              value: "lxc:///{{ "{{" }} v1.local_hostname {{ "}}" }}"
-            {{- with $w.kubeletExtraArgs }}
-            {{- toYaml . | nindent 12 }}
-            {{- end }}
-      # Substrate-required eth1 RA reception baseline; mirrors the
-      # `files:` block in KubeadmControlPlaneTemplate (same rationale).
-      files:
-        - path: /etc/sysctl.d/99-capi-ra.conf
-          owner: root:root
-          permissions: "0644"
-          content: |
-            net.ipv6.conf.eth1.disable_ipv6 = 0
-            net.ipv6.conf.eth1.accept_ra = 2
-            net.ipv6.conf.eth1.accept_ra_defrtr = 1
-        - path: /etc/systemd/network/30-capi-ext.network
-          owner: root:root
-          permissions: "0644"
-          content: |
-            [Match]
-            Name=eth1
-
-            [Network]
-            DHCP=no
-            LinkLocalAddressing=ipv6
-            IPv6AcceptRA=yes
-      preKubeadmCommands:
-        # Substrate-required: load the eth1 RA sysctls + reload
-        # systemd-networkd so the matching .network file
-        # (KubeadmConfigSpec.files above) takes effect before
-        # kubeadm runs anything that depends on eth1 being SLAAC'd.
-        - sysctl --load=/etc/sysctl.d/99-capi-ra.conf
-        - networkctl reload
-        # Substrate-required: LXD DHCP/SLAAC addresses are dynamic,
-        # but kubelet on bare-metal-style dual-stack nodes must be
-        # started with both node IPs. Keep the same family priority
-        # as bootstrap k3s: eth0 IPv4 first, eth0 IPv6 second.
-        - |
-          set -eu
-          iface=eth0
-          for _ in $(seq 1 120); do
-            v4="$(ip -o -4 addr show dev "$iface" scope global | awk '{split($4,a,"/"); print a[1]; exit}')"
-            v6="$(ip -o -6 addr show dev "$iface" scope global | awk '$4 !~ /^fe80:/ && $0 !~ /(temporary|deprecated|tentative)/ {split($4,a,"/"); print a[1]; exit}')"
-            if [ -n "$v4" ] && [ -n "$v6" ]; then
-              break
-            fi
-            sleep 1
-          done
-          test -n "$v4"
-          test -n "$v6"
-          kubeadm_config=/run/kubeadm/kubeadm.yaml
-          if [ ! -f "$kubeadm_config" ] && [ -f /run/kubeadm/kubeadm-join-config.yaml ]; then
-            kubeadm_config=/run/kubeadm/kubeadm-join-config.yaml
-          fi
-          test -f "$kubeadm_config"
-          if ! grep -q '^[[:space:]]*- name: node-ip$' "$kubeadm_config"; then
-            awk -v node_ip="${v4},${v6}" '
-              /^[[:space:]]*- name: feature-gates[[:space:]]*$/ {
-                item_indent = substr($0, 1, index($0, "-") - 1)
-              }
-              { print }
-              /^[[:space:]]*value: "?KubeletInUserNamespace=true"?[[:space:]]*$/ && item_indent != "" && !done {
-                value_indent = substr($0, 1, index($0, "v") - 1)
-                print item_indent "- name: node-ip"
-                print value_indent "value: \"" node_ip "\""
-                done = 1
-              }
-              END { if (!done) exit 42 }
-            ' "$kubeadm_config" > "$kubeadm_config.tmp"
-            mv "$kubeadm_config.tmp" "$kubeadm_config"
-          fi
-      {{- with $w.preKubeadmCommands }}
-        {{- toYaml . | nindent 8 }}
-      {{- end }}
-      {{- with $w.postKubeadmCommands }}
-      postKubeadmCommands:
-        {{- toYaml . | nindent 8 }}
-      {{- end }}
+  {{- include "capi-cluster-class.spec.md-0-boot" . | nindent 2 }}

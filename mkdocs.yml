@@ -1,9 +1,8 @@
 site_name: k8s-lab
 site_description: >-
-  Reusable building blocks for a single-host Kubernetes laboratory on
-  Debian or Ubuntu Linux: LXC/LXD nodes driven by Cluster API (CAPN), Ansible
-  roles, a Terraform module, and Helm charts. Molecule + Vagrant + libvirt
-  local test harness.
+  Kubernetes clusters on one Debian or Ubuntu host, managed by Cluster API:
+  unprivileged LXC system containers as nodes, Ansible roles, Helm charts and
+  Terraform modules, and a local test harness.
 site_url: https://k8s-lab.romancello.net/
 site_author: kogeler
 copyright: MIT licensed — see LICENSE on GitHub.
@@ -12,11 +11,7 @@ repo_url: https://github.com/kogeler/k8s-lab
 repo_name: kogeler/k8s-lab
 edit_uri: edit/main/doc/
 
-# Only doc/ is published. The README.md at repo root carries badges + Mermaid
-# overview targeted at github.com visitors. Pages visitors land at doc/README.md,
-# which is the documentation index. Cross-references to ../plans/*.md from doc/
-# resolve correctly on github.com (the architectural source of truth lives in
-# plans/, which is browsable there).
+# Only doc/ is published; visitors land on doc/index.md.
 docs_dir: doc
 
 theme:
@@ -50,9 +45,8 @@ theme:
 plugins:
   - search
 
-# Rewrite ../<dir>/<path> relative links to absolute github.com blob URLs so
-# cross-references from doc/ into plans/, ansible/, charts/, terraform/,
-# tests/, scripts/, and LICENSE resolve on the Pages site.
+# Relative links from doc/ to the rest of the repository become github.com
+# blob URLs, so they resolve on the Pages site.
 hooks:
   - scripts/docs_hooks.py
 
@@ -69,6 +63,10 @@ markdown_extensions:
   - pymdownx.highlight:
       anchor_linenums: true
   - pymdownx.inlinehilite
+  # deploy.md embeds the reference playbook and variables, so it cannot drift.
+  - pymdownx.snippets:
+      base_path: ["."]
+      check_paths: true
   - pymdownx.superfences:
       custom_fences:
         - name: mermaid
@@ -87,20 +85,60 @@ extra:
     - icon: fontawesome/brands/github
       link: https://github.com/kogeler/k8s-lab
 
+# --strict turns every warning into a failure: a broken link or anchor, a page
+# left out of the navigation.
+validation:
+  omitted_files: warn
+  absolute_links: warn
+  unrecognized_links: warn
+  anchors: warn
+
 nav:
-  - Home: README.md
-  - Overview: 01-overview.md
-  - Architecture: 02-architecture.md
-  - Stack: 03-stack.md
-  - Repository structure: 04-repository-structure.md
-  - Prerequisites: 05-prerequisites.md
-  - Quickstart (local): 06-quickstart-local.md
-  - Deployment guide: 07-deployment-guide.md
-  - Configuration reference: 08-configuration-reference.md
-  - Roles reference: 09-roles-reference.md
-  - Modules and charts: 10-modules-and-charts.md
-  - Operations: 11-operations.md
-  - Testing: 12-testing.md
-  - Troubleshooting: 13-troubleshooting.md
-  - Glossary: 14-glossary.md
-  - Changelog: 15-changelog.md
+  - Home: index.md
+  - Architecture: architecture.md
+  - Quickstart (local): quickstart-local.md
+  - Deploy: deploy.md
+  - Variable contract: variable-contract.md
+  - Runbooks:
+      - runbooks/README.md
+      - Upgrade Kubernetes: runbooks/upgrade-kubernetes.md
+      - Upgrade Cluster API and CAPN: runbooks/upgrade-providers.md
+      - Upgrade Calico or MetalLB: runbooks/upgrade-addons.md
+      - Scale: runbooks/scale.md
+      - Change the node template: runbooks/change-node-template.md
+      - Change the external prefix: runbooks/change-external-prefix.md
+      - Host or LXD configuration: runbooks/host-and-lxd.md
+      - LXD refresh and reload: runbooks/lxd.md
+      - Host reboot: runbooks/host-reboot.md
+      - CAPN identity: runbooks/capn-identity.md
+      - Kubeconfigs: runbooks/kubeconfig.md
+      - Workload clusters: runbooks/workload-clusters.md
+      - Backup and recovery: runbooks/backup-restore.md
+      - Certificates: runbooks/certificates.md
+      - Teardown: runbooks/teardown.md
+  - Troubleshooting: troubleshooting.md
+  - Decisions:
+      - decisions/README.md
+      - decisions/0001-single-host-reusable-building-blocks.md
+      - decisions/0002-unprivileged-lxc-nodes.md
+      - decisions/0003-lxd-snap-held-channel.md
+      - decisions/0004-bootstrap-cluster-and-mandatory-pivot.md
+      - decisions/0005-one-owner-per-cluster.md
+      - decisions/0006-roles-only-self-guarding.md
+      - decisions/0007-common-variable-contract.md
+      - decisions/0008-helm-charts-only.md
+      - decisions/0009-clusterclass-content-hash-names.md
+      - decisions/0010-terraform-two-roots.md
+      - decisions/0011-dual-nic-network-contract.md
+      - decisions/0012-api-publication-lxd-proxy.md
+      - decisions/0013-calico-and-metallb.md
+      - decisions/0014-acceptance-gates-as-helm-tests.md
+      - decisions/0015-pinned-verified-dependencies.md
+      - decisions/0016-test-strategy.md
+  - Reference:
+      - Roles: reference/roles.md
+      - Terraform modules: reference/terraform.md
+      - Charts: reference/charts.md
+      - Versions: reference/versions.md
+  - Development: development.md
+  - Changelog: changelog.md

@@ -1,0 +1,113 @@
+---
+# Calico: the operator release, then its configuration once the operator's
+# CRDs exist (it has no readiness probe and is Available before it creates them).
+- name: "management-cluster | addons | Calico operator release"
+  kubernetes.core.helm:
+    kubeconfig: "{{ _management_cluster_kubeconfig_runner }}"
+    name: cni-calico
+    chart_ref: "{{ _management_cluster_charts_dir }}/cni-calico"
+    release_namespace: "{{ _management_cluster_calico_namespace }}"
+    create_namespace: true
+    dependency_update: true
+    wait: true
+    timeout: "{{ management_cluster_addons_timeout }}"
+
+- name: "management-cluster | addons | wait for the Calico operator CRDs"
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ _management_cluster_kubeconfig_runner }}"
+    api_version: apiextensions.k8s.io/v1
+    kind: CustomResourceDefinition
+    name: "{{ item }}"
+    wait: true
+    wait_condition:
+      type: Established
+      status: "True"
+    wait_timeout: 300
+  loop:
+    - installations.operator.tigera.io
+    - apiservers.operator.tigera.io
+
+- name: "management-cluster | addons | Calico configuration release"
+  kubernetes.core.helm:
+    kubeconfig: "{{ _management_cluster_kubeconfig_runner }}"
+    name: cni-calico-config
+    chart_ref: "{{ _management_cluster_charts_dir }}/cni-calico-config"
+    release_namespace: "{{ _management_cluster_calico_namespace }}"
+    wait: true
+    timeout: "{{ management_cluster_addons_timeout }}"
+    values:
+      calico:
+        pods:
+          cidrBlocks: "{{ management_cluster_pod_cidrs }}"
+
+# Nodes stay NotReady until calico-node runs on them; MetalLB's speakers would
+# not schedule before that. At least the expected count: during a rollout the
+# surge machines are nodes too (the gates wait for the rollout to end).
+- name: "management-cluster | addons | every node Ready"
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ _management_cluster_kubeconfig_runner }}"
+    api_version: v1
+    kind: Node
+  register: _management_cluster_addons_nodes
+  retries: 60
+  delay: 10
+  until: >-
+    (_management_cluster_addons_nodes.resources | length)
+      >= (management_cluster_controlplane_count | int) + (management_cluster_worker_count | int)
+    and (_management_cluster_addons_nodes.resources
+         | map(attribute='status.conditions')
+         | map('selectattr', 'type', 'eq', 'Ready')
+         | map('first')
+         | map(attribute='status')
+         | unique | list) == ['True']
+
+- name: "management-cluster | addons | MetalLB release"
+  kubernetes.core.helm:
+    kubeconfig: "{{ _management_cluster_kubeconfig_runner }}"
+    name: metallb
+    chart_ref: "{{ _management_cluster_charts_dir }}/metallb"
+    release_namespace: "{{ _management_cluster_metallb_namespace }}"
+    create_namespace: true
+    dependency_update: true
+    wait: true
+    timeout: "{{ management_cluster_addons_timeout }}"
+
+# The controller is Ready, and its CA is in the webhook configuration, before
+# the webhook serves: the serving certificate reaches the Pod through a mounted
+# Secret the kubelet refreshes later. Only an admission call proves it serves.
+# Check mode makes this a server-side dry run: the webhook is called, nothing
+# is stored. Any answer from the webhook, a rejection included, is enough.
+- name: "management-cluster | addons | wait until the MetalLB webhook answers"
+  kubernetes.core.k8s:
+    kubeconfig: "{{ _management_cluster_kubeconfig_runner }}"
+    definition:
+      apiVersion: metallb.io/v1beta1
+      kind: IPAddressPool
+      metadata:
+        name: k8s-lab-webhook-probe
+        namespace: "{{ _management_cluster_metallb_namespace }}"
+      spec:
+        addresses: ["2001:db8:ffff:ffff::/128"]
+        autoAssign: false
+  check_mode: true
+  register: _management_cluster_addons_webhook
+  changed_when: false
+  failed_when:
+    - _management_cluster_addons_webhook.failed | default(false)
+    - "'denied the request' not in (_management_cluster_addons_webhook.msg | default(''))"
+  retries: 60
+  delay: 5
+  until: _management_cluster_addons_webhook is not failed
+
+- name: "management-cluster | addons | MetalLB configuration release"
+  kubernetes.core.helm:
+    kubeconfig: "{{ _management_cluster_kubeconfig_runner }}"
+    name: metallb-config
+    chart_ref: "{{ _management_cluster_charts_dir }}/metallb-config"
+    release_namespace: "{{ _management_cluster_metallb_namespace }}"
+    create_namespace: false
+    wait: true
+    timeout: "{{ management_cluster_addons_timeout }}"
+    values:
+      pool:
+        rangeV6: "{{ management_cluster_metallb_vip_range_v6 }}"

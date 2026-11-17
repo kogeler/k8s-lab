@@ -1,0 +1,50 @@
+---
+# Shared Molecule configuration (found by Molecule at the repository root);
+# each scenario's molecule.yml adds only what differs. Run scenarios through
+# `make -C tests/molecule <scenario>-<action>` after `make vm-up`: it runs
+# Molecule from tests/ (its project directory) with the state in .cache/molecule.
+
+# The test host exists outside Molecule (the Vagrant VM, or the CI runner):
+# create and destroy only record state.
+driver:
+  name: default
+  options:
+    managed: false
+platforms:
+  - name: k8slab-host
+ansible:
+  env:
+    ANSIBLE_ROLES_PATH: "${MOLECULE_PROJECT_DIRECTORY}/../ansible/roles"
+    ANSIBLE_COLLECTIONS_PATH: "${MOLECULE_PROJECT_DIRECTORY}/../ansible/collections"
+  cfg:
+    defaults:
+      interpreter_python: auto_silent
+      stdout_callback: ansible.builtin.default
+      callback_result_format: yaml
+      callbacks_enabled: ansible.posix.profile_tasks
+    ssh_connection:
+      pipelining: true
+  playbooks:
+    prepare: ../shared/prepare.yml
+provisioner:
+  inventory:
+    links:
+      hosts: ../../inventory/hosts.yml
+      group_vars: ../../playbooks/group_vars
+# Molecule's defaults minus `dependency` (collections come from `make deps`),
+# the leading `destroy`, `syntax` and `side_effect` (none of them does anything
+# for an unmanaged host; `make check` runs the syntax check).
+scenario:
+  converge_sequence:
+    - create
+    - prepare
+    - converge
+  destroy_sequence:
+    - destroy
+  test_sequence:
+    - create
+    - prepare
+    - converge
+    - idempotence
+    - verify
+    - destroy

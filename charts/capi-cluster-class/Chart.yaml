@@ -1,20 +1,17 @@
 apiVersion: v2
 name: capi-cluster-class
 description: |
-  Reusable CAPI topology for CAPN unprivileged kubeadm path: ClusterClass,
-  KubeadmControlPlaneTemplate, KubeadmConfigTemplate, LXCClusterTemplate,
-  LXCMachineTemplate (control plane + worker). See PLAN-stage1-3.md §16.2.
+  The ClusterClass of one cluster and its five templates for CAPN's unprivileged
+  kubeadm path: LXCClusterTemplate, KubeadmControlPlaneTemplate, KubeadmConfigTemplate
+  and the control-plane and worker LXCMachineTemplates.
 type: application
 
-# Chart.Version is the single source of truth for CR name rotation
-# (PLAN §16.2 — CAPI webhook blocks most field edits on referenced
-# ClusterClass/*Template CRs, so every values/template change must bump
-# this version to produce fresh object names).
-version: 0.6.3
+# Object names do not depend on this version: templates are named after a hash of
+# their content (templates/_helpers.tpl).
+version: 2.0.0
 
-# Chart.appVersion tracks the CAPN provider it is tested against.
-# PLAN §8 k8s_lab_capn_provider_version (verified 2026-04-21).
-appVersion: "0.8.5"
+# The CAPN provider the chart is tested against.
+appVersion: "0.9.1"
 
 kubeVersion: ">=1.31.0-0"
 

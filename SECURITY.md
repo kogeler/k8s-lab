@@ -6,13 +6,13 @@
 not intended for production workloads, regulated data, or anything
 sensitive. The default topology runs on a single bare-metal host and
 makes no high-availability or hardening guarantees beyond what is
-documented in [`doc/02-architecture.md`](doc/02-architecture.md).
+documented in [`doc/architecture.md`](doc/architecture.md).
 
 ## Reporting a vulnerability
 
 If you believe you have found a security issue in the code shipped by
-this repository — Ansible roles, Terraform module, Helm charts, or
-test harness — please report it **privately** via GitHub Security
+this repository — Ansible roles, Terraform modules, Helm charts, or
+the test harness — please report it **privately** via GitHub Security
 Advisories:
 
 - <https://github.com/kogeler/k8s-lab/security/advisories/new>
@@ -40,8 +40,9 @@ repository:
 - Issues that require an attacker who already has root on the host or
   cluster-admin in the management or workload cluster.
 - Hardening recommendations that contradict the project's documented
-  non-goals (e.g., "use privileged LXC", "add a host firewall role" —
-  see plan `§2.8`, `§11.4`).
+  decisions (e.g., "use privileged LXC", "add a host firewall role" —
+  see [`doc/decisions/`](doc/decisions/README.md)).
 - Findings that depend on running this code on a multi-tenant host, or
-  exposing the lab APIs to the public internet without the operator
-  taking the documented isolation steps.
+  on publishing the lab's API servers to the public internet without
+  restricting their listen address or filtering their ports
+  ([`doc/deploy.md`](doc/deploy.md)).

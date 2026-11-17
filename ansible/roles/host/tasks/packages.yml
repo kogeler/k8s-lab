@@ -1,0 +1,13 @@
+---
+# snapd: LXD comes as a snap. python3-cryptography: the community.crypto tasks
+# of role capn_identity run on the host.
+- name: "host | packages | install"
+  ansible.builtin.apt:
+    name:
+      - snapd
+      - ca-certificates
+      - python3-cryptography
+    state: present
+    install_recommends: false
+    update_cache: true
+    cache_valid_time: 3600

@@ -1,0 +1,11 @@
+---
+# The e2e workload cluster as the fixture's cluster root sets it: read from its
+# terraform.tfvars (one `key = value` per line, as `terraform fmt` writes it).
+_workload_tfvars: >-
+  {{ lookup('ansible.builtin.file', harness_repo_root ~ '/tests/fixtures/terraform/workload-clusters/lab-default/cluster/terraform.tfvars') }}
+_workload_cluster_name: >-
+  {{ _workload_tfvars | regex_findall('^name *= *"([^"]+)"', multiline=True) | first }}
+_workload_cp_count: >-
+  {{ _workload_tfvars | regex_findall('^control_plane_count *= *([0-9]+)', multiline=True) | first | int }}
+_workload_worker_count: >-
+  {{ _workload_tfvars | regex_findall('^worker_count *= *([0-9]+)', multiline=True) | first | int }}

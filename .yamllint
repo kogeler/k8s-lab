@@ -10,6 +10,11 @@ rules:
     check-keys: false
   comments:
     min-spaces-from-content: 1
+  # What ansible-lint requires of a custom yamllint configuration.
+  comments-indentation: false
+  octal-values:
+    forbid-implicit-octal: true
+    forbid-explicit-octal: true
   indentation:
     spaces: 2
     indent-sequences: true
@@ -25,8 +30,10 @@ rules:
   document-start: disable
 
 ignore: |
-  .molecule/
-  **/.molecule/
+  .venv/
+  tmp/
+  .cache/
+  .ansible/
   .vagrant/
   **/.vagrant/
   .terraform/

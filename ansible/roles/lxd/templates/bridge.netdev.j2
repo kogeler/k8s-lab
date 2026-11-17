@@ -1,0 +1,11 @@
+# Managed by the k8s-lab lxd role.
+[NetDev]
+Name={{ lxd_bridge_name }}
+Kind=bridge
+MTUBytes={{ lxd_bridge_mtu }}
+
+[Bridge]
+STP=false
+ForwardDelaySec=0
+# No MLD querier on this segment: flood router advertisements to every port.
+MulticastSnooping=no

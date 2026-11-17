@@ -1,0 +1,47 @@
+---
+# Reference values for the playbooks in this directory. A deployment keeps a
+# file like this one in `group_vars/all.yml` next to its own playbook; every
+# variable is described in doc/variable-contract.md.
+
+# ---- Common variables (every one is required) -------------------------------
+
+k8s_lab_opt_root: "/opt/capi-lab"
+k8s_lab_project_name: "capi-lab"
+k8s_lab_management_cluster_name: "mgmt-1"
+k8s_lab_bootstrap_instance_name: "capi-bootstrap-0"
+k8s_lab_cluster_namespace: "capi-clusters"
+k8s_lab_infrastructure_secret_name: "incus-identity"
+
+# Address the published API servers listen on.
+k8s_lab_api_listen_address: "0.0.0.0"
+
+# Version pins; each binary the host downloads also has its amd64 sha256.
+k8s_lab_kubernetes_version: "v1.37.0"
+k8s_lab_k3s_version: "v1.37.2+k3s1"
+k8s_lab_k3s_sha256: "265b3ee6a3198ef14033c63ef46cbb32370d83795199fb6d1b01f21575eddbda"
+k8s_lab_kubectl_version: "v1.37.2"
+k8s_lab_kubectl_sha256: "c04487523e7aa7d1493f7808174c899db93d7a9cf57531420cd76b9bd415f8f4"
+k8s_lab_clusterctl_version: "v1.14.4"
+k8s_lab_clusterctl_sha256: "c7301a8515ed329562b06c958463051dd55d9649fac591393f5df54a868fa79b"
+k8s_lab_capn_provider_version: "v0.9.1"
+
+# ---- Role inputs without a default -------------------------------------------
+
+# Host interface bridged to the external IPv6 network.
+lxd_uplink_interface: "ext6-ra"
+# The block device the LXD storage pool is created on (on the harness VM: the
+# disk the Vagrantfile adds with serial k8slab-lxdpool).
+lxd_storage_source: "/dev/disk/by-id/virtio-k8slab-lxdpool"
+# The external IPv6 network (on the harness, the in-VM router advertises it),
+# and the VIP range in it MetalLB announces for the management cluster.
+management_cluster_external_ipv6_prefix: "2001:db8:42:100::/64"
+management_cluster_metallb_vip_range_v6: "2001:db8:42:100::200-2001:db8:42:100::2ff"
+
+# ---- Harness only: a deployment sets these to fixed values -------------------
+
+# The host as the runner reaches it: the address of its default route (the
+# VM's only NIC, or the CI runner itself).
+k8s_lab_lxd_host_address: "{{ ansible_facts['default_ipv4']['address'] }}"
+# Runner-side directory for kubeconfigs and the Terraform handoff: .artifacts/
+# at the repository root (harness_repo_root: tests/inventory/hosts.yml).
+k8s_lab_artifacts_dir: "{{ harness_repo_root }}/.artifacts"

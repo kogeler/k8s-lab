@@ -1,0 +1,12 @@
+---
+# The other roles keep their host-side state under etc/.
+- name: "host | dirs | opt root and etc"
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - "{{ host_opt_root }}"
+    - "{{ host_opt_root }}/etc"

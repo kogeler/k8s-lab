@@ -1,0 +1,32 @@
+---
+- name: "host | binaries | bin directory"
+  ansible.builtin.file:
+    path: "{{ host_opt_root }}/bin"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+# Pinned digests: a re-run with the binaries in place needs no download host,
+# and a digest is not taken from the same origin as the file.
+- name: "host | binaries | download"
+  ansible.builtin.get_url:
+    url: "{{ item.url }}"
+    dest: "{{ host_opt_root }}/bin/{{ item.name }}"
+    checksum: "sha256:{{ item.sha256 }}"
+    owner: root
+    group: root
+    mode: "0755"
+    timeout: 180
+  loop:
+    - name: kubectl
+      url: "https://dl.k8s.io/release/{{ host_kubectl_version }}/bin/linux/amd64/kubectl"
+      sha256: "{{ host_kubectl_sha256 }}"
+    - name: clusterctl
+      url: "https://github.com/kubernetes-sigs/cluster-api/releases/download/{{ host_clusterctl_version }}/clusterctl-linux-amd64"
+      sha256: "{{ host_clusterctl_sha256 }}"
+    - name: k3s
+      url: "https://github.com/k3s-io/k3s/releases/download/{{ host_k3s_version | urlencode }}/k3s"
+      sha256: "{{ host_k3s_sha256 }}"
+  loop_control:
+    label: "{{ item.name }}"

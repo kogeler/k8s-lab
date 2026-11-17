@@ -1,0 +1,19 @@
+---
+# Declarative: each profile is replaced as a whole when it differs. LXD applies
+# device and live-updatable config changes to running instances itself; the
+# role never restarts one. Node changes otherwise arrive with new nodes.
+- name: "lxd | profiles | node and bootstrap profiles"
+  ansible.builtin.include_tasks: ensure.yml
+  loop: "{{ _lxd_profiles }}"
+  loop_control:
+    loop_var: _lxd_profile
+    label: "{{ _lxd_profile.name }}"
+  vars:
+    _lxd_ensure:
+      label: profiles
+      path: /1.0/profiles
+      project: "{{ _lxd_project.name }}"
+      name: "{{ _lxd_profile.name }}"
+      create: "{{ _lxd_profile }}"
+      body: "{{ {'description': _lxd_profile.description, 'config': _lxd_profile.config, 'devices': _lxd_profile.devices} }}"
+      method: PUT

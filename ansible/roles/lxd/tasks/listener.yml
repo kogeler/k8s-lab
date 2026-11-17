@@ -1,0 +1,25 @@
+---
+# CAPN, in the bootstrap instance and later in mgmt-1, reaches LXD over the
+# internal network only; nothing listens on the host's other addresses.
+- name: "lxd | listener | read the daemon configuration"
+  ansible.builtin.uri:
+    url: http://localhost/1.0
+    unix_socket: "{{ _lxd_socket }}"
+  register: _lxd_listener_daemon
+
+- name: "lxd | listener | API on the internal gateway address"
+  ansible.builtin.uri:
+    url: http://localhost/1.0
+    unix_socket: "{{ _lxd_socket }}"
+    method: PATCH
+    body_format: json
+    body: {config: {core.https_address: "{{ _lxd_listener_address }}"}}
+    status_code: [200, 202]
+  when: _lxd_listener_daemon.json.metadata.config['core.https_address'] | default('') != _lxd_listener_address
+  changed_when: true
+
+- name: "lxd | listener | the port accepts connections"
+  ansible.builtin.wait_for:
+    host: "{{ _lxd_listener_address | split(':') | first }}"
+    port: "{{ lxd_listener_port }}"
+    timeout: 30

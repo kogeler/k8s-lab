@@ -1,0 +1,50 @@
+{{- $v4 := index .Values.calico.pods.cidrBlocks 0 -}}
+{{- $v6 := index .Values.calico.pods.cidrBlocks 1 -}}
+# The operator reconciles only `default`. On this substrate: no BGP; the nftables
+# dataplane (kube-proxy runs in nftables mode, charts/capi-cluster-class; eBPF
+# needs privileges an unprivileged container does not have); VXLAN, the only
+# encapsulation Calico has for IPv6; outgoing NAT on both families, since the
+# internal network has no route back to the pod CIDRs (Cluster API on mgmt-1
+# reaches workload API servers that way).
+#
+# The pools carry every field the operator defaults: ipPools is an atomic list
+# the operator writes back with its defaults, so a shorter list here would make
+# Helm's server-side apply conflict with the operator on every upgrade.
+apiVersion: operator.tigera.io/v1
+kind: Installation
+metadata:
+  name: default
+  labels:
+    {{- include "cni-calico-config.labels" . | nindent 4 }}
+spec:
+  variant: Calico
+  cni:
+    type: Calico
+    ipam:
+      type: Calico
+  calicoNetwork:
+    bgp: Disabled
+    linuxDataplane: Nftables
+    ipPools:
+      - name: default-ipv4-ippool
+        cidr: {{ $v4 | quote }}
+        blockSize: 26
+        encapsulation: VXLAN
+        natOutgoing: Enabled
+        nodeSelector: all()
+        allowedUses: [Workload, Tunnel]
+        assignmentMode: Automatic
+        disableBGPExport: false
+        disableNewAllocations: false
+      - name: default-ipv6-ippool
+        cidr: {{ $v6 | quote }}
+        blockSize: 122
+        encapsulation: VXLAN
+        natOutgoing: Enabled
+        nodeSelector: all()
+        allowedUses: [Workload, Tunnel]
+        assignmentMode: Automatic
+        disableBGPExport: false
+        disableNewAllocations: false
+  # Two replicas each of calico-kube-controllers and the API server.
+  controlPlaneReplicas: 2

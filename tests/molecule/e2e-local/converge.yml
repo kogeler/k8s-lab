@@ -1,631 +1,76 @@
 ---
-# e2e-local — single canonical end-to-end flow (PLAN §10.2 / §16 / §18).
-#
-# Sequence (linear, no dispatch branches):
-#
-#   Phase A. base substrate + bootstrap k3s + initial mgmt.kubeconfig
-#            (= bootstrap creds; export_artifacts shipped via meta-chain)
-#   Phase B. mgmt-1 Cluster CR + CNI + MetalLB on bootstrap k3s, helm-tested
-#            in place. Bootstrap k3s is purely scaffolding here — its only
-#            job is to hold the mgmt-1 CAPI CRs until clusterctl move
-#            relocates them.
-#   Phase C. clusterctl move bootstrap → mgmt-1 (mgmt-1 becomes self-hosted),
-#            re-emit `.artifacts/mgmt.kubeconfig` with mgmt-1 creds,
-#            cleanup_bootstrap retires the bootstrap LXC.
-#   Phase D. workload Cluster CR + CNI + MetalLB on mgmt-1 (self-hosted).
-#
-# verify.yml runs helm tests against the workload + an external Gate A
-# curl through `ext6-ra-peer`.
+# e2e-local: the management lifecycle through the reference playbook, then the
+# workload cluster through the Terraform fixture roots (the cluster, then its
+# add-ons) — the path a deployment uses for workload clusters. The idempotence
+# step runs this file a second time; verify compares the result with the first
+# run's record.
+- name: "Converge | e2e-local | management lifecycle"
+  ansible.builtin.import_playbook: ../../playbooks/management.yml
 
-- name: "Converge | e2e-local | bootstrap → mgmt-1 pivot → workload"
-  hosts: all
-  gather_facts: true
-  become: true
+- name: "Converge | e2e-local | workload cluster through Terraform"
+  hosts: localhost
+  gather_facts: false
   vars:
-    _repo_root: "{{ lookup('env', 'MOLECULE_PROJECT_DIRECTORY') | dirname | dirname }}"
-    _artifacts_root: "{{ _repo_root }}/.artifacts"
-    _clusters_dir: "{{ _artifacts_root }}/clusters"
-
-    _opt_root: "{{ k8s_lab_opt_root | default('/opt/capi-lab') }}"
-    _pivot_target_kubeconfig_host_path: "{{ _opt_root }}/etc/pivot_clusterctl_move/mgmt.kubeconfig"
-
-    # Runner-side single mgmt kubeconfig file; flips from bootstrap creds
-    # (Phase A) to mgmt-1 creds (mid-Phase C, via export_artifacts re-emit).
-    _mgmt_kubeconfig: "{{ _artifacts_root }}/mgmt.kubeconfig"
-
-    _capi_namespace: "capi-clusters"
-    _metallb_namespace: "metallb-system"
-    _tigera_namespace: "tigera-operator"
-
-    _cluster_class_chart: "{{ _repo_root }}/charts/capi-cluster-class"
-    _workload_chart: "{{ _repo_root }}/charts/capi-workload-cluster"
-    _cni_calico_chart: "{{ _repo_root }}/charts/cni-calico"
-    _metallb_chart: "{{ _repo_root }}/charts/metallb"
-    _metallb_config_chart: "{{ _repo_root }}/charts/metallb-config"
-
-    _kubernetes_version: "{{ k8s_lab_kubernetes_version }}"
-    _infrastructure_secret_name: "{{ k8s_lab_infrastructure_secret_name | default('incus-identity') }}"
-    _lxd_host_address: "{{ lookup('env', 'K8SLAB_HOST_ADDR') }}"
-
-    _pod_cidrs:
-      - "{{ k8s_lab_workload_pod_cidr_v4 }}"
-      - "{{ k8s_lab_workload_pod_cidr_v6 }}"
-    _service_cidrs:
-      - "{{ k8s_lab_workload_service_cidr_v4 }}"
-      - "{{ k8s_lab_workload_service_cidr_v6 }}"
-    _metallb_vip_range_v6: "{{ k8s_lab_metallb_vip_range_v6 }}"
-    _metallb_interface: "{{ k8s_lab_metallb_interface | default('eth1') }}"
-
-    _mgmt_cluster_name: "{{ k8s_lab_management_cluster_name | default('mgmt-1') }}"
-    _mgmt_class_prefix: "capn-mgmt"
-    _mgmt_kc_runner: "{{ _clusters_dir }}/{{ _mgmt_cluster_name }}.kubeconfig"
-    _mgmt_cp_count: "{{ k8s_lab_management_controlplane_count | default(1) | int }}"
-    _mgmt_worker_count: "{{ k8s_lab_management_worker_count | default(2) | int }}"
-
-    _workload_cluster_name: "{{ k8s_lab_workload_cluster_name | default('lab-default') }}"
-    _workload_class_prefix: "capn-default"
-    _workload_kc_runner: "{{ _clusters_dir }}/{{ _workload_cluster_name }}.kubeconfig"
-    _workload_cp_count: "{{ k8s_lab_workload_controlplane_count | default(3) | int }}"
-    _workload_worker_count: "{{ k8s_lab_workload_worker_count | default(2) | int }}"
-
-    _ansible_python: "{{ ansible_playbook_python }}"
+    _fixture: "{{ harness_repo_root }}/tests/fixtures/terraform/workload-clusters/lab-default"
+  # Two tasks, not a loop: a loop goes on with the add-on root after the cluster
+  # root failed, and an add-on refresh while the cluster's API does not answer
+  # drops the releases from the state (doc/troubleshooting.md).
   tasks:
-    # =========================================================================
-    # Phase A — substrate + bootstrap k3s + initial mgmt.kubeconfig
-    # =========================================================================
-    # export_artifacts pulls the full Phase 0..4 meta-chain (base_system →
-    # … → bootstrap_clusterctl → bootstrap_capn_secret) and writes the
-    # initial mgmt.kubeconfig pointing at bootstrap k3s with the
-    # runner-reachable LXD-proxy URL.
-    - name: "Converge | e2e-local | substrate + bootstrap k3s + initial mgmt.kubeconfig"
-      ansible.builtin.include_role:
-        name: export_artifacts
+    - name: "Converge | e2e-local | workload | terraform apply of the cluster root"
+      community.general.terraform:
+        project_path: "{{ _fixture }}/cluster"
+        state: present
+        force_init: true
+        variables:
+          handoff_path: "{{ k8s_lab_artifacts_dir }}/handoff.json"
 
-    # =========================================================================
-    # Phase B — mgmt-1 Cluster CR + CNI + MetalLB on bootstrap, helm-tested
-    # =========================================================================
-    - name: "Converge | e2e-local | mgmt-1 | install ClusterClass on bootstrap"
-      kubernetes.core.helm:
-        kubeconfig: "{{ _mgmt_kubeconfig }}"
-        name: "{{ _mgmt_cluster_name }}-class"
-        chart_ref: "{{ _cluster_class_chart }}"
-        release_namespace: "{{ _capi_namespace }}"
-        create_namespace: false
-        wait: true
-        wait_timeout: 5m
-        values:
-          clusterClass:
-            name: "{{ _mgmt_class_prefix }}"
-          kubernetes:
-            version: "{{ _kubernetes_version }}"
-          capn:
-            infrastructureSecretName: "{{ _infrastructure_secret_name }}"
-      delegate_to: localhost
-      become: false
-      vars:
-        ansible_python_interpreter: "{{ _ansible_python }}"
+    # Its result carries the root's outputs, the admin kubeconfig included,
+    # printed from -v on (the CI log is public); a failure's message carries
+    # none and stays visible at the default verbosity.
+    - name: "Converge | e2e-local | workload | terraform apply of the add-on root"
+      community.general.terraform:
+        project_path: "{{ _fixture }}/addons"
+        state: present
+        force_init: true
+        variables:
+          handoff_path: "{{ k8s_lab_artifacts_dir }}/handoff.json"
+      no_log: "{{ ansible_verbosity > 0 }}"
 
-    - name: "Converge | e2e-local | mgmt-1 | install Cluster CR on bootstrap"
-      # `helm install` blocks until the chart's post-install hook
-      # (api-proxy-attach) has finished — LB Running, kubeconfig Secret
-      # emitted, /livez OK. On success the workload cluster is fully
-      # reachable end-to-end.
-      kubernetes.core.helm:
-        kubeconfig: "{{ _mgmt_kubeconfig }}"
-        name: "{{ _mgmt_cluster_name }}"
-        chart_ref: "{{ _workload_chart }}"
-        release_namespace: "{{ _capi_namespace }}"
-        create_namespace: false
-        wait: true
-        wait_timeout: 25m
-        values:
-          cluster:
-            name: "{{ _mgmt_cluster_name }}"
-          clusterClass:
-            name: "{{ _mgmt_class_prefix }}"
-          kubernetes:
-            version: "{{ _kubernetes_version }}"
-          topology:
-            controlPlane:
-              replicas: "{{ _mgmt_cp_count | int }}"
-            workers:
-              replicas: "{{ _mgmt_worker_count | int }}"
-          clusterNetwork:
-            pods:
-              cidrBlocks: "{{ _pod_cidrs }}"
-            services:
-              cidrBlocks: "{{ _service_cidrs }}"
-          apiProxy:
-            infrastructureSecretName: "{{ _infrastructure_secret_name }}"
-      delegate_to: localhost
-      become: false
-      vars:
-        ansible_python_interpreter: "{{ _ansible_python }}"
+# What a re-run must not change: every node instance's creation time and every
+# Machine's UID. Written once; later runs leave the file alone.
+- name: "Converge | e2e-local | record the first run"
+  hosts: all
+  gather_facts: false
+  become: true
+  tasks:
+    - name: "Converge | e2e-local | record | instances in the LXD project"
+      ansible.builtin.uri:
+        url: "http://localhost/1.0/instances?project={{ k8s_lab_project_name }}&recursion=1"
+        unix_socket: /var/snap/lxd/common/lxd/unix.socket
+        return_content: true
+      register: _converge_record_instances
 
-    # ---- runner-reachable kubeconfig for mgmt-1 -----------------------------
-    - name: "Converge | e2e-local | mgmt-1 | read kubeconfig Secret on bootstrap"
+    - name: "Converge | e2e-local | record | Machines on mgmt-1"
       kubernetes.core.k8s_info:
-        kubeconfig: "{{ _mgmt_kubeconfig }}"
-        api_version: v1
-        kind: Secret
-        namespace: "{{ _capi_namespace }}"
-        name: "{{ _mgmt_cluster_name }}-kubeconfig"
-      register: _converge_mgmt_kc_secret
-      until: >-
-        (_converge_mgmt_kc_secret.resources | length) == 1
-        and ((_converge_mgmt_kc_secret.resources[0].data.value | default('')) | length) > 0
-      retries: 60
-      delay: 10
-      delegate_to: localhost
-      become: false
-      vars:
-        ansible_python_interpreter: "{{ _ansible_python }}"
-
-    - name: "Converge | e2e-local | mgmt-1 | read api-proxy-port from Cluster CR"
-      kubernetes.core.k8s_info:
-        kubeconfig: "{{ _mgmt_kubeconfig }}"
+        kubeconfig: "{{ k8s_lab_artifacts_dir }}/mgmt.kubeconfig"
         api_version: cluster.x-k8s.io/v1beta2
-        kind: Cluster
-        namespace: "{{ _capi_namespace }}"
-        name: "{{ _mgmt_cluster_name }}"
-      register: _converge_mgmt_cluster
+        kind: Machine
+        namespace: "{{ k8s_lab_cluster_namespace }}"
+      register: _converge_record_machines
       delegate_to: localhost
       become: false
       vars:
-        ansible_python_interpreter: "{{ _ansible_python }}"
+        ansible_python_interpreter: "{{ ansible_playbook_python }}"
 
-    - name: "Converge | e2e-local | mgmt-1 | bind api-proxy-port"
-      ansible.builtin.set_fact:
-        _mgmt_api_proxy_port: >-
-          {{ _converge_mgmt_cluster.resources[0].metadata.annotations['k8s-lab.io/api-proxy-port'] }}
-
-    - name: "Converge | e2e-local | ensure runner-side clusters/ dir exists"
-      ansible.builtin.file:
-        path: "{{ _clusters_dir }}"
-        state: directory
-        mode: "0700"
-      delegate_to: localhost
-      become: false
-
-    - name: "Converge | e2e-local | mgmt-1 | parse + rewrite kubeconfig"
-      # Parse-and-rebuild instead of regex-replace to avoid foot-guns on
-      # YAML formatting (server URL nested in exec-auth args, etc.).
-      ansible.builtin.set_fact:
-        _mgmt_kc_parsed: >-
-          {{ _converge_mgmt_kc_secret.resources[0].data.value | b64decode | from_yaml }}
-
-    - name: "Converge | e2e-local | mgmt-1 | write runner-reachable kubeconfig"
+    - name: "Converge | e2e-local | record | write once"
       ansible.builtin.copy:
-        dest: "{{ _mgmt_kc_runner }}"
-        content: "{{ _mgmt_kc_rebuilt | to_nice_yaml(indent=2) }}"
+        dest: "{{ k8s_lab_artifacts_dir }}/e2e-first-run.json"
+        content: >-
+          {{ {'instances': _converge_record_instances.json.metadata
+                           | items2dict(key_name='name', value_name='created_at'),
+              'machines': _converge_record_machines.resources | map(attribute='metadata')
+                          | items2dict(key_name='name', value_name='uid')} | to_nice_json }}
+        force: false
         mode: "0600"
       delegate_to: localhost
       become: false
-      vars:
-        _mgmt_kc_rebuilt:
-          apiVersion: "v1"
-          kind: "Config"
-          clusters:
-            - name: "{{ _mgmt_kc_parsed.clusters[0].name }}"
-              cluster: "{{ _mgmt_kc_parsed.clusters[0].cluster | combine({
-                  'server': 'https://' ~ _lxd_host_address ~ ':' ~ _mgmt_api_proxy_port,
-                  'tls-server-name': 'kubernetes.default.svc'
-                }) }}"
-          users: "{{ _mgmt_kc_parsed.users }}"
-          contexts: "{{ _mgmt_kc_parsed.contexts }}"
-          current-context: "{{ _mgmt_kc_parsed['current-context'] }}"
-
-    - name: "Converge | e2e-local | mgmt-1 | wait for /livez (runner-side)"
-      ansible.builtin.uri:
-        url: "https://{{ _lxd_host_address }}:{{ _mgmt_api_proxy_port }}/livez"
-        method: GET
-        validate_certs: false
-        status_code: [200, 401]
-        timeout: 10
-      register: _converge_mgmt_apiserver_probe
-      retries: 60
-      delay: 10
-      until: _converge_mgmt_apiserver_probe.status in [200, 401]
-      delegate_to: localhost
-      become: false
-
-    # ---- CNI + MetalLB on mgmt-1 --------------------------------------------
-    # `clusterctl init` (in pivot role) needs CNI to be running on the
-    # target — provider Deployments crash-loop without pod networking.
-    # We install both CNI and MetalLB now to also exercise Gate A/B helm
-    # tests below before pivoting; if anything is wrong with mgmt-1's
-    # data plane, we surface it here, not after pivot.
-    - name: "Converge | e2e-local | mgmt-1 | install CNI Calico"
-      kubernetes.core.helm:
-        kubeconfig: "{{ _mgmt_kc_runner }}"
-        name: cni-calico
-        chart_ref: "{{ _cni_calico_chart }}"
-        release_namespace: "{{ _tigera_namespace }}"
-        create_namespace: true
-        dependency_update: true
-        wait: true
-        wait_timeout: 10m
-        values:
-          calico:
-            pods:
-              cidrBlocks: "{{ _pod_cidrs }}"
-          tests:
-            kubectlVersion: "{{ _kubernetes_version }}"
-      delegate_to: localhost
-      become: false
-      vars:
-        ansible_python_interpreter: "{{ _ansible_python }}"
-
-    # `helm install cni-calico --wait` only blocks until the
-    # tigera-operator Deployment is Available; the operator then
-    # asynchronously reconciles the Installation CR + calico-node
-    # DaemonSet. Until calico-node lands on every Node, kubelet keeps
-    # the Node `NotReady` (no CNI plugin), so any subsequent helm
-    # install with `wait: true` (e.g. MetalLB speaker DS) sees Pods
-    # stuck Pending and times out. Explicit poll bridges the gap.
-    - name: "Converge | e2e-local | mgmt-1 | wait for all Nodes Ready post-CNI"
-      kubernetes.core.k8s_info:
-        kubeconfig: "{{ _mgmt_kc_runner }}"
-        api_version: v1
-        kind: Node
-      register: _converge_mgmt_nodes_post_cni
-      retries: 60
-      delay: 10
-      until: >-
-        ((_converge_mgmt_nodes_post_cni.resources | default([])) | length)
-          == ((_mgmt_cp_count | int) + (_mgmt_worker_count | int))
-        and ((_converge_mgmt_nodes_post_cni.resources
-               | map(attribute='status.conditions')
-               | map('selectattr', 'type', 'eq', 'Ready')
-               | map('first')
-               | map(attribute='status')
-               | unique
-               | list) == ['True'])
-      delegate_to: localhost
-      become: false
-      vars:
-        ansible_python_interpreter: "{{ _ansible_python }}"
-
-    - name: "Converge | e2e-local | mgmt-1 | install upstream MetalLB"
-      kubernetes.core.helm:
-        kubeconfig: "{{ _mgmt_kc_runner }}"
-        name: metallb
-        chart_ref: "{{ _metallb_chart }}"
-        release_namespace: "{{ _metallb_namespace }}"
-        create_namespace: true
-        dependency_update: true
-        wait: true
-        wait_timeout: 10m
-      delegate_to: localhost
-      become: false
-      vars:
-        ansible_python_interpreter: "{{ _ansible_python }}"
-
-    - name: "Converge | e2e-local | mgmt-1 | install MetalLB config"
-      kubernetes.core.helm:
-        kubeconfig: "{{ _mgmt_kc_runner }}"
-        name: metallb-config
-        chart_ref: "{{ _metallb_config_chart }}"
-        release_namespace: "{{ _metallb_namespace }}"
-        create_namespace: false
-        wait: true
-        wait_timeout: 10m
-        values:
-          pool:
-            rangeV6: "{{ _metallb_vip_range_v6 }}"
-          l2:
-            interface: "{{ _metallb_interface }}"
-          tests:
-            kubectlVersion: "{{ _kubernetes_version }}"
-      delegate_to: localhost
-      become: false
-      vars:
-        ansible_python_interpreter: "{{ _ansible_python }}"
-
-    # ---- Gate A/B helm tests on mgmt-1 (BEFORE pivot) -----------------------
-    # If mgmt-1's data plane is broken we surface it here, not after
-    # pivot. `helm test` is the only shell fallback in this play —
-    # there is no native equivalent in kubernetes.core.
-    - name: "Converge | e2e-local | mgmt-1 | helm test capi-workload-cluster"
-      ansible.builtin.command:
-        argv:
-          - helm
-          - test
-          - "{{ _mgmt_cluster_name }}"
-          - --namespace
-          - "{{ _capi_namespace }}"
-          - --kubeconfig
-          - "{{ _mgmt_kubeconfig }}"
-          - --logs
-          - --timeout
-          - 35m
-      delegate_to: localhost
-      become: false
-
-    - name: "Converge | e2e-local | mgmt-1 | helm test cni-calico (Gate B)"
-      ansible.builtin.command:
-        argv:
-          - helm
-          - test
-          - cni-calico
-          - --namespace
-          - "{{ _tigera_namespace }}"
-          - --kubeconfig
-          - "{{ _mgmt_kc_runner }}"
-          - --logs
-          - --timeout
-          - 15m
-      delegate_to: localhost
-      become: false
-
-    - name: "Converge | e2e-local | mgmt-1 | helm test metallb-config (Gate A)"
-      ansible.builtin.command:
-        argv:
-          - helm
-          - test
-          - metallb-config
-          - --namespace
-          - "{{ _metallb_namespace }}"
-          - --kubeconfig
-          - "{{ _mgmt_kc_runner }}"
-          - --logs
-          - --timeout
-          - 15m
-      delegate_to: localhost
-      become: false
-
-    # =========================================================================
-    # Phase C — pivot mgmt-1 → self-hosted, retire bootstrap
-    # =========================================================================
-    - name: "Converge | e2e-local | clusterctl init + move bootstrap → mgmt-1"
-      ansible.builtin.include_role:
-        name: pivot_clusterctl_move
-      vars:
-        pivot_clusterctl_move_target_cluster_name: "{{ _mgmt_cluster_name }}"
-        pivot_clusterctl_move_target_cluster_namespace: "{{ _capi_namespace }}"
-        pivot_clusterctl_move_target_api_address: "{{ _lxd_host_address }}"
-
-    - name: "Converge | e2e-local | overwrite .artifacts/mgmt.kubeconfig with mgmt-1 creds"
-      # Re-emit pattern: read the host-side kubeconfig pivot just wrote
-      # (server URL already rewritten + tls-server-name pinned), copy to
-      # runner-side .artifacts/mgmt.kubeconfig in place. Skip meta-chain
-      # (Phase 0..4 substrate is already up; second run would be wasted).
-      # Skip tfvars (the runner-side mgmt.auto.tfvars.json's host-component
-      # didn't change — only the per-cluster proxy port did, and that's
-      # not consumed by anything in this scope).
-      ansible.builtin.include_role:
-        name: export_artifacts
-      vars:
-        export_artifacts_run_meta_chain: false
-        export_artifacts_mgmt_kubeconfig_source: "{{ _pivot_target_kubeconfig_host_path }}"
-        export_artifacts_mgmt_api_server_url: ""
-        export_artifacts_tfvars_enabled: false
-
-    - name: "Converge | e2e-local | retire bootstrap LXC (cleanup_bootstrap)"
-      ansible.builtin.include_role:
-        name: cleanup_bootstrap
-      vars:
-        cleanup_bootstrap_remove_artifacts: false
-
-    # =========================================================================
-    # Phase D — workload Cluster + CNI + MetalLB on self-hosted mgmt-1
-    # =========================================================================
-    # `_mgmt_kubeconfig` now points at mgmt-1 (overwritten in Phase C).
-    - name: "Converge | e2e-local | workload | install ClusterClass on mgmt-1"
-      kubernetes.core.helm:
-        kubeconfig: "{{ _mgmt_kubeconfig }}"
-        name: "{{ _workload_cluster_name }}-class"
-        chart_ref: "{{ _cluster_class_chart }}"
-        release_namespace: "{{ _capi_namespace }}"
-        create_namespace: false
-        wait: true
-        wait_timeout: 5m
-        values:
-          clusterClass:
-            name: "{{ _workload_class_prefix }}"
-          kubernetes:
-            version: "{{ _kubernetes_version }}"
-          capn:
-            infrastructureSecretName: "{{ _infrastructure_secret_name }}"
-      delegate_to: localhost
-      become: false
-      vars:
-        ansible_python_interpreter: "{{ _ansible_python }}"
-
-    - name: "Converge | e2e-local | workload | install Cluster CR on mgmt-1"
-      kubernetes.core.helm:
-        kubeconfig: "{{ _mgmt_kubeconfig }}"
-        name: "{{ _workload_cluster_name }}"
-        chart_ref: "{{ _workload_chart }}"
-        release_namespace: "{{ _capi_namespace }}"
-        create_namespace: false
-        wait: true
-        wait_timeout: 25m
-        values:
-          cluster:
-            name: "{{ _workload_cluster_name }}"
-          clusterClass:
-            name: "{{ _workload_class_prefix }}"
-          kubernetes:
-            version: "{{ _kubernetes_version }}"
-          topology:
-            controlPlane:
-              replicas: "{{ _workload_cp_count | int }}"
-            workers:
-              replicas: "{{ _workload_worker_count | int }}"
-          clusterNetwork:
-            pods:
-              cidrBlocks: "{{ _pod_cidrs }}"
-            services:
-              cidrBlocks: "{{ _service_cidrs }}"
-          apiProxy:
-            infrastructureSecretName: "{{ _infrastructure_secret_name }}"
-      delegate_to: localhost
-      become: false
-      vars:
-        ansible_python_interpreter: "{{ _ansible_python }}"
-
-    # ---- runner-reachable kubeconfig for workload --------------------------
-    - name: "Converge | e2e-local | workload | read kubeconfig Secret on mgmt-1"
-      kubernetes.core.k8s_info:
-        kubeconfig: "{{ _mgmt_kubeconfig }}"
-        api_version: v1
-        kind: Secret
-        namespace: "{{ _capi_namespace }}"
-        name: "{{ _workload_cluster_name }}-kubeconfig"
-      register: _converge_wl_kc_secret
-      until: >-
-        (_converge_wl_kc_secret.resources | length) == 1
-        and ((_converge_wl_kc_secret.resources[0].data.value | default('')) | length) > 0
-      retries: 60
-      delay: 10
-      delegate_to: localhost
-      become: false
-      vars:
-        ansible_python_interpreter: "{{ _ansible_python }}"
-
-    - name: "Converge | e2e-local | workload | read api-proxy-port from Cluster CR"
-      kubernetes.core.k8s_info:
-        kubeconfig: "{{ _mgmt_kubeconfig }}"
-        api_version: cluster.x-k8s.io/v1beta2
-        kind: Cluster
-        namespace: "{{ _capi_namespace }}"
-        name: "{{ _workload_cluster_name }}"
-      register: _converge_wl_cluster
-      delegate_to: localhost
-      become: false
-      vars:
-        ansible_python_interpreter: "{{ _ansible_python }}"
-
-    - name: "Converge | e2e-local | workload | bind api-proxy-port"
-      ansible.builtin.set_fact:
-        _workload_api_proxy_port: >-
-          {{ _converge_wl_cluster.resources[0].metadata.annotations['k8s-lab.io/api-proxy-port'] }}
-
-    - name: "Converge | e2e-local | workload | parse + rewrite kubeconfig"
-      ansible.builtin.set_fact:
-        _workload_kc_parsed: >-
-          {{ _converge_wl_kc_secret.resources[0].data.value | b64decode | from_yaml }}
-
-    - name: "Converge | e2e-local | workload | write runner-reachable kubeconfig"
-      ansible.builtin.copy:
-        dest: "{{ _workload_kc_runner }}"
-        content: "{{ _workload_kc_rebuilt | to_nice_yaml(indent=2) }}"
-        mode: "0600"
-      delegate_to: localhost
-      become: false
-      vars:
-        _workload_kc_rebuilt:
-          apiVersion: "v1"
-          kind: "Config"
-          clusters:
-            - name: "{{ _workload_kc_parsed.clusters[0].name }}"
-              cluster: "{{ _workload_kc_parsed.clusters[0].cluster | combine({
-                  'server': 'https://' ~ _lxd_host_address ~ ':' ~ _workload_api_proxy_port,
-                  'tls-server-name': 'kubernetes.default.svc'
-                }) }}"
-          users: "{{ _workload_kc_parsed.users }}"
-          contexts: "{{ _workload_kc_parsed.contexts }}"
-          current-context: "{{ _workload_kc_parsed['current-context'] }}"
-
-    - name: "Converge | e2e-local | workload | wait for /livez (runner-side)"
-      ansible.builtin.uri:
-        url: "https://{{ _lxd_host_address }}:{{ _workload_api_proxy_port }}/livez"
-        method: GET
-        validate_certs: false
-        status_code: [200, 401]
-        timeout: 10
-      register: _converge_wl_apiserver_probe
-      retries: 60
-      delay: 10
-      until: _converge_wl_apiserver_probe.status in [200, 401]
-      delegate_to: localhost
-      become: false
-
-    # ---- CNI + MetalLB on workload ------------------------------------------
-    - name: "Converge | e2e-local | workload | install CNI Calico"
-      kubernetes.core.helm:
-        kubeconfig: "{{ _workload_kc_runner }}"
-        name: cni-calico
-        chart_ref: "{{ _cni_calico_chart }}"
-        release_namespace: "{{ _tigera_namespace }}"
-        create_namespace: true
-        dependency_update: true
-        wait: true
-        wait_timeout: 10m
-        values:
-          calico:
-            pods:
-              cidrBlocks: "{{ _pod_cidrs }}"
-          tests:
-            kubectlVersion: "{{ _kubernetes_version }}"
-      delegate_to: localhost
-      become: false
-      vars:
-        ansible_python_interpreter: "{{ _ansible_python }}"
-
-    # See mgmt-1 equivalent above for rationale: helm install --wait
-    # only blocks on the tigera-operator Deployment; calico-node DS
-    # is reconciled async, and Nodes stay NotReady until it lands.
-    # Workload cluster has more Nodes (3 CP + 2 worker) than mgmt,
-    # so the gap is wider — without this poll, MetalLB install with
-    # `wait: true` on its speaker DS times out waiting for Pods that
-    # cannot schedule onto NotReady Nodes.
-    - name: "Converge | e2e-local | workload | wait for all Nodes Ready post-CNI"
-      kubernetes.core.k8s_info:
-        kubeconfig: "{{ _workload_kc_runner }}"
-        api_version: v1
-        kind: Node
-      register: _converge_wl_nodes_post_cni
-      retries: 60
-      delay: 10
-      until: >-
-        ((_converge_wl_nodes_post_cni.resources | default([])) | length)
-          == ((_workload_cp_count | int) + (_workload_worker_count | int))
-        and ((_converge_wl_nodes_post_cni.resources
-               | map(attribute='status.conditions')
-               | map('selectattr', 'type', 'eq', 'Ready')
-               | map('first')
-               | map(attribute='status')
-               | unique
-               | list) == ['True'])
-      delegate_to: localhost
-      become: false
-      vars:
-        ansible_python_interpreter: "{{ _ansible_python }}"
-
-    - name: "Converge | e2e-local | workload | install upstream MetalLB"
-      kubernetes.core.helm:
-        kubeconfig: "{{ _workload_kc_runner }}"
-        name: metallb
-        chart_ref: "{{ _metallb_chart }}"
-        release_namespace: "{{ _metallb_namespace }}"
-        create_namespace: true
-        dependency_update: true
-        wait: true
-        wait_timeout: 10m
-      delegate_to: localhost
-      become: false
-      vars:
-        ansible_python_interpreter: "{{ _ansible_python }}"
-
-    - name: "Converge | e2e-local | workload | install MetalLB config"
-      kubernetes.core.helm:
-        kubeconfig: "{{ _workload_kc_runner }}"
-        name: metallb-config
-        chart_ref: "{{ _metallb_config_chart }}"
-        release_namespace: "{{ _metallb_namespace }}"
-        create_namespace: false
-        wait: true
-        wait_timeout: 10m
-        values:
-          pool:
-            rangeV6: "{{ _metallb_vip_range_v6 }}"
-          l2:
-            interface: "{{ _metallb_interface }}"
-          tests:
-            kubectlVersion: "{{ _kubernetes_version }}"
-      delegate_to: localhost
-      become: false
-      vars:
-        ansible_python_interpreter: "{{ _ansible_python }}"

@@ -1,126 +1,94 @@
-# Local Vagrant harness for k8s-lab.
+# The local test host (see Vagrantfile). The root Makefile's vm-up and
+# vm-destroy call these targets.
 #
-# Lifecycle contract:
-#   make up        — define/start libvirt networks, then `vagrant up` the host VM
-#   make destroy   — `vagrant destroy -f`, leave libvirt networks in place
-#   make wipe      — destroy + remove libvirt networks (heavy; forces re-define)
-#   make ssh       — ssh into the host VM
-#   make status    — vagrant status
-#
-# The libvirt networks are defined imperatively because vagrant-libvirt's
-# auto-creation of custom networks is flaky for IPv6-only segments; managing
-# them via `virsh net-define` gives reproducible XML-sourced topology.
+#   make up       check the prerequisites, start the VM, write .vagrant/ssh-config
+#   make destroy  remove the VM, including a domain and volumes vagrant lost track of
+#   make reboot   reboot the guest and wait until it is back (the host-reboot drill)
+#   make ssh      open a shell on the VM
+#   make status   show the VM state
 
 SHELL := /bin/bash
 .SHELLFLAGS := -eu -o pipefail -c
 
-HERE          := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
-NET_DIR       := $(HERE)/libvirt-networks
-VAGRANT       ?= vagrant
-# virsh talks to the system libvirtd via the libvirt group socket; the
-# runner is expected to be a member of `libvirt`. No sudo — if the call
-# fails with permission errors, add the user to that group and re-login.
-VIRSH         ?= virsh -c qemu:///system
+HERE       := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
+SSH_CONFIG := $(HERE)/.vagrant/ssh-config
+VAGRANT    ?= vagrant
+# vagrant-libvirt's default URI: the system libvirtd through the libvirt group
+# socket, no sudo.
+VIRSH      ?= virsh -c qemu:///system
+# What the Vagrantfile allocates in libvirt's default pool: the domain
+# <default_prefix><machine>, its system volume and the pool disk (vdb).
+DOMAIN     := k8slab_host
+VOLUMES    := $(DOMAIN).img $(DOMAIN)-vdb.qcow2
+POOL       := default
+# The pool disk as the guest sees it (the Vagrantfile's disk serial).
+POOL_DISK  := /dev/disk/by-id/virtio-k8slab-lxdpool
 
-NETS := k8slab-mgmt-nat
-ifeq ($(K8SLAB_PROBE),1)
-NETS += k8slab-probe-ext6
-endif
+.PHONY: up preflight libvirt destroy reboot ssh status
 
-# Libvirt-side artifacts this Vagrantfile produces. Kept as a single
-# variable so `destroy` / `wipe` stay symmetric with `up`.
-LIBVIRT_DOMAINS := k8slab_host k8slab_probe
-LIBVIRT_VOLUMES := k8slab_host.img k8slab_host-vdb.qcow2 \
-                   k8slab_probe.img k8slab_probe-vdb.qcow2
-LIBVIRT_POOL    ?= default
+# What vagrant would otherwise report far from the cause.
+preflight: libvirt
+	@command -v $(VAGRANT) >/dev/null \
+	  || { echo "ERROR: $(VAGRANT) not found" >&2; exit 1; }
+	@$(VAGRANT) plugin list 2>/dev/null | grep '^vagrant-libvirt ' >/dev/null \
+	  || { echo "ERROR: the vagrant-libvirt plugin is missing (doc/quickstart-local.md)" >&2; exit 1; }
+	@[ -r /dev/kvm ] && [ -w /dev/kvm ] \
+	  || { echo "ERROR: /dev/kvm is missing or not accessible (KVM enabled? user in the kvm group?)" >&2; exit 1; }
 
-.PHONY: up
-up: networks
+# Without libvirt, destroy would take every domain for absent and forget it.
+libvirt:
+	@$(VIRSH) uri >/dev/null 2>&1 \
+	  || { echo "ERROR: libvirt does not answer on qemu:///system (libvirtd running? user in the libvirt group?)" >&2; exit 1; }
+
+# Idempotent: `vagrant up` leaves a running VM alone, and the SSH config is
+# replaced only when it changed. tests/inventory/hosts.yml reaches the VM as
+# `host` through that file.
+up: preflight
 	cd $(HERE) && $(VAGRANT) up --provider=libvirt host
-	@if [ "$${K8SLAB_PROBE:-0}" = "1" ]; then \
-		cd $(HERE) && $(VAGRANT) up --provider=libvirt probe ; \
-	fi
+	cd $(HERE) && $(VAGRANT) ssh-config host > $(SSH_CONFIG).tmp
+	if cmp -s $(SSH_CONFIG).tmp $(SSH_CONFIG); then rm $(SSH_CONFIG).tmp; else mv $(SSH_CONFIG).tmp $(SSH_CONFIG); fi
+	ssh -F $(SSH_CONFIG) host test -b $(POOL_DISK) \
+	  || { echo "ERROR: the VM has no $(POOL_DISK), the pool disk of the Vagrantfile" >&2; exit 1; }
 
-# `destroy` tears down the VM + libvirt orphans only. Runner-side
-# artefacts (.artifacts/bootstrap.*, .artifacts/clusters/*, workload TF
-# state) are owned by the root Makefile's clean-* targets — destroy
-# from there as `make destroy-vm` so the cascade fires once, in one
-# place. Stand-alone `make -C tests/vagrant/debian13 destroy` leaves
-# .artifacts/ untouched (operator's call).
-.PHONY: destroy
-destroy:
+# After an interrupted `vagrant up` vagrant may no longer know the domain and
+# its volumes, and the next `up` fails with "Volume for domain is already
+# created"; remove them directly, then drop vagrant state that points at a
+# domain libvirt no longer has. Idempotent.
+destroy: libvirt
 	-cd $(HERE) && $(VAGRANT) destroy -f
-	@# Safety net for the case where vagrant was killed mid-flight (SIGKILL
-	@# on `vagrant up`, OOM, session drop). `vagrant destroy` can no longer
-	@# clean up orphan libvirt domains + volumes if its own state tracker
-	@# is gone, and the next `vagrant up` then fails instantly with
-	@# "Volume for domain is already created". Belt-and-braces: force-remove
-	@# any domain and volume this Vagrantfile is known to allocate.
-	@for d in $(LIBVIRT_DOMAINS); do \
-		if $(VIRSH) dominfo $$d >/dev/null 2>&1 ; then \
-			echo "== cleanup: virsh destroy $$d" ; \
-			$(VIRSH) destroy  $$d >/dev/null 2>&1 || true ; \
-			$(VIRSH) undefine --nvram $$d >/dev/null 2>&1 || \
-				$(VIRSH) undefine        $$d >/dev/null 2>&1 || true ; \
-		fi ; \
+	@if $(VIRSH) dominfo $(DOMAIN) >/dev/null 2>&1; then \
+		echo "== removing domain $(DOMAIN)"; \
+		$(VIRSH) destroy $(DOMAIN) >/dev/null 2>&1 || true; \
+		$(VIRSH) undefine --nvram $(DOMAIN) >/dev/null 2>&1 || $(VIRSH) undefine $(DOMAIN) >/dev/null; \
+	fi
+	@for v in $(VOLUMES); do \
+		if $(VIRSH) vol-info --pool $(POOL) $$v >/dev/null 2>&1; then \
+			echo "== removing volume $$v"; \
+			$(VIRSH) vol-delete --pool $(POOL) $$v >/dev/null; \
+		fi; \
 	done
-	@for v in $(LIBVIRT_VOLUMES); do \
-		if $(VIRSH) vol-info --pool $(LIBVIRT_POOL) $$v >/dev/null 2>&1 ; then \
-			echo "== cleanup: virsh vol-delete $$v" ; \
-			$(VIRSH) vol-delete --pool $(LIBVIRT_POOL) $$v >/dev/null 2>&1 || true ; \
-		fi ; \
-	done
-	@# Drop the local vagrant state directory when it has drifted from
-	@# libvirt reality — a leftover .vagrant/machines/*/libvirt/id pointing
-	@# at a no-longer-existing UUID causes `vagrant status` to report
-	@# "inaccessible" and `vagrant destroy` to no-op.
-	@for m in $(HERE)/.vagrant/machines/*/libvirt ; do \
-		[ -d "$$m" ] || continue ; \
-		if [ -f "$$m/id" ]; then \
-			uuid=$$(cat "$$m/id") ; \
-			if ! $(VIRSH) dominfo $$uuid >/dev/null 2>&1 ; then \
-				echo "== cleanup: removing stale vagrant state at $$m" ; \
-				rm -rf "$$m" ; \
-			fi ; \
-		fi ; \
-	done
+	@id=$(HERE)/.vagrant/machines/host/libvirt/id; \
+	if [ -f "$$id" ] && ! $(VIRSH) dominfo "$$(cat "$$id")" >/dev/null 2>&1; then \
+		echo "== removing stale vagrant state"; \
+		rm -rf "$(HERE)/.vagrant/machines/host/libvirt"; \
+	fi
+	rm -f $(SSH_CONFIG)
 
-.PHONY: wipe
-wipe: destroy
-	@for n in $(NETS); do \
-		echo "== removing libvirt net $$n" ; \
-		$(VIRSH) net-destroy   $$n >/dev/null 2>&1 || true ; \
-		$(VIRSH) net-undefine  $$n >/dev/null 2>&1 || true ; \
-	done
+# A reboot from inside the guest, as on a real host: systemd stops the services,
+# the LXD snap shuts its instances down. Done when the guest answers with a new
+# boot id; the SSH session the reboot cuts off is not an error.
+reboot:
+	@before=$$(ssh -F $(SSH_CONFIG) host cat /proc/sys/kernel/random/boot_id); \
+	ssh -F $(SSH_CONFIG) host sudo systemctl reboot || true; \
+	for _ in $$(seq 1 60); do \
+		sleep 5; \
+		now=$$(ssh -F $(SSH_CONFIG) -o ConnectTimeout=5 host cat /proc/sys/kernel/random/boot_id 2>/dev/null || true); \
+		if [ -n "$$now" ] && [ "$$now" != "$$before" ]; then echo "== the VM is back"; exit 0; fi; \
+	done; \
+	echo "ERROR: the VM did not come back within 5 minutes" >&2; exit 1
 
-# `virsh net-list --name` prints only active networks, one per line.
-# We stash the list once and test membership with bash string match to
-# avoid SIGPIPE / pipefail issues that arise from piping into `grep -q`
-# under `set -eu -o pipefail`.
-.PHONY: networks
-networks:
-	@active_list=$$'\n'"$$($(VIRSH) net-list --name)"$$'\n' ; \
-	for n in $(NETS); do \
-		xml="$(NET_DIR)/$${n#k8slab-}.xml" ; \
-		if ! $(VIRSH) net-info $$n >/dev/null 2>&1 ; then \
-			echo "== defining libvirt net $$n from $$xml" ; \
-			$(VIRSH) net-define $$xml ; \
-			$(VIRSH) net-autostart $$n ; \
-		fi ; \
-		if [[ "$$active_list" != *$$'\n'"$$n"$$'\n'* ]] ; then \
-			echo "== starting libvirt net $$n" ; \
-			$(VIRSH) net-start $$n ; \
-		fi ; \
-	done
-
-.PHONY: ssh
 ssh:
 	cd $(HERE) && $(VAGRANT) ssh host
 
-.PHONY: status
 status:
 	cd $(HERE) && $(VAGRANT) status
-
-.PHONY: inventory
-inventory:
-	@$(HERE)/inventory.py

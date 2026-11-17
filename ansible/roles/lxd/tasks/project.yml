@@ -1,0 +1,13 @@
+---
+# LXD refuses feature changes once the project holds instances; the update
+# runs only when an owned key differs.
+- name: "lxd | project | restricted project of the nodes"
+  ansible.builtin.include_tasks: ensure.yml
+  vars:
+    _lxd_ensure:
+      label: project
+      path: /1.0/projects
+      name: "{{ _lxd_project.name }}"
+      create: "{{ _lxd_project }}"
+      body: {description: "{{ _lxd_project.description }}", config: "{{ _lxd_project.config }}"}
+      method: PATCH

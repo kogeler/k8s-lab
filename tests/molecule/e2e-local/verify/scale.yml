@@ -1,0 +1,54 @@
+---
+# One scaling step through the fixture, as an operator runs it: the cluster root
+# with `_workers` workers, then the add-on root, whose convergence check waits
+# for Cluster API and whose gates re-run because the Cluster changed. Both plans
+# are clean afterwards and every node is Ready.
+- name: "Verify | e2e-local | scale | apply the cluster root with workers = {{ _workers }}"
+  ansible.builtin.command:
+    argv: [terraform, "-chdir={{ _fixture }}/cluster", apply, -auto-approve, -input=false, -no-color, "-var=worker_count={{ _workers }}",
+           "-var=handoff_path={{ k8s_lab_artifacts_dir }}/handoff.json"]
+  changed_when: true
+  delegate_to: localhost
+
+- name: "Verify | e2e-local | scale | apply the add-on root"
+  ansible.builtin.command:
+    argv: [terraform, "-chdir={{ _fixture }}/addons", apply, -auto-approve, -input=false, -no-color,
+           "-var=handoff_path={{ k8s_lab_artifacts_dir }}/handoff.json"]
+  register: _verify_scale_addons
+  changed_when: true
+  delegate_to: localhost
+
+- name: "Verify | e2e-local | scale | the convergence check and both gates ran again"
+  ansible.builtin.assert:
+    that: _ran | length == 3
+    fail_msg: "re-run after the Cluster changed: {{ _ran }}"
+    quiet: true
+  vars:
+    _ran: >-
+      {{ _verify_scale_addons.stdout_lines
+         | select('search', 'terraform_data\.(cluster_converged|gate_cni|gate_metallb): Creation complete')
+         | list }}
+
+- name: "Verify | e2e-local | scale | no change in the plan of either root"
+  ansible.builtin.command:
+    argv: "{{ ['terraform', '-chdir=' ~ _fixture ~ '/' ~ item, 'plan', '-detailed-exitcode', '-input=false', '-no-color',
+               '-var=handoff_path=' ~ k8s_lab_artifacts_dir ~ '/handoff.json']
+              + (['-var=worker_count=' ~ _workers] if item == 'cluster' else []) }}"
+  changed_when: false
+  loop: [cluster, addons]
+  delegate_to: localhost
+
+- name: "Verify | e2e-local | scale | every node Ready"
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ _workload_kubeconfig }}"
+    kind: Node
+  register: _verify_scale_nodes
+  retries: 12
+  delay: 5
+  until: >-
+    _verify_scale_nodes.resources | length == (_workload_cp_count | int) + (_workers | int)
+    and _verify_scale_nodes.resources | map(attribute='status.conditions')
+        | map('selectattr', 'type', 'eq', 'Ready') | map('first') | map(attribute='status') | unique | list == ['True']
+  delegate_to: localhost
+  vars:
+    ansible_python_interpreter: "{{ ansible_playbook_python }}"

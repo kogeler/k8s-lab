@@ -1,0 +1,80 @@
+---
+# An IPv6 client off the external link: a network namespace with one address
+# in `harness_offlink_ipv6_prefix`, routed by this host (the simulated provider
+# router). A client on the external link itself would get every reply over
+# that link and could not show which way a node answers a routed client.
+#
+# Like a provider's anti-spoofing filter, the router takes traffic from the
+# external prefix to the client only from the external link: a node that
+# answered through the internal network gets "prohibited". Two routing rules,
+# no firewall — declared to systemd-networkd with the router link, because
+# networkd removes rules it does not know (ManageForeignRoutingPolicyRules)
+# whenever it reloads.
+- name: "Prepare | offlink | drop-in directory of the router link"
+  ansible.builtin.file:
+    path: /etc/systemd/network/45-k8slab-ext6-ra-peer.network.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: "Prepare | offlink | the router takes external-source traffic to the client only from the external link"
+  ansible.builtin.copy:
+    dest: /etc/systemd/network/45-k8slab-ext6-ra-peer.network.d/50-k8slab-offlink.conf
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      # Managed by the k8s-lab test harness.
+      [RoutingPolicyRule]
+      From={{ _ext6_prefix }}
+      To={{ harness_offlink_ipv6_prefix }}
+      IncomingInterface={{ _ext6_ra_peer }}
+      Table=main
+      Priority=1000
+
+      [RoutingPolicyRule]
+      From={{ _ext6_prefix }}
+      To={{ harness_offlink_ipv6_prefix }}
+      Type=prohibit
+      Priority=1001
+  notify: "Prepare | harness | reload systemd-networkd"
+
+- name: "Prepare | offlink | client namespace unit"
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/k8slab-offlink-client.service
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      # Managed by the k8s-lab test harness.
+      [Unit]
+      Description=k8s-lab harness: IPv6 client in {{ harness_offlink_ipv6_prefix }}, routed by this host
+
+      [Service]
+      Type=oneshot
+      RemainAfterExit=yes
+      ExecStart=/usr/sbin/ip netns add k8slab-offlink
+      ExecStart=/usr/sbin/ip link add k8slab-offlink type veth peer name eth0 netns k8slab-offlink
+      ExecStart=/usr/sbin/ip addr add {{ harness_offlink_router }}/{{ _length }} dev k8slab-offlink nodad
+      ExecStart=/usr/sbin/ip link set k8slab-offlink up
+      ExecStart=/usr/sbin/ip -n k8slab-offlink link set lo up
+      ExecStart=/usr/sbin/ip -n k8slab-offlink addr add {{ harness_offlink_client }}/{{ _length }} dev eth0 nodad
+      ExecStart=/usr/sbin/ip -n k8slab-offlink link set eth0 up
+      ExecStart=/usr/sbin/ip -n k8slab-offlink route add default via {{ harness_offlink_router }}
+      # `-`: a stop after an edit of this unit removes what the old one made.
+      ExecStop=-/usr/sbin/ip link del k8slab-offlink
+      ExecStop=-/usr/sbin/ip netns del k8slab-offlink
+
+      [Install]
+      WantedBy=multi-user.target
+  vars:
+    _length: "{{ harness_offlink_ipv6_prefix | regex_replace('^.*/', '') }}"
+  register: _offlink_unit
+
+- name: "Prepare | offlink | client namespace up with the current unit"
+  ansible.builtin.systemd:
+    name: k8slab-offlink-client.service
+    enabled: true
+    daemon_reload: "{{ _offlink_unit.changed }}"
+    state: "{{ 'restarted' if _offlink_unit.changed else 'started' }}"

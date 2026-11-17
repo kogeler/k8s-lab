@@ -1,0 +1,20 @@
+---
+galaxy_info:
+  role_name: capn_identity
+  namespace: k8slab
+  author: k8s-lab contributors
+  description: The project-restricted LXD client identity CAPN uses, and its Secret on the managing API.
+  license: MIT
+  min_ansible_version: "2.19"
+  platforms:
+    - name: Debian
+      versions:
+        - trixie
+    - name: Ubuntu
+      versions:
+        - jammy
+        - noble
+        - resolute
+
+# Acts on LXD and on a Kubernetes API; the playbook orders it after lxd.
+dependencies: []

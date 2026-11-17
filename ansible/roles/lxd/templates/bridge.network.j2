@@ -1,0 +1,14 @@
+# Managed by the k8s-lab lxd role. The host keeps no address on the external
+# network; the nodes' eth1 do.
+[Match]
+Name={{ lxd_bridge_name }}
+
+# Here as well as in the .netdev: a reload applies [Link] to the existing
+# bridge, while a changed .netdev takes effect only when the bridge is created.
+[Link]
+MTUBytes={{ lxd_bridge_mtu }}
+
+[Network]
+LinkLocalAddressing=no
+IPv6AcceptRA=no
+ConfigureWithoutCarrier=yes

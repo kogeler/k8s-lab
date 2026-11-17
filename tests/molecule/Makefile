@@ -1,170 +1,52 @@
-# Molecule wrapper Makefile for k8s-lab.
+# Molecule scenarios: `make <scenario>-<action>`, e.g. `substrate-test`,
+# `e2e-local-converge`. Each target is a plain `molecule <action> -s
+# <scenario>` run from tests/, which is all a scenario needs once the test
+# host is up (`make vm-up` at the repository root).
 #
-# Contract (plan §9.4):
-#   * targets follow the scheme `<scenario>-<driver>-<action>`;
-#   * even when a scenario has only one driver, the driver name stays in the
-#     target so the invocation scheme is stable across the repo;
-#   * driver-specific quirks (ANSIBLE_LIBRARY for vagrant-libvirt, GIT_DIR
-#     shim for role layout detection, …) are plumbed explicitly here and
-#     not left as folklore.
+#   VARS=alt-vars.yml   apply tests/playbooks/alt-vars.yml on top of the
+#                       reference values (every playbook of the scenario)
 
 SHELL := /bin/bash
 .SHELLFLAGS := -eu -o pipefail -c
 
-HERE          := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
-REPO_ROOT     := $(abspath $(HERE)/../..)
+HERE      := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
+TESTS_DIR := $(abspath $(HERE)/..)
+REPO_ROOT := $(abspath $(TESTS_DIR)/..)
+# Molecule's state per scenario, inside this checkout (Molecule's default is
+# keyed on the directory name `tests` and shared with any project that has one).
+STATE_DIR := $(REPO_ROOT)/.cache/molecule
+MOLECULE  ?= molecule
+VARS      ?=
 
-# Python tooling (ansible, molecule, …) is expected to come from an
-# already-activated virtualenv on $PATH. Callers should `source
-# <venv>/bin/activate` before invoking `make`.
-MOLECULE      ?= molecule
-ANSIBLE       ?= ansible
-ANSIBLE_PLAY  ?= ansible-playbook
+SCENARIOS := substrate bootstrap e2e-local gha
+ACTIONS   := prepare converge idempotence verify test destroy
+EXTRA     := $(if $(VARS),-- -e @$(TESTS_DIR)/playbooks/$(VARS))
 
-# Molecule discovers scenarios via ANSIBLE_COLLECTIONS_PATH / role layout; this
-# repo is a plain roles directory, not a collection, so some Molecule versions
-# mis-classify it. The shim below forces "role" mode for scenarios that run
-# against a single role and avoids git-metadata probing.
-export ANSIBLE_ROLES_PATH       := $(REPO_ROOT)/ansible/roles
-export ANSIBLE_COLLECTIONS_PATH := $(REPO_ROOT)/ansible/collections
-export MOLECULE_NO_LOG          ?= false
-# Molecule's default scenario glob is `molecule/*/molecule.yml`, resolved
-# relative to CWD. Our scenarios live directly under `tests/molecule/`,
-# so we redirect the glob to skip the extra `molecule/` prefix.
-export MOLECULE_GLOB            := $(HERE)/*/molecule.yml
+# A target is <scenario>-<action>; scenario names contain dashes, actions do not.
+action    = $(lastword $(subst -, ,$1))
+scenario  = $(1:%-$(call action,$1)=%)
 
-# vagrant-libvirt ships its Ansible modules via a Python package; make them
-# visible without requiring a global `collection install`. Falls back
-# silently if molecule_plugins.vagrant is not importable.
-_VAGRANT_PLUGIN_DIR := $(shell python -c 'import os, molecule_plugins.vagrant; print(os.path.dirname(molecule_plugins.vagrant.__file__))' 2>/dev/null)
-ifneq ($(_VAGRANT_PLUGIN_DIR),)
-export ANSIBLE_LIBRARY := $(_VAGRANT_PLUGIN_DIR)$(if $(ANSIBLE_LIBRARY),:$(ANSIBLE_LIBRARY))
-endif
+TARGETS := $(foreach s,$(SCENARIOS),$(addprefix $(s)-,$(ACTIONS)))
+.PHONY: help reset $(TARGETS)
 
-# Scenarios that exist under tests/molecule/. Names are kebab-case so
-# that `make <scenario>-<driver>-<action>` reads consistently on the
-# command line; the snake_case Ansible role they exercise (e.g.
-# `ansible/roles/base_system`) is referenced by each scenario's
-# `molecule.yml` via `_shared_target_role`, not by this directory name.
-# Keep the list curated — it drives `harness-smoke` and `destroy-all`.
-SCENARIOS := \
-	base-system \
-	binary-fetch \
-	lxd-host \
-	lxd-project \
-	lxd-storage-pools \
-	lxd-network-int-managed \
-	lxd-profiles \
-	lxd-bootstrap-instance \
-	bootstrap-k3s \
-	bootstrap-clusterctl \
-	bootstrap-capn-secret \
-	export-artifacts \
-	cleanup-bootstrap \
-	e2e-local
-
-# Drivers currently wired in this repo. `delegated` uses the Vagrant VM
-# directly; keeping `vagrant` as an alias lets the scheme tolerate future
-# drivers without renaming targets.
-DRIVERS := delegated vagrant
-
-# CI-only scenarios that bypass the Vagrant harness entirely. The `gha`
-# scenario runs molecule directly against the GitHub Actions runner
-# (`ansible_connection: local` in host_vars), so we route it through a
-# separate `gha-local-*` target family that:
-#   * does NOT shell out to `molecule_run.py` (no `make up`, no
-#     `vagrant ssh-config` discovery);
-#   * refuses to run unless $GITHUB_ACTIONS=true, mirroring the
-#     scenario's own first-task assertion.
-GHA_SCENARIOS := gha
-
-.PHONY: help
 help:
-	@echo "Targets follow the scheme <scenario>-<driver>-<action>."
-	@echo ""
-	@echo "Local (Vagrant) scenarios: $(SCENARIOS)"
-	@echo "Local drivers:             $(DRIVERS)"
-	@echo "CI-only scenarios:         $(GHA_SCENARIOS) (driver=local, GHA-only)"
-	@echo "Actions:                   create prepare converge idempotence verify test destroy"
-	@echo ""
-	@echo "Convenience:"
-	@echo "  harness-smoke    — quick local smoke (no scenario run)"
-	@echo "  destroy-all      — destroy every known scenario"
+	@echo "make <scenario>-<action> [VARS=alt-vars.yml]"
+	@echo "  scenarios: $(SCENARIOS)"
+	@echo "  actions:   $(ACTIONS)"
+	@echo "make reset   forget the Molecule state of this checkout's scenarios"
 
-.PHONY: harness-smoke
-harness-smoke:
-	@echo "== checking molecule installation"
-	@$(MOLECULE) --version
-	@echo "== listing scenarios"
-	@for s in $(SCENARIOS); do \
-		[ -f "$(HERE)/$$s/molecule.yml" ] && echo "  ready: $$s" \
-			|| echo "  (missing): $$s" ; \
-	done
-
-.PHONY: destroy-all
-destroy-all:
-	@for s in $(SCENARIOS); do \
-		if [ -f "$(HERE)/$$s/molecule.yml" ]; then \
-			echo "== molecule destroy $$s" ; \
-			$(MAKE) -C $(HERE) $$s-delegated-destroy || true ; \
-		fi ; \
-	done
-
-# ---- Pattern rule: <scenario>-<driver>-<action> --------------------------
-#
-# Matches e.g. `base-system-delegated-converge`, `lxd-profiles-vagrant-verify`.
-# `%` captures the scenario name (kebab-case, matches the directory under
-# tests/molecule/); the literal `-<driver>-<action>` suffix is what
-# disambiguates the target. The driver segment is informational — the
-# scenario's molecule.yml is the single source of truth for the driver.
-%-delegated-create      %-vagrant-create:        ; $(call _molecule,$*,create)
-%-delegated-prepare     %-vagrant-prepare:       ; $(call _molecule,$*,prepare)
-%-delegated-converge    %-vagrant-converge:      ; $(call _molecule,$*,converge)
-%-delegated-idempotence %-vagrant-idempotence:   ; $(call _molecule,$*,idempotence)
-%-delegated-verify      %-vagrant-verify:        ; $(call _molecule,$*,verify)
-%-delegated-test        %-vagrant-test:          ; $(call _molecule,$*,test)
-%-delegated-destroy     %-vagrant-destroy:       ; $(call _molecule,$*,destroy)
-%-delegated-lint        %-vagrant-lint:          ; $(call _molecule,$*,lint)
-
-# Route a molecule action through the Python wrapper that brings the
-# Vagrant VM up and exports K8SLAB_HOST_* env vars before exec'ing molecule.
-define _molecule
-	@$(REPO_ROOT)/scripts/molecule_run.py $1 $2
-endef
-
-# ---- gha-local-<action>: CI-only, no Vagrant -----------------------------
-#
-# Skips `scripts/molecule_run.py` entirely (no `vagrant up`, no SSH
-# coordinate export) and invokes `molecule` directly against the
-# scenario whose `host_vars/k8slab-host.yml` pins
-# `ansible_connection: local`. The runner's own filesystem IS the
-# target — there is no separate guest VM to discover.
-#
-# The leading guard refuses to run unless $GITHUB_ACTIONS=true so a
-# fat-fingered `make gha-local-converge` on a dev box cannot mutate
-# host networking, snap, systemd-networkd, iptables, swap and
-# /etc/fstab on the developer's machine. The Molecule scenario itself
-# repeats the same assertion in `prepare.yml` as defence in depth.
-define _molecule_local
-	@if [ "$${GITHUB_ACTIONS:-}" != "true" ]; then \
-		echo "ERROR: gha scenario is CI-only — refusing to run locally."; \
-		echo "       The scenario mutates host networking, snap, iptables,"; \
-		echo "       swap and /etc/fstab in ways that conflict with the"; \
-		echo "       Vagrant local harness. Use e2e-local for local e2e."; \
+# The gha scenario changes the machine it runs on (Docker, swap, iptables,
+# disks): only inside a GitHub Actions job. Its playbooks assert the same.
+# A full `test` starts a new record of the first converge (the e2e verify
+# compares the second run with it).
+$(TARGETS):
+	@if [ "$(call scenario,$@)" = gha ] && [ "$${GITHUB_ACTIONS:-}" != "true" ]; then \
+		echo "ERROR: the gha scenario runs only in GitHub Actions; use e2e-local on the local VM." >&2; \
 		exit 1; \
 	fi
-	@MOLECULE_GLOB='$(HERE)/*/molecule.yml' \
-		$(MOLECULE) $2 -s $1
-endef
+	$(if $(filter test,$(call action,$@)),rm -f $(REPO_ROOT)/.artifacts/e2e-first-run.json)
+	cd $(TESTS_DIR) && MOLECULE_EPHEMERAL_DIRECTORY=$(STATE_DIR)/$(call scenario,$@) \
+		$(MOLECULE) $(call action,$@) -s $(call scenario,$@) $(EXTRA)
 
-gha-local-create:        ; $(call _molecule_local,gha,create)
-gha-local-prepare:       ; $(call _molecule_local,gha,prepare)
-gha-local-converge:      ; $(call _molecule_local,gha,converge)
-gha-local-idempotence:   ; $(call _molecule_local,gha,idempotence)
-gha-local-verify:        ; $(call _molecule_local,gha,verify)
-gha-local-test:          ; $(call _molecule_local,gha,test)
-gha-local-destroy:       ; $(call _molecule_local,gha,destroy)
-gha-local-lint:          ; $(call _molecule_local,gha,lint)
-.PHONY: gha-local-create gha-local-prepare gha-local-converge \
-        gha-local-idempotence gha-local-verify gha-local-test \
-        gha-local-destroy gha-local-lint
+reset:
+	rm -rf $(STATE_DIR)

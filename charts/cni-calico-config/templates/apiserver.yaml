@@ -1,0 +1,9 @@
+# With native projectcalico.org/v3 CRDs the operator deploys admission webhooks
+# for the Calico API instead of an aggregated API server.
+apiVersion: operator.tigera.io/v1
+kind: APIServer
+metadata:
+  name: default
+  labels:
+    {{- include "cni-calico-config.labels" . | nindent 4 }}
+spec: {}

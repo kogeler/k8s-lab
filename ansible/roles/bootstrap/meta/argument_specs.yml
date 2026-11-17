@@ -1,0 +1,105 @@
+---
+argument_specs:
+  main:
+    short_description: The transient k3s bootstrap cluster
+    description:
+      - Creates the bootstrap container with its API published on the host, installs and starts
+        k3s once, and writes bootstrap.kubeconfig on host and runner. Does nothing when the
+        management cluster is self-hosted.
+    options:
+      k8s_lab_project_name: &project_name
+        type: str
+        required: true
+        description: LXD project every cluster instance lives in.
+      k8s_lab_bootstrap_instance_name: &bootstrap_instance_name
+        type: str
+        required: true
+        description: LXD instance of the bootstrap cluster.
+      k8s_lab_api_listen_address:
+        type: str
+        required: true
+        description: IPv4 address of the host the published API servers listen on; restrict it on a host with a public address.
+      k8s_lab_lxd_host_address:
+        type: str
+        required: true
+        description: The host as the runner reaches it (an IPv4 address or a name); the published API servers are on this address.
+      k8s_lab_opt_root: &opt_root
+        type: path
+        required: true
+        description: Host directory for pinned binaries (bin/) and role state (etc/).
+      k8s_lab_artifacts_dir: &artifacts_dir
+        type: path
+        required: true
+        description: Runner directory of the kubeconfigs and handoff.json (0600 files).
+      k8s_lab_management_state:
+        type: str
+        description: Published by management_cluster (tasks_from state); the role does nothing when it is self_hosted.
+      bootstrap_project: &project
+        type: str
+        description: The LXD project.
+      bootstrap_instance_name: &instance_name
+        type: str
+        description: The bootstrap instance.
+      bootstrap_image_alias:
+        type: str
+        description: Image alias on images.lxd.canonical.com.
+      bootstrap_api_listen_address:
+        type: str
+        description: Host address of the proxy device that publishes the k3s API.
+      bootstrap_api_port:
+        type: int
+        description: Its host port.
+      bootstrap_api_host:
+        type: str
+        description: Address in the kubeconfig, through which host and runner reach the published API.
+      bootstrap_opt_root: &bootstrap_opt_root
+        type: path
+        description: Host directory of the k3s binary (bin/) and of the kubeconfig and staging (etc/).
+      bootstrap_artifacts_dir: &bootstrap_artifacts_dir
+        type: path
+        description: Runner directory of bootstrap.kubeconfig.
+      bootstrap_wait_timeout:
+        type: int
+        description: Seconds to wait for the instance's addresses, and again for a Ready node.
+      bootstrap_pod_cidrs:
+        type: list
+        elements: str
+        description: k3s's Pod networks as [IPv4, IPv6]; apart from the internal network.
+      bootstrap_service_cidrs:
+        type: list
+        elements: str
+        description: k3s's Service networks as [IPv4, IPv6]; apart from the internal network.
+      bootstrap_cluster_dns:
+        type: list
+        elements: str
+        description: k3s's cluster DNS addresses as [IPv4, IPv6], inside the service networks.
+      bootstrap_enabled:
+        type: bool
+        description: Run the role at all.
+      bootstrap_flow_control_instance:
+        type: bool
+        description: The bootstrap container and its address wait.
+      bootstrap_flow_control_k3s:
+        type: bool
+        description: The k3s binary, configuration, unit and node readiness.
+      bootstrap_flow_control_kubeconfig:
+        type: bool
+        description: bootstrap.kubeconfig on host and runner.
+  destroy:
+    short_description: Remove the bootstrap cluster once mgmt-1 manages itself
+    description:
+      - Refuses unless the management state is self_hosted and the bootstrap API holds no Cluster;
+        fails when LXD does not answer. Removes the instance and both kubeconfigs. The main entry
+        point's toggles do not apply.
+    options:
+      k8s_lab_project_name: *project_name
+      k8s_lab_bootstrap_instance_name: *bootstrap_instance_name
+      k8s_lab_opt_root: *opt_root
+      k8s_lab_artifacts_dir: *artifacts_dir
+      k8s_lab_management_state:
+        type: str
+        description: Published by management_cluster (tasks_from state); the instance is removed only when it is self_hosted.
+      bootstrap_project: *project
+      bootstrap_instance_name: *instance_name
+      bootstrap_opt_root: *bootstrap_opt_root
+      bootstrap_artifacts_dir: *bootstrap_artifacts_dir

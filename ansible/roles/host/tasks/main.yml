@@ -1,0 +1,50 @@
+---
+- name: "host | preflight"
+  ansible.builtin.include_tasks:
+    file: preflight.yml
+    apply:
+      tags: ["host", "host-preflight", "host_preflight"]
+  when:
+    - host_enabled | bool
+    - host_flow_control_preflight | bool
+  tags: ["host", "host-preflight", "host_preflight"]
+
+- name: "host | packages"
+  ansible.builtin.include_tasks:
+    file: packages.yml
+    apply:
+      tags: ["host", "host-packages", "host_packages"]
+  when:
+    - host_enabled | bool
+    - host_flow_control_packages | bool
+  tags: ["host", "host-packages", "host_packages"]
+
+- name: "host | kernel"
+  ansible.builtin.include_tasks:
+    file: kernel.yml
+    apply:
+      tags: ["host", "host-kernel", "host_kernel"]
+  when:
+    - host_enabled | bool
+    - host_flow_control_kernel | bool
+  tags: ["host", "host-kernel", "host_kernel"]
+
+- name: "host | dirs"
+  ansible.builtin.include_tasks:
+    file: dirs.yml
+    apply:
+      tags: ["host", "host-dirs", "host_dirs"]
+  when:
+    - host_enabled | bool
+    - host_flow_control_dirs | bool
+  tags: ["host", "host-dirs", "host_dirs"]
+
+- name: "host | binaries"
+  ansible.builtin.include_tasks:
+    file: binaries.yml
+    apply:
+      tags: ["host", "host-binaries", "host_binaries"]
+  when:
+    - host_enabled | bool
+    - host_flow_control_binaries | bool
+  tags: ["host", "host-binaries", "host_binaries"]

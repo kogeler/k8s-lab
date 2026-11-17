@@ -1,0 +1,11 @@
+---
+- name: "lxd | registry | image registry of the node images"
+  ansible.builtin.include_tasks: ensure.yml
+  vars:
+    _lxd_ensure:
+      label: registry
+      path: /1.0/image-registries
+      name: "{{ _lxd_registry.name }}"
+      create: "{{ _lxd_registry }}"
+      body: {description: "{{ _lxd_registry.description }}", config: "{{ _lxd_registry.config }}"}
+      method: PATCH

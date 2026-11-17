@@ -1,0 +1,158 @@
+{{- /*
+Gate A (`helm test`): a LoadBalancer Service gets a pool address and answers.
+An agnhost netexec server and an IPv6 LoadBalancer Service that asks this
+release's pool for an address (MetalLB chooses it, as for any Service); a
+client Pod reads the assigned address from the Service's status (a Role that
+may get only that Service) and fetches it, retrying until its deadline: Helm
+waits for neither the Deployment nor the address. Everything is removed when
+the gate passes. That the address is reachable from outside the cluster is
+checked by the e2e verify (tests/fixtures/charts/external-probe).
+*/}}
+{{- $name := printf "%s-gate-a" .Release.Name -}}
+{{- $labels := include "metallb-config.labels" . -}}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- $labels | nindent 4 }}
+  annotations:
+    {{- include "metallb-config.testHook" -10 | nindent 4 }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ $name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- $labels | nindent 4 }}
+  annotations:
+    {{- include "metallb-config.testHook" -10 | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["services"]
+    resourceNames: [{{ $name | quote }}]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ $name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- $labels | nindent 4 }}
+  annotations:
+    {{- include "metallb-config.testHook" -10 | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ $name }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ $name }}
+    namespace: {{ .Release.Namespace }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- $labels | nindent 4 }}
+  annotations:
+    {{- include "metallb-config.testHook" -10 | nindent 4 }}
+data:
+  gate-a.sh: |
+    {{- .Files.Get "files/gate-a.sh" | trimSuffix "\n" | nindent 4 }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- $labels | nindent 4 }}
+  annotations:
+    {{- include "metallb-config.testHook" -5 | nindent 4 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: gate-a-server
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/instance: {{ .Release.Name }}
+        app.kubernetes.io/component: gate-a-server
+    spec:
+      automountServiceAccountToken: false
+      containers:
+        - name: netexec
+          image: {{ .Values.tests.image | quote }}
+          args: ["netexec", "--http-port=8080"]
+          ports:
+            - {name: http, containerPort: 8080}
+          readinessProbe:
+            tcpSocket:
+              port: http
+            periodSeconds: 2
+          securityContext:
+            {{- include "metallb-config.containerSecurity" . | nindent 12 }}
+          resources:
+            requests: {cpu: 10m, memory: 16Mi}
+            limits: {memory: 64Mi}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- $labels | nindent 4 }}
+  annotations:
+    {{- include "metallb-config.testHook" -5 | nindent 4 }}
+    metallb.io/address-pool: {{ printf "%s-v6" .Release.Name | quote }}
+spec:
+  type: LoadBalancer
+  ipFamilyPolicy: SingleStack
+  ipFamilies: [IPv6]
+  selector:
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: gate-a-server
+  ports:
+    - {name: http, port: 80, targetPort: http}
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: {{ $name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- $labels | nindent 4 }}
+  annotations:
+    {{- include "metallb-config.testHook" 0 | nindent 4 }}
+spec:
+  serviceAccountName: {{ $name }}
+  restartPolicy: Never
+  containers:
+    - name: client
+      image: {{ .Values.tests.image | quote }}
+      command: ["sh", "/opt/k8s-lab/gate-a.sh"]
+      env:
+        - {name: NAMESPACE, value: {{ .Release.Namespace | quote }}}
+        - {name: SERVICE, value: {{ $name | quote }}}
+        - {name: PORT, value: {{ .Values.tests.probePort | quote }}}
+        - {name: TIMEOUT, value: {{ .Values.tests.timeoutSeconds | quote }}}
+      securityContext:
+        {{- include "metallb-config.containerSecurity" . | nindent 8 }}
+      resources:
+        requests: {cpu: 10m, memory: 16Mi}
+        limits: {memory: 64Mi}
+      volumeMounts:
+        - {name: script, mountPath: /opt/k8s-lab, readOnly: true}
+  volumes:
+    - name: script
+      configMap:
+        name: {{ $name }}

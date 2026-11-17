@@ -1,178 +1,91 @@
 ---
-# Harness-only Router Advertisement source for br-ext6.
-#
-# Problem
-# -------
-# Production `lxd_host` creates `br-ext6` as a pure L2 stub — no IP on
-# the bridge, `IPv6AcceptRA=no` on the uplink `.network`. In a real
-# deployment the uplink reaches a provider router that serves RA and
-# DHCPv6 to everything on the L2 segment, so CAPN-spawned workload
-# containers — wired with `IPv6AcceptRA=yes` on eth1 by
-# `KubeadmConfigSpec.files` (charts/capi-cluster-class) — autoconfigure
-# a global IPv6 via SLAAC on first boot. The local Vagrant harness
-# has no such provider router, so this task stands one up inside the
-# VM via a veth pair + radvd.
-#
-# Fix
-# ---
-# Run the RA source inside the VM via a `veth` pair:
-#   * `ext6-ra`      → enslaved to `br-ext6`, carries no IP;
-#   * `ext6-ra-peer` → outside the bridge, holds 2001:db8:42:100::1/64
-#                      and a link-local; radvd listens here.
-# Multicast RA packets sent by radvd on `ext6-ra-peer` traverse the
-# veth to `ext6-ra` and get flooded by the bridge to every other port —
-# including any container's eth1 attached via `nictype=bridged
-# parent=br-ext6`.
-#
-# Wiring with the `lxd_host` role: shared host_vars pin
-# `lxd_host_ext_bridge_uplink: ext6-ra`, so the role's own
-# `30-br-ext6-uplink.network` matches `ext6-ra` and enslaves it to
-# br-ext6. This file only ships the veth netdev + the peer `.network`
-# + radvd.conf — it does NOT touch br-ext6 itself, keeping the bridge
-# IP-free as prod expects.
-#
-# Scope
-# -----
-# Included from `shared/tasks/prepare.yml` so every Molecule scenario
-# gets it. Substrate for the whole harness — `lxd_host`'s healthcheck
-# refuses to pass until `ext6-ra` is an actual bridge member.
-# Idempotent and cheap (<2s on re-run), so gating per-scenario would
-# be more trouble than the cost.
-#
-# Idempotence
-# -----------
-# All state is file-managed via `ansible.builtin.copy`; systemd-networkd
-# is reloaded only when a file changes; radvd is restarted only when
-# its config or the networkd drop-ins change.
-
-- name: "ext6-ra-source | install radvd"
+# The external network's router, played inside the test host. A real uplink
+# reaches a provider router that advertises the external IPv6 prefix; the
+# harness has none, so a veth pair stands in: the end named by the playbook's
+# uplink input is enslaved to the external bridge by the roles, and radvd on
+# the peer end advertises the external prefix (`_ext6_prefix`) through it. The
+# bridge itself stays address-free, as on a real host.
+- name: "Prepare | ext6-ra | install radvd"
+  # A fresh box has no package lists yet.
   ansible.builtin.apt:
     name: radvd
     state: present
-    update_cache: false
+    update_cache: true
+    cache_valid_time: 3600
 
-# Stop radvd if it was running from a previous converge so it does not
-# crash-loop on a stale config while we rewrite the netdev/network
-# files. It gets started again at the bottom.
-- name: "ext6-ra-source | stop radvd before rewriting config"
-  ansible.builtin.systemd:
-    name: radvd.service
-    state: stopped
-  failed_when: false
-  changed_when: false
-
-- name: "ext6-ra-source | write veth netdev (ext6-ra <-> ext6-ra-peer)"
-  # Single .netdev file defines both ends of the veth pair. Kind=veth
-  # with [Peer] is the documented systemd-networkd recipe; the kernel
-  # creates both sides at once the moment systemd-networkd processes
-  # this file.
+- name: "Prepare | ext6-ra | veth pair"
   ansible.builtin.copy:
-    dest: "/etc/systemd/network/45-k8slab-ext6-ra.netdev"
+    dest: /etc/systemd/network/45-k8slab-ext6-ra.netdev
     owner: root
     group: root
     mode: "0644"
     content: |
-      # Managed by tests/molecule/shared/tasks/ext6-ra-source.yml.
-      # Harness-only veth pair feeding RA from radvd into br-ext6.
+      # Managed by the k8s-lab test harness.
       [NetDev]
-      Name=ext6-ra
+      Name={{ _ext6_ra_uplink }}
       Kind=veth
 
       [Peer]
-      Name=ext6-ra-peer
+      Name={{ _ext6_ra_peer }}
   register: _ext6_ra_netdev
 
-- name: "ext6-ra-source | write ext6-ra-peer .network (RA source, global IPv6)"
-  # Note: the bridge-side peer `ext6-ra` has NO .network file written
-  # here. `lxd_host` role already writes `30-br-ext6-uplink.network`
-  # matching the uplink from host_vars — when shared host_vars set
-  # `lxd_host_ext_bridge_uplink: ext6-ra`, that file enslaves
-  # ext6-ra to br-ext6 with LinkLocalAddressing=no. Adding a second
-  # matching .network here would be redundant and would race with the
-  # role in lexical order.
-  # The outside end gets a global IPv6 in the harness documentation
-  # prefix 2001:db8:42:100::/64. radvd binds here and sends RA.
-  # ConfigureWithoutCarrier=yes so systemd-networkd applies the address
-  # even when no peer is up yet (cold boot ordering).
+- name: "Prepare | ext6-ra | router address on the peer end"
   ansible.builtin.copy:
-    dest: "/etc/systemd/network/45-k8slab-ext6-ra-peer.network"
+    dest: /etc/systemd/network/45-k8slab-ext6-ra-peer.network
     owner: root
     group: root
     mode: "0644"
     content: |
-      # Managed by tests/molecule/shared/tasks/ext6-ra-source.yml.
+      # Managed by the k8s-lab test harness.
       [Match]
-      Name=ext6-ra-peer
+      Name={{ _ext6_ra_peer }}
 
       [Network]
       LinkLocalAddressing=ipv6
       IPv6AcceptRA=no
       ConfigureWithoutCarrier=yes
-      Address=2001:db8:42:100::1/64
-  register: _ext6_ra_peer_network
+      # The router is ::1 of the prefix.
+      Address={{ _ext6_prefix | regex_replace('::/(\d+)$', '::1/\1') }}
+  register: _ext6_ra_network
 
-- name: "ext6-ra-source | write radvd.conf"
-  # Short intervals (3-10s) so a freshly-booted container gets an
-  # unsolicited RA quickly even if its Router Solicitation is missed.
-  # AdvAutonomous on → clients SLAAC an EUI-64 address in the prefix.
-  # AdvOnLink on → prefix is reachable without going through a router,
-  # which is correct since every guest sits on the same bridge.
+- name: "Prepare | ext6-ra | radvd configuration"
+  # Short intervals so a new container gets an address quickly even if its
+  # router solicitation is lost.
   ansible.builtin.copy:
-    dest: "/etc/radvd.conf"
+    dest: /etc/radvd.conf
     owner: root
     group: root
     mode: "0644"
     content: |
-      # Managed by tests/molecule/shared/tasks/ext6-ra-source.yml.
-      # Advertise 2001:db8:42:100::/64 on the veth peer feeding br-ext6.
-      interface ext6-ra-peer
+      # Managed by the k8s-lab test harness.
+      interface {{ _ext6_ra_peer }}
       {
         AdvSendAdvert on;
         MinRtrAdvInterval 3;
         MaxRtrAdvInterval 10;
         AdvDefaultLifetime 1800;
-        AdvManagedFlag off;
-        AdvOtherConfigFlag off;
-        prefix 2001:db8:42:100::/64
+        prefix {{ _ext6_prefix }}
         {
           AdvOnLink on;
           AdvAutonomous on;
           AdvRouterAddr off;
         };
       };
-  register: _ext6_ra_radvd_cfg
+  register: _ext6_ra_radvd
 
-- name: "ext6-ra-source | reload systemd-networkd when any drop-in changed"
+- name: "Prepare | ext6-ra | reload systemd-networkd"
   ansible.builtin.systemd:
     name: systemd-networkd.service
     state: reloaded
-  when: >-
-    _ext6_ra_netdev.changed
-    or _ext6_ra_peer_network.changed
+  when: _ext6_ra_netdev.changed or _ext6_ra_network.changed
 
-- name: "ext6-ra-source | wait for ext6-ra-peer to exist"
-  # `networkctl reload` asks networkd to re-read config but veth
-  # creation is async. Poll the kernel until the peer interface shows
-  # up — radvd refuses to start without it.
+- name: "Prepare | ext6-ra | wait for the peer end"
   ansible.builtin.wait_for:
-    path: "/sys/class/net/ext6-ra-peer"
-    state: present
+    path: "/sys/class/net/{{ _ext6_ra_peer }}"
     timeout: 30
 
-- name: "ext6-ra-source | enable + start radvd"
+- name: "Prepare | ext6-ra | radvd running with the current configuration"
   ansible.builtin.systemd:
     name: radvd.service
-    state: started
     enabled: true
-
-- name: "ext6-ra-source | restart radvd when its config or netdev drop-in changed"
-  # Must come AFTER the initial start: if radvd was already running
-  # with stale config, this cycles it. If this is the first apply,
-  # the previous task started it fresh and this is a no-op.
-  ansible.builtin.systemd:
-    name: radvd.service
-    state: restarted
-  when: >-
-    _ext6_ra_radvd_cfg.changed
-    or _ext6_ra_netdev.changed
-    or _ext6_ra_peer_network.changed
+    state: "{{ 'restarted' if (_ext6_ra_radvd.changed or _ext6_ra_netdev.changed or _ext6_ra_network.changed) else 'started' }}"

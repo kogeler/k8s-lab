@@ -1,0 +1,162 @@
+---
+# Which Kubernetes API manages the management cluster right now. The bootstrap
+# roles and the second half of the reference playbook act on the facts set
+# here, so a re-run on a live host never re-creates the bootstrap cluster.
+#
+#   bootstrapping  the bootstrap API holds Cluster/<name>, or the bootstrap
+#                  instance exists and no node of <name> does yet (resume)
+#   self_hosted    otherwise, mgmt.kubeconfig answers and its API holds it
+#   absent         nothing exists yet (first run)
+#   anything else  nodes of <name> exist and no API holds it: refuse
+#
+# Tagged `always`: every role after it reads the facts, whatever `--tags` says.
+- name: "management-cluster | state"
+  tags: [always]
+  vars:
+    # Asks one API for Cluster/<name>, three times 20 s apart at most: prints
+    # its name (or nothing) when the API answers, fails when it never does.
+    _probe: |-
+      for _ in 1 2 3; do
+        if out=$("$1" --kubeconfig "$2" --request-timeout=20s get clusters.cluster.x-k8s.io \
+                 --namespace "$3" "$4" --ignore-not-found -o name); then
+          printf '%s' "$out"
+          exit 0
+        fi
+        sleep 10
+      done
+      exit 1
+  block:
+    - name: "management-cluster | state | host-side kubeconfig of the management cluster"
+      ansible.builtin.stat:
+        path: "{{ _management_cluster_kubeconfig_host }}"
+      register: _management_cluster_state_kubeconfig
+
+    # An API that does not answer is an answer here ("not self-hosted"). kubectl
+    # on the host reads the root-owned kubeconfig whatever the connection type.
+    - name: "management-cluster | state | Cluster object on the management cluster"
+      ansible.builtin.command:
+        argv: [sh, -c, "{{ _probe }}", probe, "{{ management_cluster_opt_root }}/bin/kubectl",
+               "{{ _management_cluster_kubeconfig_host }}", "{{ management_cluster_namespace }}", "{{ management_cluster_name }}"]
+      register: _management_cluster_state_cluster
+      changed_when: false
+      failed_when: false
+      when: _management_cluster_state_kubeconfig.stat.exists
+
+    # No socket: LXD is not installed, so no instance exists. A socket that does
+    # not answer fails the run: deciding without LXD could bootstrap over a live
+    # cluster.
+    - name: "management-cluster | state | LXD socket"
+      ansible.builtin.stat:
+        path: "{{ _management_cluster_lxd_socket }}"
+      register: _management_cluster_state_socket
+
+    - name: "management-cluster | state | instances in the LXD project"
+      ansible.builtin.uri:
+        url: "http://localhost/1.0/instances?project={{ management_cluster_lxd_project }}&recursion=1"
+        unix_socket: "{{ _management_cluster_lxd_socket }}"
+        return_content: true
+        status_code: [200, 404]
+      register: _management_cluster_state_instances
+      when: _management_cluster_state_socket.stat.exists
+
+    # A bootstrap instance next to nodes of <name>: the bootstrap API decides.
+    # While it holds the Cluster the run resumes there — a first run, or a move
+    # interrupted after it created the objects on mgmt-1 (the move runs again);
+    # once it does not, the instance is a leftover of a run that failed after
+    # the pivot.
+    - name: "management-cluster | state | Cluster object on the bootstrap cluster"
+      ansible.builtin.command:
+        argv: [sh, -c, "{{ _probe }}", probe, "{{ management_cluster_opt_root }}/bin/kubectl",
+               "{{ _management_cluster_bootstrap_kubeconfig_host }}", "{{ management_cluster_namespace }}",
+               "{{ management_cluster_name }}"]
+      register: _management_cluster_state_bootstrap_cluster
+      changed_when: false
+      failed_when: false
+      when:
+        - management_cluster_bootstrap_instance in _names
+        - _nodes | length > 0
+      vars: &state_inputs
+        _self_hosted: "{{ (_management_cluster_state_cluster.stdout | default('')) | trim | length > 0 }}"
+        # Names from the objects: the URL form of a non-default project ends in `?project=`.
+        _names: >-
+          {{ (_management_cluster_state_instances.json.metadata | default([]) or [])
+             | map(attribute='name') | list }}
+        _nodes: "{{ _names | select('match', '^' ~ management_cluster_name ~ '-') | list }}"
+
+    # Published facts carry the common prefix: other roles read them (contract rule 3).
+    - name: "management-cluster | state | publish the state"  # noqa: var-naming[no-role-prefix]
+      ansible.builtin.set_fact:
+        k8s_lab_management_state: "{{ _state }}"
+        k8s_lab_management_kubeconfig: >-
+          {{ _management_cluster_kubeconfig_host if _state == 'self_hosted'
+             else _management_cluster_bootstrap_kubeconfig_host }}
+        k8s_lab_management_kubeconfig_runner: >-
+          {{ _management_cluster_kubeconfig_runner if _state == 'self_hosted'
+             else _management_cluster_bootstrap_kubeconfig_runner }}
+      vars:
+        <<: *state_inputs
+        _bootstrap_holds: "{{ (_management_cluster_state_bootstrap_cluster.stdout | default('')) | trim | length > 0 }}"
+        _state: >-
+          {{ 'bootstrapping' if _bootstrap_holds
+             else 'self_hosted' if _self_hosted
+             else 'bootstrapping' if management_cluster_bootstrap_instance in _names and _nodes | length == 0
+             else 'orphaned' if _nodes | length > 0
+             else 'absent' }}
+
+    # The roles after this one reach the managing API through the runner's copy;
+    # the host's copy has just answered, so a lost runner copy is restored from
+    # it here. The kubeconfig area rewrites both from the Cluster API Secret later.
+    - name: "management-cluster | state | the runner's copy of the management kubeconfig"
+      when: k8s_lab_management_state == 'self_hosted'
+      block:
+        - name: "management-cluster | state | read the host's copy"
+          ansible.builtin.slurp:
+            src: "{{ _management_cluster_kubeconfig_host }}"
+          register: _management_cluster_state_host_kubeconfig
+          no_log: true
+
+        - name: "management-cluster | state | the runner's artifacts directory"
+          ansible.builtin.file:
+            path: "{{ _management_cluster_kubeconfig_runner | dirname }}"
+            state: directory
+            mode: "0700"
+          delegate_to: localhost
+          become: false
+
+        - name: "management-cluster | state | write the runner's copy"
+          ansible.builtin.copy:
+            dest: "{{ _management_cluster_kubeconfig_runner }}"
+            content: "{{ _management_cluster_state_host_kubeconfig.content | b64decode }}"
+            mode: "0600"
+          delegate_to: localhost
+          become: false
+          no_log: true
+          diff: false
+
+    # A refused credential is not an absent cluster.
+    - name: "management-cluster | state | mgmt-1 accepts the host's kubeconfig"
+      ansible.builtin.assert:
+        that: not ((_management_cluster_state_cluster.stderr | default('')) is search('Unauthorized|x509'))
+        fail_msg: >-
+          mgmt-1 answers but refuses {{ _management_cluster_kubeconfig_host }}:
+          {{ (_management_cluster_state_cluster.stderr | default('')).splitlines()[-1:] | join }}.
+          Its client certificate expired or was replaced: rebuild the file from a control-plane
+          node (doc/runbooks/kubeconfig.md, an expired kubeconfig).
+        quiet: true
+      when: k8s_lab_management_state != 'bootstrapping'
+
+    - name: "management-cluster | state | never bootstrap over a live cluster"
+      ansible.builtin.assert:
+        that: k8s_lab_management_state != 'orphaned'
+        fail_msg: >-
+          Instances of {{ management_cluster_name }} exist in LXD project
+          {{ management_cluster_lxd_project }}, but neither {{ _management_cluster_kubeconfig_host }}
+          nor the bootstrap cluster ({{ management_cluster_bootstrap_instance }}, if it exists) reaches
+          a management cluster that holds Cluster/{{ management_cluster_name }}.
+          Refusing to bootstrap over a live cluster: wait until mgmt-1's API answers, or restore
+          mgmt.kubeconfig on the host (doc/runbooks/kubeconfig.md).
+        quiet: true
+
+    - name: "management-cluster | state | report"
+      ansible.builtin.debug:
+        msg: "management state: {{ k8s_lab_management_state }} (API: {{ k8s_lab_management_kubeconfig }})"

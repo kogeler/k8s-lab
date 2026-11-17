@@ -1,0 +1,32 @@
+---
+# `helm test` has no module; the test Pods are removed on success, so the
+# command changes nothing.
+- name: "management-cluster | gates | helm test"
+  ansible.builtin.command:
+    argv:
+      - helm
+      - test
+      - "{{ item.release }}"
+      - --namespace
+      - "{{ item.namespace }}"
+      - --kubeconfig
+      - "{{ item.kubeconfig }}"
+      - --logs
+      - --timeout
+      - "{{ item.timeout }}"
+  changed_when: false
+  loop:
+    - release: "{{ management_cluster_name }}"
+      namespace: "{{ management_cluster_namespace }}"
+      kubeconfig: "{{ management_cluster_kubeconfig }}"
+      timeout: "{{ management_cluster_cluster_test_timeout }}"
+    - release: cni-calico-config
+      namespace: "{{ _management_cluster_calico_namespace }}"
+      kubeconfig: "{{ _management_cluster_kubeconfig_runner }}"
+      timeout: "{{ management_cluster_gates_timeout }}"
+    - release: metallb-config
+      namespace: "{{ _management_cluster_metallb_namespace }}"
+      kubeconfig: "{{ _management_cluster_kubeconfig_runner }}"
+      timeout: "{{ management_cluster_gates_timeout }}"
+  loop_control:
+    label: "{{ item.release }}"

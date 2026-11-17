@@ -1,0 +1,37 @@
+---
+# Reference: the whole management lifecycle. Safe to run any number of times:
+# every role decides from the management state whether it has work to do, so a
+# run on a pivoted host neither re-creates the bootstrap cluster nor restarts
+# nodes. A deployment derives its playbook from this file (change `hosts:`) and
+# its variables from group_vars/all.yml.
+- name: "Management | substrate, bootstrap, mgmt-1, pivot"
+  hosts: k8slab_host
+  become: true
+  tasks:
+    # Host and LXD substrate.
+    - {name: "Management | host packages, kernel, binaries", ansible.builtin.import_role: {name: host}}
+    - {name: "Management | LXD and the objects the nodes run on", ansible.builtin.import_role: {name: lxd}}
+
+    # Which API manages mgmt-1 right now (absent, bootstrapping, self_hosted).
+    - name: "Management | state"
+      ansible.builtin.import_role: {name: management_cluster, tasks_from: state}
+
+    # Transient bootstrap cluster; does nothing once mgmt-1 is self-hosted.
+    - {name: "Management | bootstrap cluster", ansible.builtin.import_role: {name: bootstrap}}
+
+    # On the API that currently manages mgmt-1.
+    - {name: "Management | providers", ansible.builtin.import_role: {name: clusterctl}}
+    - {name: "Management | CAPN identity", ansible.builtin.import_role: {name: capn_identity}}
+    - {name: "Management | mgmt-1", ansible.builtin.import_role: {name: management_cluster}}
+
+    # Providers on mgmt-1, then the move; nothing once self-hosted.
+    - {name: "Management | pivot", ansible.builtin.import_role: {name: clusterctl, tasks_from: pivot}}
+
+    # After the move: mgmt-1 manages itself.
+    - name: "Management | state after the pivot"
+      ansible.builtin.import_role: {name: management_cluster, tasks_from: state}
+    - {name: "Management | CAPN identity on mgmt-1", ansible.builtin.import_role: {name: capn_identity}}
+    - {name: "Management | mgmt-1 releases and kubeconfig on mgmt-1", ansible.builtin.import_role: {name: management_cluster}}
+
+    # Refuses while the bootstrap API still holds a Cluster.
+    - {name: "Management | remove the bootstrap cluster", ansible.builtin.import_role: {name: bootstrap, tasks_from: destroy}}

@@ -1,0 +1,114 @@
+---
+# The whole flow on a GitHub Actions runner: `make test-gha` runs the gha
+# Molecule scenario, which is e2e-local with the runner itself as the test host
+# (a loop device for the pool, the router advertisement source on a veth pair).
+#
+# Runs on pull requests that can change end-to-end behaviour, on main, nightly
+# (upstream drift: images, snap channel, charts) and on demand.
+
+name: e2e
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths: &e2e-paths
+      - "ansible/**"
+      - "charts/**"
+      - "terraform/**"
+      - "tests/**"
+      - "scripts/**"
+      - ".config/molecule/**"
+      - "Makefile"
+      - "pyproject.toml"
+      - "uv.lock"
+      - ".python-version"
+      - ".tool-versions"
+      - ".github/workflows/e2e.yml"
+  push:
+    branches:
+      - main
+    paths: *e2e-paths
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+# A new push to a pull request replaces its running check; runs on main (push,
+# nightly, on demand) queue instead of cancelling each other.
+concurrency:
+  group: e2e-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  e2e:
+    name: "e2e (gha scenario on the runner)"
+    # Pinned so a move of `ubuntu-latest` is a deliberate change: the scenario
+    # changes snap, networking, swap and /etc/fstab on the runner.
+    runs-on: ubuntu-26.04
+    timeout-minutes: 180
+
+    env:
+      ANSIBLE_FORCE_COLOR: "true"
+      PY_COLORS: "1"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Read tool versions
+        id: tools
+        run: awk '{ print $1 "=" $2 }' .tool-versions >> "$GITHUB_OUTPUT"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2  # v10.3.3
+        with:
+          version: ${{ steps.tools.outputs.uv }}
+          enable-cache: true
+
+      - name: Python tooling
+        run: uv sync --locked --group test
+
+      - name: Install Helm
+        uses: azure/setup-helm@2f5e7bc67f1f9972ab16657bb795f36d8f04de0e  # v5.1.0
+        with:
+          version: v${{ steps.tools.outputs.helm }}
+
+      - name: Install kubectl
+        uses: azure/setup-kubectl@bda439f5f36b99b262ebdcd3613869bddb064c8e  # v5.2.0
+        with:
+          version: v${{ steps.tools.outputs.kubectl }}
+
+      - name: Install Terraform
+        uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e  # v4.0.1
+        with:
+          terraform_version: ${{ steps.tools.outputs.terraform }}
+          terraform_wrapper: false
+
+      - name: Dependencies (collections, chart dependencies)
+        run: uv run --no-sync make deps
+
+      # Shorter than the job's limit: a hang fails this step, and the
+      # diagnostics below still run.
+      - name: e2e
+        timeout-minutes: 165
+        run: uv run --no-sync make test-gha
+
+      - name: Collect diagnostics on failure
+        if: failure()
+        shell: bash
+        run: scripts/collect-diagnostics.sh 2>&1 | tee diagnostics.log
+
+      - name: Upload diagnostics on failure
+        # Logs only: .artifacts/ holds admin kubeconfigs and is never uploaded.
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: k8s-lab-diagnostics
+          path: diagnostics.log
+          retention-days: 7
+          if-no-files-found: ignore

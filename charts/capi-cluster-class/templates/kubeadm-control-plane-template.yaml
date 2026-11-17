@@ -1,225 +1,83 @@
-{{- include "capi-cluster-class.requireKubeadm" . -}}
+{{- define "capi-cluster-class.spec.kcp" -}}
 {{- $cp := .Values.controlPlane -}}
-{{- range $arg := $cp.apiServerExtraArgs }}
-{{- if or (eq $arg.name "bind-address") (eq $arg.name "service-cluster-ip-range") }}
-{{- fail (printf "controlPlane.apiServerExtraArgs must not set reserved arg %q; this chart hardcodes apiserver dual-stack serving and patches service CIDRs from Cluster.spec.clusterNetwork." $arg.name) }}
-{{- end }}
-{{- end }}
-{{- range $arg := $cp.controllerManagerExtraArgs }}
-{{- if or (eq $arg.name "allocate-node-cidrs") (eq $arg.name "cluster-cidr") (eq $arg.name "service-cluster-ip-range") }}
-{{- fail (printf "controlPlane.controllerManagerExtraArgs must not set reserved arg %q; this chart hardcodes/patches controller-manager dual-stack CIDR handling from Cluster.spec.clusterNetwork." $arg.name) }}
-{{- end }}
-{{- end }}
-{{- range $arg := $cp.kubeletExtraArgs }}
-{{- if or (eq $arg.name "feature-gates") (eq $arg.name "node-ip") (eq $arg.name "provider-id") }}
-{{- fail (printf "controlPlane.kubeletExtraArgs must not set reserved arg %q; this chart hardcodes feature-gates, provider-id, and dynamic dual-stack node-ip for the unprivileged-LXC substrate." $arg.name) }}
-{{- end }}
-{{- end }}
----
-apiVersion: controlplane.cluster.x-k8s.io/v1beta2
-kind: KubeadmControlPlaneTemplate
-metadata:
-  name: {{ include "capi-cluster-class.kubeadmControlPlaneTemplateName" . }}
-  namespace: {{ .Release.Namespace }}
-  labels:
-    {{- include "capi-cluster-class.labels" . | nindent 4 }}
-spec:
-  template:
-    spec:
-      kubeadmConfigSpec:
-        # Substrate-required: CAPN consumes cloud-init user-data on
-        # every LXC node to bootstrap kubeadm. `ignition` format is
-        # for Flatcar/CoreOS hosts which our substrate does not use.
-        # Not user-tunable (memory rule "Chart-required values are
-        # hardcoded"). Also satisfies CAPI v1beta2 CRD constraint
-        # `kubeadmConfigSpec.minProperties >= 1` even when every
-        # tunable below is empty.
-        format: cloud-config
-        clusterConfiguration:
-          {{- with $cp.featureGates }}
-          featureGates:
+template:
+  spec:
+    rollout:
+      before:
+        certificatesExpiryDays: {{ $cp.certificatesExpiryDays }}
+    kubeadmConfigSpec:
+      format: cloud-config
+      clusterConfiguration:
+        certificateValidityPeriodDays: {{ $cp.certificateValidityPeriodDays }}
+        {{- with $cp.featureGates }}
+        featureGates:
+          {{- toYaml . | nindent 10 }}
+        {{- end }}
+        {{- /* The API server listens on both families. The ClusterClass patches add the service and pod CIDRs. */}}
+        apiServer:
+          extraArgs:
+            - name: bind-address
+              value: "::"
+            {{- with $cp.apiServerExtraArgs }}
             {{- toYaml . | nindent 12 }}
-          {{- end }}
-          # Substrate-required: the workload API server must serve the
-          # control plane endpoint over IPv6 as well as IPv4. kubeadm's
-          # advertiseAddress remains a single-family node address; this
-          # bind override only controls the listener.
-          apiServer:
-            extraArgs:
-              - name: bind-address
-                value: "::"
-          {{- with $cp.apiServerExtraArgs }}
-              {{- toYaml . | nindent 14 }}
-          {{- end }}
-          controllerManager:
-            extraArgs:
-              - name: allocate-node-cidrs
-                value: "true"
-          {{- with $cp.controllerManagerExtraArgs }}
-              {{- toYaml . | nindent 14 }}
-          {{- end }}
-          {{- with $cp.schedulerExtraArgs }}
-          scheduler:
-            extraArgs:
-              {{- toYaml . | nindent 14 }}
-          {{- end }}
-        # init / join nodeRegistration baseline.
-        #
-        # Substrate-required `kubeletExtraArgs` baseline ALWAYS emitted:
-        #   feature-gates=KubeletInUserNamespace=true
-        # CAPN provisions every workload node as an unprivileged LXC
-        # container; kubelet's `oomWatcher` constructor opens
-        # /dev/kmsg and refuses to start when the open is not
-        # permitted (which it isn't in unprivileged userns). The
-        # `KubeletInUserNamespace` feature gate tells kubelet to
-        # ignore the oomWatcher init failure and continue. Without
-        # it kubelet enters Restart=always crash loop and `kubeadm
-        # init` times out at `wait-control-plane`.
-        #
-        # Consumer extras from `.Values.controlPlane.kubeletExtraArgs`
-        # append after the baseline. CAPI v1beta2 CRD requires
-        # `[]{name,value}` list shape and `minItems: 1` — emitting
-        # the baseline always also satisfies that constraint.
-        initConfiguration:
-          nodeRegistration:
-            kubeletExtraArgs:
-              - name: feature-gates
-                value: "KubeletInUserNamespace=true"
-              - name: provider-id
-                value: "lxc:///{{ "{{" }} v1.local_hostname {{ "}}" }}"
-              {{- with $cp.kubeletExtraArgs }}
-              {{- toYaml . | nindent 14 }}
-              {{- end }}
-        joinConfiguration:
-          nodeRegistration:
-            kubeletExtraArgs:
-              - name: feature-gates
-                value: "KubeletInUserNamespace=true"
-              - name: provider-id
-                value: "lxc:///{{ "{{" }} v1.local_hostname {{ "}}" }}"
-              {{- with $cp.kubeletExtraArgs }}
-              {{- toYaml . | nindent 14 }}
-              {{- end }}
-        # Substrate-required eth1 RA reception baseline. CABPK inlines
-        # these into the node's user-data as `write_files`, so the
-        # files exist before kubelet / kube-proxy / MetalLB speaker
-        # come up. `accept_ra=2` is required because workload nodes
-        # have `forwarding=1` for k8s pod networking — default
-        # `accept_ra=1` ignores RA when forwarding is on. The
-        # systemd-networkd drop-in pairs `IPv6AcceptRA=yes` so the
-        # interface is networkd-managed (not unmanaged + kernel-only).
-        # Effect: eth1 SLAAC's a global IPv6 from the upstream RA,
-        # so MetalLB speaker can send NDP replies with a global
-        # source IPv6 instead of failing `network is unreachable`.
-        files:
-          - path: /etc/sysctl.d/99-capi-ra.conf
-            owner: root:root
-            permissions: "0644"
-            content: |
-              net.ipv6.conf.eth1.disable_ipv6 = 0
-              net.ipv6.conf.eth1.accept_ra = 2
-              net.ipv6.conf.eth1.accept_ra_defrtr = 1
-          - path: /etc/systemd/network/30-capi-ext.network
-            owner: root:root
-            permissions: "0644"
-            content: |
-              [Match]
-              Name=eth1
-
-              [Network]
-              DHCP=no
-              LinkLocalAddressing=ipv6
-              IPv6AcceptRA=yes
-        preKubeadmCommands:
-          # Substrate-required: load the eth1 RA sysctls + reload
-          # systemd-networkd so the matching .network file
-          # (KubeadmConfigSpec.files above) takes effect before
-          # kubeadm runs anything that depends on eth1 being SLAAC'd
-          # (e.g. MetalLB speaker NDP replies, gateway routing).
-          - sysctl --load=/etc/sysctl.d/99-capi-ra.conf
-          - networkctl reload
-          # Substrate-required: pin kube-proxy to nftables mode so the
-          # workload-cluster CNI (charts/cni-calico Installation CR) can
-          # run with `linuxDataplane: Nftables`. Calico's docs state
-          # that to use Calico in nftables mode, kube-proxy must also
-          # be in nftables mode — a fresh kubeadm cluster defaults to
-          # `mode: iptables`, so we append a KubeProxyConfiguration
-          # document to the kubeadm config file before `kubeadm init`
-          # consumes it. KubeProxyConfiguration is only honoured by
-          # `kubeadm init`; CP joins and worker joins read the
-          # `kube-system/kube-proxy` ConfigMap that init populated.
-          # Hence this block runs only when the init config file is
-          # present (workers / CP-joins use kubeadm-join-config.yaml).
-          - |
-            set -eu
-            if [ -f /run/kubeadm/kubeadm.yaml ] && [ ! -f /run/kubeadm/kubeadm-join-config.yaml ]; then
-              if ! grep -q '^kind: KubeProxyConfiguration$' /run/kubeadm/kubeadm.yaml; then
-                cat >> /run/kubeadm/kubeadm.yaml <<'EOF'
+            {{- end }}
+        controllerManager:
+          extraArgs:
+            - name: allocate-node-cidrs
+              value: "true"
+            {{- with $cp.controllerManagerExtraArgs }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+        {{- with $cp.schedulerExtraArgs }}
+        scheduler:
+          extraArgs:
+            {{- toYaml . | nindent 12 }}
+        {{- end }}
+      initConfiguration:
+        nodeRegistration:
+          kubeletExtraArgs:
+            {{- include "capi-cluster-class.kubeletArgs" $cp.kubeletExtraArgs | nindent 12 }}
+      joinConfiguration:
+        nodeRegistration:
+          kubeletExtraArgs:
+            {{- include "capi-cluster-class.kubeletArgs" $cp.kubeletExtraArgs | nindent 12 }}
+      files:
+        {{- include "capi-cluster-class.nodeFiles" . | nindent 8 }}
+        {{- /*
+        kube-proxy in nftables mode (Calico's nftables dataplane needs it),
+        without conntrack sizing (the host-global sysctls are read-only in an
+        unprivileged container), and with NodePorts on the external network only
+        (unset, nftables mode takes the node's primary addresses: eth0). Only
+        `kubeadm init` reads it; joining nodes take the kube-proxy ConfigMap that
+        init wrote.
+        */}}
+        - path: /run/k8s-lab/kube-proxy.yaml
+          owner: root:root
+          permissions: "0644"
+          content: |
             ---
             apiVersion: kubeproxy.config.k8s.io/v1alpha1
             kind: KubeProxyConfiguration
             mode: nftables
+            nodePortAddresses:
+              - {{ .Values.externalNetwork.ipv6Prefix | quote }}
             conntrack:
-              # Disable kube-proxy's conntrack management. Default
-              # (`maxPerCore: 32768`, `min: 131072`) leads kube-proxy
-              # to write `/sys/module/nf_conntrack/parameters/hashsize`
-              # at startup; that path is host-global and not writable
-              # from inside an unprivileged LXC user namespace, so the
-              # kube-proxy Pod crashloops with `permission denied`.
-              # The kernel default conntrack hashsize is sufficient for
-              # a lab-scale cluster, and any production consumer that
-              # needs explicit tuning should set it host-side via the
-              # `nf_conntrack` module's modprobe parameter.
               maxPerCore: 0
               min: 0
-            EOF
-              fi
-            fi
-          # Substrate-required: LXD DHCP/SLAAC addresses are dynamic,
-          # but kubelet on bare-metal-style dual-stack nodes must be
-          # started with both node IPs. Keep the same family priority
-          # as bootstrap k3s: eth0 IPv4 first, eth0 IPv6 second.
-          - |
-            set -eu
-            iface=eth0
-            for _ in $(seq 1 120); do
-              v4="$(ip -o -4 addr show dev "$iface" scope global | awk '{split($4,a,"/"); print a[1]; exit}')"
-              v6="$(ip -o -6 addr show dev "$iface" scope global | awk '$4 !~ /^fe80:/ && $0 !~ /(temporary|deprecated|tentative)/ {split($4,a,"/"); print a[1]; exit}')"
-              if [ -n "$v4" ] && [ -n "$v6" ]; then
-                break
-              fi
-              sleep 1
-            done
-            test -n "$v4"
-            test -n "$v6"
-            kubeadm_config=/run/kubeadm/kubeadm.yaml
-            if [ ! -f "$kubeadm_config" ] && [ -f /run/kubeadm/kubeadm-join-config.yaml ]; then
-              kubeadm_config=/run/kubeadm/kubeadm-join-config.yaml
-            fi
-            test -f "$kubeadm_config"
-            if grep -q '^localAPIEndpoint: {}$' "$kubeadm_config"; then
-              sed -i "s/^localAPIEndpoint: {}/localAPIEndpoint:\\n  advertiseAddress: ${v4}\\n  bindPort: 6443/" "$kubeadm_config"
-            fi
-            if ! grep -q '^[[:space:]]*- name: node-ip$' "$kubeadm_config"; then
-              awk -v node_ip="${v4},${v6}" '
-                /^[[:space:]]*- name: feature-gates[[:space:]]*$/ {
-                  item_indent = substr($0, 1, index($0, "-") - 1)
-                }
-                { print }
-                /^[[:space:]]*value: "?KubeletInUserNamespace=true"?[[:space:]]*$/ && item_indent != "" && !done {
-                  value_indent = substr($0, 1, index($0, "v") - 1)
-                  print item_indent "- name: node-ip"
-                  print value_indent "value: \"" node_ip "\""
-                  done = 1
-                }
-                END { if (!done) exit 42 }
-              ' "$kubeadm_config" > "$kubeadm_config.tmp"
-              mv "$kubeadm_config.tmp" "$kubeadm_config"
-            fi
-        {{- with $cp.preKubeadmCommands }}
-          {{- toYaml . | nindent 10 }}
-        {{- end }}
-        {{- with $cp.postKubeadmCommands }}
-        postKubeadmCommands:
-          {{- toYaml . | nindent 10 }}
-        {{- end }}
+      preKubeadmCommands:
+        - "if [ -f /run/kubeadm/kubeadm.yaml ] && [ ! -f /run/kubeadm/kubeadm-join-config.yaml ]; then cat /run/k8s-lab/kube-proxy.yaml >> /run/kubeadm/kubeadm.yaml; fi"
+        {{- include "capi-cluster-class.nodeCommands" $cp.preKubeadmCommands | nindent 8 }}
+      {{- with $cp.postKubeadmCommands }}
+      postKubeadmCommands:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end -}}
+{{- if ge (int .Values.controlPlane.certificatesExpiryDays) (int .Values.controlPlane.certificateValidityPeriodDays) }}
+{{- fail "controlPlane.certificatesExpiryDays must be smaller than controlPlane.certificateValidityPeriodDays" }}
+{{- end }}
+apiVersion: controlplane.cluster.x-k8s.io/v1beta2
+kind: KubeadmControlPlaneTemplate
+metadata:
+  {{- include "capi-cluster-class.metadata" (list . "kcp") | nindent 2 }}
+spec:
+  {{- include "capi-cluster-class.spec.kcp" . | nindent 2 }}

@@ -1,0 +1,101 @@
+---
+_lxd_socket: /var/snap/lxd/common/lxd/unix.socket
+
+_lxd_listener_address: "{{ lxd_network_ipv4_address | split('/') | first }}:{{ lxd_listener_port }}"
+
+# CAPN pulls node and load-balancer images from its own image server; a
+# restricted project may only use registries it names (LXD >= 6.10).
+_lxd_registry:
+  name: capn
+  description: "Cluster API node and load-balancer images"
+  config:
+    url: "https://images.linuxcontainers.org/capn"
+
+_lxd_project:
+  name: "{{ lxd_project_name }}"
+  description: "k8s-lab — CAPN substrate project"
+  config:
+    # Own images, profiles and volumes; bridge networks stay in the default project.
+    features.images: "true"
+    features.profiles: "true"
+    features.networks: "false"
+    features.networks.zones: "false"
+    features.storage.volumes: "true"
+    features.storage.buckets: "true"
+    restricted: "true"
+    restricted.containers.nesting: "allow"
+    restricted.containers.privilege: "unprivileged"
+    restricted.containers.lowlevel: "allow"            # raw.lxc, linux.kernel_modules
+    restricted.containers.interception: "allow"        # mknod and setxattr interception
+    restricted.devices.disk: "allow"                   # pool root disks, and host paths below
+    restricted.devices.disk.paths: "/boot"             # kernel config for kubeadm's preflight
+    restricted.devices.nic: "allow"
+    restricted.devices.unix-char: "allow"              # /dev/kmsg
+    restricted.devices.proxy: "allow"                  # published API servers
+    restricted.registries: "builtin,capn"
+
+# user_subvol_rm_allowed: the unprivileged nodes delete their own subvolumes.
+_lxd_pool:
+  name: "{{ lxd_storage_pool_name }}"
+  driver: btrfs
+  description: "k8s-lab primary pool (btrfs on dedicated disk)"
+  config:
+    source: "{{ lxd_storage_source }}"
+    btrfs.mount_options: "user_subvol_rm_allowed"
+
+_lxd_network:
+  name: "{{ lxd_network_name }}"
+  type: bridge
+  description: "k8s-lab internal managed bridge (dual-stack, NAT, DHCPv4, RAv6)"
+  config:
+    ipv4.address: "{{ lxd_network_ipv4_address }}"
+    ipv6.address: "{{ lxd_network_ipv6_address }}"
+    ipv4.nat: "true"
+    ipv6.nat: "true"
+    ipv4.dhcp: "true"
+    ipv6.dhcp: "true"
+    ipv4.dhcp.expiry: "{{ lxd_network_dhcp_expiry }}"
+
+# Unprivileged with nesting for the nodes' containerd; AppArmor off for
+# /dev/kmsg and netlink. nf_tables and vxlan: kube-proxy and Calico.
+_lxd_node_security: &lxd_node_security
+  security.nesting: "true"
+  security.privileged: "false"
+  security.idmap.isolated: "true"
+  security.syscalls.intercept.mknod: "true"
+  security.syscalls.intercept.setxattr: "true"
+  raw.lxc: "lxc.apparmor.profile=unconfined"
+_lxd_kmsg: &lxd_kmsg
+  type: unix-char
+  source: /dev/kmsg
+  path: /dev/kmsg
+_lxd_node_profile_body: &lxd_node_profile_body
+  config:
+    <<: *lxd_node_security
+    linux.kernel_modules: "br_netfilter,ip_vs,nf_conntrack,nf_tables,overlay,vxlan"
+  devices:
+    kmsg: *lxd_kmsg
+    host-boot: {type: disk, source: /boot, path: /boot, readonly: "true"}
+    eth1: {type: nic, nictype: bridged, parent: "{{ lxd_bridge_name }}", name: eth1}
+
+# The node templates and the bootstrap instance reference these names.
+_lxd_profiles:
+  - name: capi-base
+    description: "k8s-lab base profile — root disk on the primary pool + internal nic."
+    config: {}
+    devices:
+      root: {type: disk, path: /, pool: "{{ lxd_storage_pool_name }}"}
+      eth0: {type: nic, nictype: bridged, parent: "{{ lxd_network_name }}", name: eth0}
+  - name: capi-bootstrap
+    description: "k8s-lab bootstrap container — unprivileged + nesting for inner k3s."
+    config:
+      <<: *lxd_node_security
+      linux.kernel_modules: "br_netfilter,ip_vs,nf_conntrack,overlay"
+    devices:
+      kmsg: *lxd_kmsg
+  - name: capi-controlplane
+    description: "k8s-lab CAPI control-plane — CAPN unprivileged kubeadm baseline + external nic."
+    <<: *lxd_node_profile_body
+  - name: capi-worker
+    description: "k8s-lab CAPI worker — CAPN unprivileged kubeadm baseline + external nic."
+    <<: *lxd_node_profile_body

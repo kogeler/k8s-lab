@@ -1,0 +1,103 @@
+---
+# Static and render-time checks: `make check` on every push and pull request.
+# Tool versions come from .tool-versions; Python tooling from uv.lock.
+
+name: Lint
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: lint-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: make check
+    runs-on: ubuntu-26.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Read tool versions
+        id: tools
+        run: awk '{ print $1 "=" $2 }' .tool-versions >> "$GITHUB_OUTPUT"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2  # v10.3.3
+        with:
+          version: ${{ steps.tools.outputs.uv }}
+          enable-cache: true
+
+      - name: Python tooling
+        run: uv sync --locked --group lint --group docs
+
+      - name: Install Helm
+        uses: azure/setup-helm@2f5e7bc67f1f9972ab16657bb795f36d8f04de0e  # v5.1.0
+        with:
+          version: v${{ steps.tools.outputs.helm }}
+
+      - name: Install Terraform
+        uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e  # v4.0.1
+        with:
+          terraform_version: ${{ steps.tools.outputs.terraform }}
+          terraform_wrapper: false
+
+      - name: Install tflint, terraform-docs, kubeconform, actionlint, shellcheck
+        env:
+          TFLINT_VERSION: ${{ steps.tools.outputs.tflint }}
+          TERRAFORM_DOCS_VERSION: ${{ steps.tools.outputs.terraform-docs }}
+          KUBECONFORM_VERSION: ${{ steps.tools.outputs.kubeconform }}
+          ACTIONLINT_VERSION: ${{ steps.tools.outputs.actionlint }}
+          SHELLCHECK_VERSION: ${{ steps.tools.outputs.shellcheck }}
+          # shellcheck publishes no checksum file; update together with .tool-versions.
+          SHELLCHECK_SHA256: 8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198
+        run: |
+          set -euo pipefail
+          bin="$RUNNER_TEMP/bin"
+          mkdir -p "$bin"
+          cd "$RUNNER_TEMP"
+          base=https://github.com/terraform-linters/tflint/releases/download/v$TFLINT_VERSION
+          curl -fsSLO "$base/tflint_linux_amd64.zip"
+          curl -fsSLO "$base/checksums.txt"
+          grep ' tflint_linux_amd64.zip$' checksums.txt | sha256sum -c -
+          unzip -q tflint_linux_amd64.zip tflint -d "$bin"
+          archive="terraform-docs-v$TERRAFORM_DOCS_VERSION-linux-amd64.tar.gz"
+          base=https://github.com/terraform-docs/terraform-docs/releases/download/v$TERRAFORM_DOCS_VERSION
+          curl -fsSLO "$base/$archive"
+          curl -fsSLO "$base/terraform-docs-v$TERRAFORM_DOCS_VERSION.sha256sum"
+          grep " $archive\$" "terraform-docs-v$TERRAFORM_DOCS_VERSION.sha256sum" | sha256sum -c -
+          tar -xzf "$archive" -C "$bin" terraform-docs
+          base=https://github.com/yannh/kubeconform/releases/download/v$KUBECONFORM_VERSION
+          curl -fsSLO "$base/kubeconform-linux-amd64.tar.gz"
+          curl -fsSLO "$base/CHECKSUMS"
+          grep ' kubeconform-linux-amd64.tar.gz$' CHECKSUMS | sha256sum -c -
+          tar -xzf kubeconform-linux-amd64.tar.gz -C "$bin" kubeconform
+          archive="actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          base=https://github.com/rhysd/actionlint/releases/download/v$ACTIONLINT_VERSION
+          curl -fsSLO "$base/$archive"
+          curl -fsSLO "$base/actionlint_${ACTIONLINT_VERSION}_checksums.txt"
+          grep " $archive\$" "actionlint_${ACTIONLINT_VERSION}_checksums.txt" | sha256sum -c -
+          tar -xzf "$archive" -C "$bin" actionlint
+          archive="shellcheck-v$SHELLCHECK_VERSION.linux.x86_64.tar.xz"
+          curl -fsSLO "https://github.com/koalaman/shellcheck/releases/download/v$SHELLCHECK_VERSION/$archive"
+          echo "$SHELLCHECK_SHA256  $archive" | sha256sum -c -
+          tar -xJf "$archive" --strip-components=1 -C "$bin" "shellcheck-v$SHELLCHECK_VERSION/shellcheck"
+          echo "$bin" >> "$GITHUB_PATH"
+
+      # `make deps` rewrites a Chart.lock only when Chart.yaml changed without it.
+      - name: Dependencies (collections, chart dependencies); Chart.lock current
+        run: |
+          uv run --no-sync make deps
+          git diff --exit-code -- 'charts/*/Chart.lock'
+
+      - name: make check
+        run: uv run --no-sync make check

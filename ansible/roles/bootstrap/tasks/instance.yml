@@ -1,0 +1,36 @@
+---
+- name: "bootstrap | instance | the bootstrap container, its k3s API published on the host"
+  community.general.lxd_container:
+    url: "unix:{{ _bootstrap_lxd_socket }}"
+    snap_url: "unix:{{ _bootstrap_lxd_socket }}"
+    project: "{{ bootstrap_project }}"
+    name: "{{ bootstrap_instance_name }}"
+    profiles: [capi-base, capi-bootstrap]
+    source:
+      type: image
+      mode: pull
+      server: "https://images.lxd.canonical.com"
+      protocol: simplestreams
+      alias: "{{ bootstrap_image_alias }}"
+    devices:
+      k3s-api:
+        type: proxy
+        listen: "tcp:{{ bootstrap_api_listen_address }}:{{ bootstrap_api_port }}"
+        connect: "tcp:127.0.0.1:6443"
+        bind: host
+    state: started
+    ignore_volatile_options: true
+    wait_for_container: true
+    timeout: "{{ bootstrap_wait_timeout }}"
+
+# k3s takes its dual-stack node addresses from eth0.
+- name: "bootstrap | instance | eth0 has an IPv4 and an IPv6 address"
+  ansible.builtin.uri:
+    url: "http://localhost/1.0/instances/{{ bootstrap_instance_name }}/state?project={{ bootstrap_project }}"
+    unix_socket: "{{ _bootstrap_lxd_socket }}"
+  register: _bootstrap_instance_state
+  until: >-
+    _bootstrap_instance_state.json.metadata.network.eth0.addresses | default([])
+    | selectattr('scope', 'eq', 'global') | map(attribute='family') | unique | sort == ['inet', 'inet6']
+  retries: "{{ (bootstrap_wait_timeout | int) // 5 }}"
+  delay: 5

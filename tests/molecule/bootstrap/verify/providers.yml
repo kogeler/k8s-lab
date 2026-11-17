@@ -1,0 +1,75 @@
+---
+# clusterctl and capn_identity: what creating mgmt-1 needs on the bootstrap cluster.
+- name: "Verify | bootstrap | providers | read the installed providers"
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ _kubeconfig_host }}"
+    api_version: clusterctl.cluster.x-k8s.io/v1alpha3
+    kind: Provider
+  register: _verify_bootstrap_providers
+  become: true
+
+- name: "Verify | bootstrap | providers | exactly the four providers at the pinned versions"
+  ansible.builtin.assert:
+    that: _installed == _expected | sort
+    fail_msg: "installed {{ _installed }}"
+  vars:
+    _providers: "{{ _verify_bootstrap_providers.resources }}"
+    _installed: >-
+      {{ _providers | map(attribute='type')
+         | zip(_providers | map(attribute='providerName'), _providers | map(attribute='version'))
+         | map('join', ' ') | sort }}
+    _expected:
+      - "CoreProvider cluster-api {{ k8s_lab_clusterctl_version }}"
+      - "BootstrapProvider kubeadm {{ k8s_lab_clusterctl_version }}"
+      - "ControlPlaneProvider kubeadm {{ k8s_lab_clusterctl_version }}"
+      - "InfrastructureProvider incus {{ k8s_lab_capn_provider_version }}"
+
+- name: "Verify | bootstrap | identity | read the CAPN identity Secret"
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ _kubeconfig_host }}"
+    kind: Secret
+    namespace: "{{ k8s_lab_cluster_namespace }}"
+    name: "{{ k8s_lab_infrastructure_secret_name }}"
+  register: _verify_bootstrap_secret
+  failed_when: _verify_bootstrap_secret.resources | default([]) | length != 1
+  become: true
+  # The Secret carries the client key.
+  no_log: true
+
+- name: "Verify | bootstrap | identity | fingerprint the Secret's client certificate"
+  community.crypto.x509_certificate_info:
+    content: "{{ _verify_bootstrap_secret.resources[0].data['client-crt'] | b64decode }}"
+  register: _verify_bootstrap_client_cert
+
+- name: "Verify | bootstrap | identity | read the LXD server, the trust entry and the internal network state"
+  ansible.builtin.uri:
+    url: "http://localhost/1.0{{ item }}"
+    unix_socket: "{{ _lxd_socket }}"
+  loop:
+    - ""
+    - "/certificates/{{ _verify_bootstrap_client_cert.fingerprints.sha256 | replace(':', '') | lower }}"
+    - "/networks/{{ _network_name }}/state"
+  loop_control:
+    label: "/1.0{{ item }}"
+  register: _verify_bootstrap_lxd
+  become: true
+
+# CAPN dials `server`, pins `server-crt` and authenticates with `client-crt` inside `project`.
+- name: "Verify | bootstrap | identity | the Secret matches this LXD, on the internal network, trusted for the project only"
+  ansible.builtin.assert:
+    that:
+      - _data.project | b64decode == k8s_lab_project_name
+      - _data.server | b64decode == 'https://' ~ _https_address
+      - _https_address | regex_replace(':[0-9]+$', '') in _internal_addresses
+      - _data['server-crt'] | b64decode | trim == _server.environment.certificate | trim
+      - _trust.type == 'client' and _trust.restricted
+      - _trust.projects == [k8s_lab_project_name]
+    fail_msg: >-
+      project {{ _data.project | b64decode }}, server {{ _data.server | b64decode }}, core.https_address {{ _https_address }},
+      internal addresses {{ _internal_addresses }}, trust {{ _trust.type }}/{{ _trust.restricted }}/{{ _trust.projects }}
+  vars:
+    _data: "{{ _verify_bootstrap_secret.resources[0].data }}"
+    _server: "{{ _verify_bootstrap_lxd.results[0].json.metadata }}"
+    _trust: "{{ _verify_bootstrap_lxd.results[1].json.metadata }}"
+    _https_address: "{{ _server.config['core.https_address'] | default('') }}"
+    _internal_addresses: "{{ _verify_bootstrap_lxd.results[2].json.metadata.addresses | map(attribute='address') | list }}"

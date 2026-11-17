@@ -1,0 +1,13 @@
+---
+clusterctl_kubeconfig: "{{ k8s_lab_management_kubeconfig }}"                   # host path of the API that manages mgmt-1 now
+clusterctl_target_kubeconfig: "{{ k8s_lab_opt_root }}/etc/mgmt.kubeconfig"   # the pivot's target, mgmt-1
+clusterctl_capi_version: "{{ k8s_lab_clusterctl_version }}"                  # core, kubeadm bootstrap and control plane
+clusterctl_capn_version: "{{ k8s_lab_capn_provider_version }}"
+clusterctl_opt_root: "{{ k8s_lab_opt_root }}"
+clusterctl_cluster_name: "{{ k8s_lab_management_cluster_name }}"
+clusterctl_cluster_namespace: "{{ k8s_lab_cluster_namespace }}"
+clusterctl_cert_manager_timeout: ""        # e.g. 25m when the cert-manager images come in cold
+clusterctl_timeout: 1200                   # seconds for init, upgrade and move
+clusterctl_enabled: true
+clusterctl_flow_control_config: true
+clusterctl_flow_control_providers: true

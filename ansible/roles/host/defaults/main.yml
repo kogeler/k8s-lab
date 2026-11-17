@@ -1,0 +1,14 @@
+---
+host_opt_root: "{{ k8s_lab_opt_root }}"                   # files the roles keep on the host; bin/ and etc/ below it
+host_kubectl_version: "{{ k8s_lab_kubectl_version }}"     # kubectl release
+host_kubectl_sha256: "{{ k8s_lab_kubectl_sha256 }}"       # its linux/amd64 digest
+host_clusterctl_version: "{{ k8s_lab_clusterctl_version }}"
+host_clusterctl_sha256: "{{ k8s_lab_clusterctl_sha256 }}"
+host_k3s_version: "{{ k8s_lab_k3s_version }}"
+host_k3s_sha256: "{{ k8s_lab_k3s_sha256 }}"
+host_enabled: true
+host_flow_control_preflight: true
+host_flow_control_packages: true
+host_flow_control_kernel: true
+host_flow_control_dirs: true
+host_flow_control_binaries: true

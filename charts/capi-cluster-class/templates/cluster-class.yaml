@@ -1,30 +1,21 @@
-{{- include "capi-cluster-class.requireCAPI" . -}}
-{{- include "capi-cluster-class.requireCAPN" . -}}
-{{- include "capi-cluster-class.requireKubeadm" . -}}
----
+{{- /*
+One ClusterClass per cluster, named after it. A changed template is a new
+object (templates/_helpers.tpl); this object is updated to point at it, and
+Cluster API rolls the machines that use it.
+*/}}
 apiVersion: cluster.x-k8s.io/v1beta2
 kind: ClusterClass
 metadata:
-  name: {{ include "capi-cluster-class.classFullName" . }}
+  name: {{ .Values.cluster.name }}
   namespace: {{ .Release.Namespace }}
   labels:
-    {{- include "capi-cluster-class.labels" . | nindent 4 }}
+    helm.sh/chart: {{ printf "%s-%s" .Chart.Name .Chart.Version }}
+    app.kubernetes.io/name: {{ .Chart.Name }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+    app.kubernetes.io/part-of: cluster-api
 spec:
-  # The CAPN v1alpha2 LXCCluster CRD declares `loadBalancer.lxc
-  # .instanceSpec` as a closed schema (only {profiles, image,
-  # flavor, target}); a JSON patch trying to add a `devices`
-  # field would fail at admission with `field not declared in
-  # schema`, so per-workload haproxy LB customisation cannot
-  # flow through the ClusterClass topology API.
-  #
-  # The per-workload API proxy port is therefore owned end-to-end
-  # by `charts/capi-workload-cluster/` (Adler-32 hash on
-  # cluster.name → `k8s-lab.io/api-proxy-port` annotation on the
-  # Cluster CR), and the LXD `proxy` device is attached post-CAPI
-  # by the workload chart's own Helm hook Jobs
-  # (`templates/api-proxy-{attach,detach}-job.yaml`) which PATCH
-  # the LXD HTTPS REST API directly. See PLAN §16.2 / §16.7 for
-  # the runner-reachability contract.
+  # The Cluster's service and pod CIDRs reach the control-plane components.
   patches:
     - name: kubeadm-dual-stack-component-args
       description: "Propagate Cluster.spec.clusterNetwork CIDRs into kubeadm-managed control-plane component args."
@@ -53,31 +44,22 @@ spec:
                 template: |
                   name: service-cluster-ip-range
                   value: "{{ "{{" }} .builtin.cluster.network.services | join "," {{ "}}" }}"
-  # Topology-level infrastructure template applies once per Cluster.
   infrastructure:
     templateRef:
       apiVersion: infrastructure.cluster.x-k8s.io/v1alpha2
       kind: LXCClusterTemplate
-      name: {{ include "capi-cluster-class.lxcClusterTemplateName" . }}
-  # Control-plane bootstrap template + per-CP-machine infrastructure
-  # template. machineInfrastructure is required for kubeadm-based
-  # control-plane providers (they need to know how to create CP
-  # machines beyond the first one).
+      name: {{ include "capi-cluster-class.templateName" (list . "infra") }}
   controlPlane:
     templateRef:
       apiVersion: controlplane.cluster.x-k8s.io/v1beta2
       kind: KubeadmControlPlaneTemplate
-      name: {{ include "capi-cluster-class.kubeadmControlPlaneTemplateName" . }}
+      name: {{ include "capi-cluster-class.templateName" (list . "kcp") }}
     machineInfrastructure:
       templateRef:
         apiVersion: infrastructure.cluster.x-k8s.io/v1alpha2
         kind: LXCMachineTemplate
-        name: {{ include "capi-cluster-class.lxcMachineTemplateCPName" . }}
-  # Single MVP worker deployment class — Cluster CR topology
-  # references it by `class: md-0`. Additional deployments classes
-  # (e.g. GPU workers, storage workers) can be added later via new
-  # entries here; bumping Chart.version remains the only path to
-  # mutate an existing one.
+        name: {{ include "capi-cluster-class.templateName" (list . "cp") }}
+  # One worker class; the Cluster's topology refers to it as md-0.
   workers:
     machineDeployments:
       - class: md-0
@@ -85,9 +67,9 @@ spec:
           templateRef:
             apiVersion: infrastructure.cluster.x-k8s.io/v1alpha2
             kind: LXCMachineTemplate
-            name: {{ include "capi-cluster-class.lxcMachineTemplateWorkerName" . }}
+            name: {{ include "capi-cluster-class.templateName" (list . "md-0") }}
         bootstrap:
           templateRef:
             apiVersion: bootstrap.cluster.x-k8s.io/v1beta2
             kind: KubeadmConfigTemplate
-            name: {{ include "capi-cluster-class.kubeadmConfigTemplateWorkerName" . }}
+            name: {{ include "capi-cluster-class.templateName" (list . "md-0-boot") }}

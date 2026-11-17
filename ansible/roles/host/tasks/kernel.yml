@@ -1,0 +1,28 @@
+---
+# Loaded now and at boot: a container cannot load modules. overlay,
+# br_netfilter, nf_conntrack for kubeadm and the CNI; nft_compat, xt_connmark,
+# xt_mark for the nodes' reply marks on eth1 (rules in each node's own network
+# namespace, never in the host's).
+- name: "host | kernel | modules"
+  community.general.modprobe:
+    name: "{{ item }}"
+    state: present
+    persistent: present
+  loop: [overlay, br_netfilter, nf_conntrack, nft_compat, xt_connmark, xt_mark]
+
+# Forwarding for the node networks; inotify limits for the nested kubelets (stock: 128).
+- name: "host | kernel | sysctls"
+  ansible.posix.sysctl:
+    name: "{{ item.key }}"
+    value: "{{ item.value }}"
+    sysctl_file: /etc/sysctl.d/60-k8s-lab.conf
+    reload: true
+  loop: "{{ _host_kernel_sysctls | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}={{ item.value }}"
+  vars:
+    _host_kernel_sysctls:
+      net.ipv4.ip_forward: 1
+      net.ipv6.conf.all.forwarding: 1
+      fs.inotify.max_user_instances: 1024
+      fs.inotify.max_user_watches: 1048576

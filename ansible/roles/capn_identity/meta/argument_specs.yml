@@ -1,0 +1,65 @@
+---
+argument_specs:
+  main:
+    short_description: CAPN's LXD client identity and its Secret
+    description:
+      - Keeps a client key and self-signed certificate on the host, trusted by LXD for one project
+        only, and the CAPN identity Secret (server-side applied) in each namespace on the API that
+        manages mgmt-1. Rotation replaces the identity in one run without a window of no valid credential.
+    options:
+      k8s_lab_management_kubeconfig_runner:
+        type: path
+        description: Published by management_cluster (tasks_from state) — runner path of the managing API.
+      k8s_lab_management_state:
+        type: str
+        description: Published by management_cluster (tasks_from state); the role stops with a message without it.
+      k8s_lab_project_name:
+        type: str
+        required: true
+        description: LXD project every cluster instance lives in.
+      k8s_lab_infrastructure_secret_name:
+        type: str
+        required: true
+        description: Name of the CAPN identity Secret.
+      k8s_lab_cluster_namespace:
+        type: str
+        required: true
+        description: Namespace of the Cluster API objects and the CAPN identity Secret.
+      k8s_lab_opt_root:
+        type: path
+        required: true
+        description: Host directory for pinned binaries (bin/) and role state (etc/).
+      capn_identity_kubeconfig:
+        type: path
+        description: Runner path of the kubeconfig the Secrets are applied with.
+      capn_identity_project:
+        type: str
+        description: The LXD project the trust entry is restricted to.
+      capn_identity_secret_name:
+        type: str
+        description: Name of the Secret.
+      capn_identity_namespaces:
+        type: list
+        elements: str
+        description: Namespaces that get the Secret (where LXCClusters live).
+      capn_identity_dir:
+        type: path
+        description: Host directory of the key (0600) and certificate, the only copy of the key.
+      capn_identity_validity_days:
+        type: int
+        description: Lifetime of a new certificate; rotate before it ends.
+      capn_identity_rotate:
+        type: bool
+        description: Replace the key and certificate in this run (also happens when the key file is missing).
+      capn_identity_enabled:
+        type: bool
+        description: Run the role at all.
+      capn_identity_flow_control_certificate:
+        type: bool
+        description: Key and certificate.
+      capn_identity_flow_control_trust:
+        type: bool
+        description: The LXD trust entry.
+      capn_identity_flow_control_secret:
+        type: bool
+        description: The Secrets, the check of the new certificate against LXD, and removal of earlier identities.

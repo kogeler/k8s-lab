@@ -1,6 +1,3 @@
-{{- include "capi-workload-cluster.requireCAPI" . -}}
-{{- $apiProxyPort := include "capi-workload-cluster.apiProxyPort" . | int -}}
----
 apiVersion: cluster.x-k8s.io/v1beta2
 kind: Cluster
 metadata:
@@ -9,46 +6,32 @@ metadata:
   labels:
     {{- include "capi-workload-cluster.labels" . | nindent 4 }}
   annotations:
-    # Single source of truth for the per-workload LXD-host port that
-    # forwards to the workload's kube-apiserver (PLAN §16.3 / §16.7).
-    # Computed by `capi-workload-cluster.apiProxyPort` helper from
-    # `cluster.name` via Adler-32 hash, override-able via
-    # `loadBalancer.lxc.proxyApiPort`. Downstream consumers (TF
-    # module §16.4 kubeconfig-rewrite step) read this annotation to
-    # rewrite `clusters[].cluster.server` from the internal capi-int
-    # IPv6 endpoint to `https://<lxd-host>:<port>`.
-    k8s-lab.io/api-proxy-port: {{ $apiProxyPort | quote }}
+    # The host port of the published API server; Ansible and Terraform read it
+    # to write the runner-side kubeconfig.
+    k8s-lab.io/api-proxy-port: {{ include "capi-workload-cluster.apiProxyPort" . | quote }}
+    {{- with .Values.cluster.classRevision }}
+    # The revision of the ClusterClass release this Cluster was last applied
+    # with: a template change changes no field of the Cluster, and this tells
+    # Terraform's add-on root to check the rollout again.
+    k8s-lab.io/class-revision: {{ . | quote }}
+    {{- end }}
 spec:
   clusterNetwork:
     pods:
       cidrBlocks:
-        {{- range .Values.clusterNetwork.pods.cidrBlocks }}
-        - {{ . | quote }}
-        {{- end }}
+        {{- toYaml .Values.clusterNetwork.pods.cidrBlocks | nindent 8 }}
     services:
       cidrBlocks:
-        {{- range .Values.clusterNetwork.services.cidrBlocks }}
-        - {{ . | quote }}
-        {{- end }}
+        {{- toYaml .Values.clusterNetwork.services.cidrBlocks | nindent 8 }}
   topology:
-    # ClassRef reproduces the rendered metadata.name of the
-    # ClusterClass shipped by charts/capi-cluster-class — see
-    # templates/_helpers.tpl for the slug formula contract.
+    # The ClusterClass of this cluster (charts/capi-cluster-class).
     classRef:
-      name: {{ include "capi-workload-cluster.classFullName" . | quote }}
-      {{- with .Values.clusterClass.namespace }}
-      namespace: {{ . | quote }}
-      {{- end }}
+      name: {{ .Values.cluster.name | quote }}
     version: {{ .Values.kubernetes.version | quote }}
     controlPlane:
       replicas: {{ .Values.topology.controlPlane.replicas }}
     workers:
       machineDeployments:
-        # The class name "md-0" matches the single MachineDeployment
-        # class baked into capi-cluster-class
-        # (templates/cluster-class.yaml). Substrate-required, not
-        # consumer-tunable — see PLAN §16.3 + memory rule
-        # "Chart-required values are hardcoded".
         - class: md-0
           name: md-0
           replicas: {{ .Values.topology.workers.replicas }}

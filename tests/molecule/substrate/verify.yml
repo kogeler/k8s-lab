@@ -1,0 +1,29 @@
+---
+# The substrate end state as the bootstrap roles and the nested nodes rely on it, read from outside the roles.
+- name: "Verify | substrate | host and LXD"
+  hosts: all
+  gather_facts: true
+  become: false
+  vars:
+    _lxd_socket: /var/snap/lxd/common/lxd/unix.socket
+    # Role-internal values no variable exposes to this play; a role input set in group_vars still wins.
+    _verify_substrate_baseline:
+      snap_channel: "{{ lxd_snap_channel | default('6/stable') }}"
+      image_registry: "capn"
+      bridge: "{{ lxd_bridge_name | default('br-ext6') }}"
+      pool: "{{ lxd_storage_pool_name | default('capi-fast') }}"
+      network: "{{ lxd_network_name | default('capi-int') }}"
+      listener_port: "{{ lxd_listener_port | default(8443) }}"
+      node_profiles: ["capi-base", "capi-worker"]
+      kernel_modules: ["overlay", "br_netfilter", "nf_conntrack", "nft_compat", "xt_connmark", "xt_mark"]
+      sysctl:
+        fs.inotify.max_user_instances: 1024
+        fs.inotify.max_user_watches: 1048576
+        net.ipv4.ip_forward: 1
+        net.ipv6.conf.all.forwarding: 1
+  tasks:
+    - name: "Verify | substrate | host | kernel state and pinned binaries"
+      ansible.builtin.include_tasks: verify/host.yml
+
+    - name: "Verify | substrate | lxd | daemon, project, pool, networks and profiles"
+      ansible.builtin.include_tasks: verify/lxd.yml

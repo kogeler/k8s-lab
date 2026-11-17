@@ -1,0 +1,65 @@
+---
+# The bootstrap cluster goes only once mgmt-1 manages itself and nothing is
+# left on the bootstrap API. LXD must answer: "unreachable" is never "gone".
+- name: "bootstrap | destroy | the management state is known"
+  ansible.builtin.assert:
+    that: k8s_lab_management_state is defined
+    fail_msg: "bootstrap needs the management state: run management_cluster with tasks_from: state first."
+    quiet: true
+
+- name: "bootstrap | destroy | read the bootstrap instance"
+  ansible.builtin.uri:
+    url: "http://localhost/1.0/instances/{{ bootstrap_instance_name }}?project={{ bootstrap_project }}"
+    unix_socket: "{{ _bootstrap_lxd_socket }}"
+    status_code: [200, 404]
+  register: _bootstrap_destroy_instance
+
+- name: "bootstrap | destroy | Cluster objects on the bootstrap API"
+  ansible.builtin.command:
+    argv: ["{{ bootstrap_opt_root }}/bin/kubectl", --kubeconfig, "{{ _bootstrap_kubeconfig_host }}", --request-timeout=20s,
+           get, clusters.cluster.x-k8s.io, --all-namespaces, -o, name]
+  register: _bootstrap_destroy_clusters
+  changed_when: false
+  failed_when: false
+  when: _bootstrap_destroy_instance.status == 200
+
+# Empty only when the API answers with no Cluster, or has no Cluster API at all;
+# an API that does not answer proves nothing.
+- name: "bootstrap | destroy | refuse while the bootstrap cluster still manages anything"
+  ansible.builtin.assert:
+    that:
+      - k8s_lab_management_state == 'self_hosted'
+      - (_bootstrap_destroy_clusters.rc == 0 and _bootstrap_destroy_clusters.stdout | trim == '')
+        or _bootstrap_destroy_clusters.stderr is search("doesn't have a resource type")
+    fail_msg: >-
+      Refusing to delete {{ bootstrap_instance_name }}: the management state is
+      {{ k8s_lab_management_state }}, and the bootstrap API
+      {{ ('holds ' ~ _bootstrap_destroy_clusters.stdout_lines | string) if _bootstrap_destroy_clusters.rc == 0
+         else 'does not answer (' ~ (_bootstrap_destroy_clusters.stderr | trim) ~ ')' }}.
+      Finish the pivot first, or start its k3s so the check can run.
+    quiet: true
+  when: _bootstrap_destroy_instance.status == 200
+
+- name: "bootstrap | destroy | the bootstrap container"
+  community.general.lxd_container:
+    url: "unix:{{ _bootstrap_lxd_socket }}"
+    snap_url: "unix:{{ _bootstrap_lxd_socket }}"
+    project: "{{ bootstrap_project }}"
+    name: "{{ bootstrap_instance_name }}"
+    state: absent
+    force_stop: true
+    timeout: 120
+  when: _bootstrap_destroy_instance.status == 200
+
+- name: "bootstrap | destroy | its kubeconfig and staging on the host"
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop: ["{{ _bootstrap_kubeconfig_host }}", "{{ _bootstrap_staging_dir }}"]
+
+- name: "bootstrap | destroy | its kubeconfig on the runner"
+  ansible.builtin.file:
+    path: "{{ _bootstrap_kubeconfig_runner }}"
+    state: absent
+  delegate_to: localhost
+  become: false

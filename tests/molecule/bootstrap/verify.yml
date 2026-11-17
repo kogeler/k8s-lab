@@ -1,0 +1,26 @@
+---
+# The substrate must still hold after the bootstrap roles ran on top of it.
+- name: "Verify | bootstrap | substrate"
+  ansible.builtin.import_playbook: ../substrate/verify.yml
+
+# The transient bootstrap cluster as the management_cluster role will find it: no mgmt-1 yet.
+- name: "Verify | bootstrap | bootstrap cluster, providers and identity"
+  hosts: all
+  gather_facts: false
+  become: false
+  vars:
+    _lxd_socket: /var/snap/lxd/common/lxd/unix.socket
+    _kubeconfig_host: "{{ k8s_lab_opt_root }}/etc/bootstrap.kubeconfig"
+    _kubeconfig_runner: "{{ k8s_lab_artifacts_dir }}/bootstrap.kubeconfig"
+    # Role defaults no variable exposes to this play; a role input set in group_vars still wins.
+    _network_name: "{{ lxd_network_name | default('capi-int') }}"
+    _api_port: "{{ bootstrap_api_port | default(16443) }}"
+  tasks:
+    - name: "Verify | bootstrap | instance | the bootstrap instance and its k3s cluster"
+      ansible.builtin.include_tasks: verify/instance.yml
+
+    - name: "Verify | bootstrap | providers | Cluster API providers and the CAPN identity"
+      ansible.builtin.include_tasks: verify/providers.yml
+
+    - name: "Verify | bootstrap | runner | runner-side kubeconfig and the management state"
+      ansible.builtin.include_tasks: verify/runner.yml

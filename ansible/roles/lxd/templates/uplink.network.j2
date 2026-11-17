@@ -1,0 +1,8 @@
+# Managed by the k8s-lab lxd role.
+[Match]
+Name={{ lxd_uplink_interface }}
+
+[Network]
+Bridge={{ lxd_bridge_name }}
+LinkLocalAddressing=no
+IPv6AcceptRA=no

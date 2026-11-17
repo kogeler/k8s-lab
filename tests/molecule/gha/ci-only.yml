@@ -1,0 +1,15 @@
+---
+# The gha scenario changes the machine it runs on (Docker, swap, iptables,
+# disks, the network): every playbook of the scenario starts with this play
+# and stops unless it runs inside a GitHub Actions job.
+- name: "gha | refuse outside GitHub Actions"
+  hosts: all
+  gather_facts: false
+  any_errors_fatal: true
+  tasks:
+    - name: "gha | refuse outside GitHub Actions"
+      ansible.builtin.assert:
+        that: lookup('ansible.builtin.env', 'GITHUB_ACTIONS') == 'true'
+        fail_msg: >-
+          The gha scenario runs only in GitHub Actions; use e2e-local on the
+          local VM (make test-e2e).

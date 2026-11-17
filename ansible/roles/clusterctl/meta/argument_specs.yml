@@ -1,0 +1,80 @@
+---
+argument_specs:
+  main:
+    short_description: Cluster API providers on the API that manages mgmt-1
+    description:
+      - Installs the core, kubeadm bootstrap, kubeadm control-plane and CAPN providers at their pins
+        where missing, upgrades those older than their pins, and refuses those that are newer.
+    options:
+      # The inputs both entry points read; main adds its toggles, pivot its target.
+      <<: &clusterctl_inputs
+        k8s_lab_management_kubeconfig:
+          type: path
+          description: Published by management_cluster (tasks_from state) — the API that manages mgmt-1 now.
+        k8s_lab_management_state:
+          type: str
+          description: Published by management_cluster (tasks_from state); the role stops with a message without it.
+        k8s_lab_opt_root:
+          type: path
+          required: true
+          description: Host directory for pinned binaries (bin/) and role state (etc/).
+        k8s_lab_clusterctl_version:
+          type: str
+          required: true
+          description: Cluster API release of clusterctl and of the core and kubeadm providers.
+        k8s_lab_capn_provider_version:
+          type: str
+          required: true
+          description: Release of the CAPN infrastructure provider.
+        clusterctl_kubeconfig:
+          type: path
+          description: Host path of the kubeconfig the providers are managed through.
+        clusterctl_capi_version:
+          type: str
+          description: Version of the core, kubeadm bootstrap and kubeadm control-plane providers.
+        clusterctl_capn_version:
+          type: str
+          description: Version of the CAPN infrastructure provider.
+        clusterctl_opt_root:
+          type: path
+          description: Host directory of the binaries (bin/) and of clusterctl.yaml (etc/clusterctl/).
+        clusterctl_cert_manager_timeout:
+          type: str
+          description: clusterctl's wait for cert-manager, e.g. 25m; empty keeps clusterctl's default.
+        clusterctl_timeout:
+          type: int
+          description: Seconds an init, an upgrade or the move may take.
+      clusterctl_enabled:
+        type: bool
+        description: Run the role at all.
+      clusterctl_flow_control_config:
+        type: bool
+        description: clusterctl.yaml.
+      clusterctl_flow_control_providers:
+        type: bool
+        description: Provider init and upgrade.
+  pivot:
+    short_description: Providers on mgmt-1, then clusterctl move onto it
+    description:
+      - Ends at once when the management state is self_hosted. Otherwise installs the providers on
+        mgmt-1, moves the Cluster API objects while the Cluster is on the source, and asserts it is on
+        mgmt-1 and gone from the source afterwards. The main entry point's toggles do not apply.
+    options:
+      <<: *clusterctl_inputs
+      k8s_lab_management_cluster_name:
+        type: str
+        required: true
+        description: Name of the management cluster.
+      k8s_lab_cluster_namespace:
+        type: str
+        required: true
+        description: Namespace of the Cluster API objects and the CAPN identity Secret.
+      clusterctl_target_kubeconfig:
+        type: path
+        description: Host path of mgmt-1's kubeconfig, the target of the pivot.
+      clusterctl_cluster_name:
+        type: str
+        description: The Cluster the pivot moves.
+      clusterctl_cluster_namespace:
+        type: str
+        description: Its namespace.

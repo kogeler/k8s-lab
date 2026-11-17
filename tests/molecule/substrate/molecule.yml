@@ -1,0 +1,6 @@
+---
+# The reference substrate playbook as it ships: converge, a second run that
+# must change nothing, verify (one task file per role under verify/).
+ansible:
+  playbooks:
+    converge: ../../playbooks/substrate.yml

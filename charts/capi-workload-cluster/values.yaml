@@ -1,156 +1,31 @@
-# capi-workload-cluster — public values interface (PLAN §16.3).
+# capi-workload-cluster — one Cluster in topology mode.
 #
-# Renders exactly one Cluster CR (cluster.x-k8s.io/v1beta2) in topology
-# mode. The CR references the ClusterClass shipped by
-# charts/capi-cluster-class via spec.topology.classRef.{name,namespace}.
-#
-# Substrate-required CR shape (apiVersion/kind, the topology mode itself,
-# the worker MachineDeployment class name "md-0" that mirrors what the
-# capi-cluster-class chart hardcodes) is baked into templates/*.yaml — a
-# consumer MUST NOT be able to silently break the chart by overriding
-# them. See the memory rule "Chart-required values are hardcoded, not
-# variables".
-#
-# The Cluster CR namespace is taken from .Release.Namespace
-# (i.e. `helm install --namespace ...`) — the chart does NOT ship a
-# Namespace resource. Namespace lifecycle is owned by the Terraform
-# wrapper (helm_release.create_namespace) or the operator: a per-cluster
-# chart cannot own a namespace that is shared across multiple workload
-# clusters (see PLAN §16.3 deviation note).
+# The Cluster uses the ClusterClass of the same name in the release namespace
+# (charts/capi-cluster-class with the same cluster.name). After every install
+# and upgrade a hook Job publishes the API server through an LXD proxy device on
+# the load-balancer instance and waits until it answers; the port is in the
+# Cluster's `k8s-lab.io/api-proxy-port` annotation.
 
-# ---- Cluster identity --------------------------------------------------------
 cluster:
-  # Logical Cluster name. Becomes both metadata.name AND the value
-  # passed to CAPI as the cluster-name label on every owned object.
-  # Default tracks PLAN §8 k8s_lab_workload_cluster_name reference
-  # deployment; consumers always override per their own cluster.
-  name: lab-default
+  # Required: the Cluster and its ClusterClass (charts/capi-cluster-class).
+  name: ""
+  # Revision of the ClusterClass release, recorded in the Cluster's
+  # `k8s-lab.io/class-revision` annotation; 0 = none.
+  classRevision: 0
 
-# ---- ClusterClass reference --------------------------------------------------
-# Reproduces the ClusterClass metadata.name rendered by
-# charts/capi-cluster-class via the shared slug formula (Chart.Version
-# with "." → "-"). The cluster-class chart VERSION used to compute the
-# slug is NOT exposed here — it is pinned in this chart's Chart.yaml
-# under annotations."k8s-lab.io/capi-cluster-class-chart-version" so
-# the two charts evolve in lockstep without an extra plumbing point.
-# See Chart.yaml + templates/_helpers.tpl for the rotation contract.
-clusterClass:
-  # Logical prefix matching capi-cluster-class .Values.clusterClass.name.
-  name: capn-default
-  # Namespace where the ClusterClass lives. Empty string → omits
-  # classRef.namespace, which makes CAPI default to the Cluster's own
-  # namespace (same-namespace pattern). Set explicitly (e.g.
-  # "capi-system") for a cross-namespace ClusterClass reference —
-  # CAPI v1beta2 supports this natively via the ClusterClassRef.namespace
-  # field.
-  namespace: ""
-
-# ---- Kubernetes version ------------------------------------------------------
-# Goes to spec.topology.version; CAPI passes it through to
-# KubeadmControlPlane and to MachineDeployments, and CAPN substitutes
-# the literal "VERSION" in the LXCMachineTemplate image refs
-# (charts/capi-cluster-class) with this exact value.
-#
-# Constrained by the set of prebuilt `capi:kubeadm/<ver>` images that
-# upstream CAPN simplestreams publishes
-# (https://images.linuxcontainers.org/capn/streams/v1/images.json) —
-# NOT by `dl.k8s.io/release/stable.txt`. Picking a version absent
-# from simplestreams fails LXCMachine creation with `Failed getting
-# image: The requested image couldn't be found`. Verify upstream
-# image availability before bumping.
+# topology.version. It needs a `capi:kubeadm/<version>` image on CAPN's image
+# server (https://images.linuxcontainers.org/capn/streams/v1/images.json).
 kubernetes:
-  version: "v1.35.0"  # verified 2026-04-25 against CAPN simplestreams
+  version: "v1.37.0"
 
-# ---- Topology replica counts -------------------------------------------------
-# Tracks PLAN §8 k8s_lab_workload_{controlplane,worker}_count.
-# CAPI v1beta2 allows live `replicas` updates on a referenced
-# ClusterClass — bumping these is safe to roll into an existing cluster
-# without rotating Chart.Version.
-#
-# controlPlane.replicas MUST be odd when KubeadmControlPlane uses the
-# default stacked etcd topology — CAPI's KCP webhook explicitly rejects
-# even values to avoid quorum/split-brain risk on partitioned etcd.
-# Default 3 = minimum odd value with HA semantics (1 = single-CP, no
-# HA). This is enforced by upstream CAPI, not by the schema below — if
-# you intentionally want to test single-CP, use replicas: 1.
 topology:
+  # Odd (stacked etcd).
   controlPlane:
     replicas: 3
   workers:
-    # Single MachineDeployment instance for MVP. The class name "md-0"
-    # is hardcoded in the template (it must match the
-    # `workers.machineDeployments[].class` baked into the
-    # capi-cluster-class ClusterClass — chart-required, not
-    # consumer-tunable).
     replicas: 2
 
-# ---- LXD load balancer / API proxy ------------------------------------------
-# CAPN's `lxc` load-balancer mode (the MVP default in
-# charts/capi-cluster-class) provisions a haproxy LXC instance whose
-# IPv6 endpoint lives on the capi-int LXD bridge — reachable inside
-# the LXD host but NOT from a runner / dev machine on the libvirt
-# network. To expose the workload kube-apiserver outside the LXD host
-# the chart ships a Helm post-install hook Job that PATCHes the LB
-# instance's LXD config to add an `api-proxy` proxy device
-# (`listen=tcp:0.0.0.0:<port>` `connect=tcp:127.0.0.1:6443`
-# `bind=host`) — see templates/api-proxy-attach-job.yaml.
-#
-# Why a hook Job rather than a ClusterClass topology patch:
-# CAPN's LXCCluster.spec.template.spec.loadBalancer.lxc.instanceSpec
-# is a closed CRD schema (only profiles/image/flavor/target — no
-# devices field), so the proxy device cannot flow through the
-# topology API. The hook owns the post-CAPI step inside the chart
-# itself, so every consumer (Molecule e2e, Terraform module, manual
-# `helm install`) gets runner-reachability automatically.
-#
-# Default port is computed deterministically from `cluster.name` via
-# Adler-32 hash mapped into 20000-29999 — see
-# templates/_helpers.tpl `capi-workload-cluster.apiProxyPort`. The
-# helper exposes the port back through the `k8s-lab.io/api-proxy-port`
-# annotation on the Cluster CR so downstream consumers (TF module
-# §16.4 kubeconfig rewrite) read it without recomputing.
-loadBalancer:
-  lxc:
-    # Override the auto-derived port. Useful when two workloads on
-    # the same LXD host happen to hash to the same port (collision
-    # ≈ 0.5% on 10 workloads). Default 0 = use the hash.
-    proxyApiPort: 0
-
-# ---- API proxy attach/detach hook Jobs --------------------------------------
-# Tunables for the post-install / pre-delete hook Jobs that wire (and
-# unwire) the LXD `api-proxy` device on the haproxy LB instance.
-# See templates/api-proxy-{attach,detach}-job.yaml.
-apiProxy:
-  # Base image. Pinned to current stable Alpine; the Job installs
-  # curl + jq at runtime via apk (no bitnami, no vendor-wrapped
-  # tooling images — see memory rules). The script drives the LXD
-  # HTTPS REST API directly with mTLS material from the
-  # `incus-identity` Secret — no `incus`/`lxc` CLI binary needed.
-  image: "alpine:3.21"
-
-  # CAPN identity Secret consumed by the hook Job — same Secret
-  # the CAPN controller reads to talk to the LXD daemon. Default
-  # tracks the §8 global k8s_lab_infrastructure_secret_name owned
-  # by role bootstrap_capn_secret. Override for multi-tenant /
-  # alt-named installs.
-  infrastructureSecretName: "incus-identity"
-
-  # Maximum wait inside the post-install Job for CAPN to materialise
-  # the haproxy LB LXC instance. CAPN reconcile is async with helm
-  # install — on a cold lab host the LB instance typically appears
-  # within 60-180 s of Cluster CR creation. 600 s (10 min) is a
-  # generous buffer that still surfaces real CAPN provisioning
-  # failures within a reasonable timeframe.
-  lbWaitTimeoutSeconds: 600
-
-# ---- Cluster pod / service networking ---------------------------------------
-# Dual-stack support: each cidrBlocks list accepts up to two entries
-# ([IPv4, IPv6]); a single-stack cluster may pass a single entry.
-# Defaults track PLAN §8 k8s_lab_workload_{pod,service}_cidr_{v4,v6}
-# reference deployment. This block is the ONE place where pod/service
-# CIDRs are declared in topology mode (ClusterClass intentionally does
-# not own clusterNetwork — the same ClusterClass can back many Cluster
-# CRs with different CIDR policies).
+# [IPv4, IPv6] each.
 clusterNetwork:
   pods:
     cidrBlocks:
@@ -161,25 +36,29 @@ clusterNetwork:
       - "10.96.0.0/16"
       - "fd42:77:3::/112"
 
-# ---- helm test hook configuration -------------------------------------------
-# `helm test <release>` runs an in-cluster Pod that verifies the chart
-# end-to-end: Cluster CR + topology reconciled + KCP/MD/LXCCluster owned
-# by CAPI + every node in `topology.{controlPlane,workers}.replicas`
-# actually joined the workload cluster API. See
-# templates/tests/cluster-ready.yaml for the full check matrix.
-#
-# Helm-3-only features used (the hashicorp/helm Terraform provider is
-# pinned to the Helm 3 SDK — Helm 4 hooks are not portable):
-#   * helm.sh/hook: test
-#   * helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+apiProxy:
+  # Required: the CAPN identity Secret in the release namespace; its LXD
+  # credentials let the hook find the load balancer and add the proxy device.
+  infrastructureSecretName: ""
+  # Host address the API listens on; "0.0.0.0" is every IPv4 address of the host.
+  listenAddress: "0.0.0.0"
+  # Host port; 0 = 20000 + (adler32 of cluster.name mod 10000).
+  port: 0
+  # Python 3 standard library only.
+  image: "python:3.14.10-alpine3.24@sha256:5862d971d1f0ae26b258cefa4e893556b1d3aba81bd2ff30888704ad378bab67"
+  # Deadline of each gate, in seconds. Their sum (45 min) stays below the
+  # callers' Helm timeout of the release (50 min), so a failing gate reports
+  # itself.
+  timeoutSeconds:
+    loadBalancer: 600
+    kubeconfig: 1200
+    proxy: 300
+    livez: 600
+
+# `helm test`: waits until the Cluster has converged (topology applied, nothing
+# rolling out or scaling, Available).
 tests:
-  # Base image. Pinned to current stable Alpine; the test pod fetches
-  # the official upstream kubectl binary at runtime via busybox wget
-  # (no apk, no vendor-wrapped tooling images — see memory rules).
-  image: "alpine:3.21"
-  # Maximum wait for Phase 2 (workload-side node registration).
-  # Provisioning 3 CP + 2 W via CAPN on a cold lab host typically takes
-  # 10-15 minutes (image fetch + kubeadm init + sequential KCP rollout
-  # + worker join); 1200 s gives a generous buffer. Bump if the
-  # substrate is slower or the topology larger.
-  nodesUpTimeoutSeconds: 1200
+  image: "registry.k8s.io/kubectl:v1.37.2@sha256:fe049faa65ae483ac200009a949a68fa4c9985daea12c9cb1195c9c7965301fc"
+  # Deadline of each wait, in seconds; the caller's `helm test --timeout`
+  # bounds the whole check.
+  timeoutSeconds: 7200

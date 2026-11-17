@@ -1,0 +1,41 @@
+---
+- name: "lxd | storage | read the pool"
+  ansible.builtin.uri:
+    url: "http://localhost/1.0/storage-pools/{{ _lxd_pool.name }}"
+    unix_socket: "{{ _lxd_socket }}"
+    status_code: [200, 404]
+  register: _lxd_storage_pool
+
+- name: "lxd | storage | read the source device"
+  ansible.builtin.command:
+    argv: [lsblk, --noheadings, --output, MOUNTPOINTS, "{{ lxd_storage_source }}"]
+  register: _lxd_storage_lsblk
+  changed_when: false
+  failed_when: false
+
+# LXD formats the device of a new pool; an existing pool cannot move.
+- name: "lxd | storage | a new pool gets an unused block device, an existing one keeps its device"
+  ansible.builtin.assert:
+    that: >-
+      (_lxd_storage_pool.status == 404 and _lxd_storage_lsblk.rc == 0 and _lxd_storage_lsblk.stdout | trim == '')
+      or (_lxd_storage_pool.status == 200 and _initial == lxd_storage_source)
+    fail_msg: >-
+      {% if _lxd_storage_pool.status == 200 %}Pool {{ _lxd_pool.name }} was created on {{ _initial }}
+      and LXD cannot move it; lxd_storage_source is {{ lxd_storage_source }}. Set it back.{% else %}lxd_storage_source
+      {{ lxd_storage_source }} must be a block device with nothing mounted from it:
+      {{ _lxd_storage_lsblk.stderr | default('') or _lxd_storage_lsblk.stdout }}{% endif %}
+  vars:
+    _initial: "{{ _lxd_storage_pool.json.metadata.config['volatile.initial_source'] | default('') }}"
+
+- name: "lxd | storage | the node pool"
+  ansible.builtin.include_tasks: ensure.yml
+  vars:
+    _lxd_ensure:
+      label: storage
+      path: /1.0/storage-pools
+      name: "{{ _lxd_pool.name }}"
+      create: "{{ _lxd_pool }}"
+      body:
+        description: "{{ _lxd_pool.description }}"
+        config: {btrfs.mount_options: "{{ _lxd_pool.config['btrfs.mount_options'] }}"}
+      method: PATCH

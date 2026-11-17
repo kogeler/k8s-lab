@@ -1,0 +1,27 @@
+---
+galaxy_info:
+  role_name: management_cluster
+  namespace: k8slab
+  author: k8s-lab contributors
+  description: >-
+    The management cluster (mgmt-1) through Helm on the API that currently
+    manages it: ClusterClass and Cluster releases, a runner-side kubeconfig,
+    Calico and MetalLB, and the acceptance gates.
+  license: MIT
+  min_ansible_version: "2.19"
+  platforms:
+    - name: Debian
+      versions:
+        - trixie
+    - name: Ubuntu
+      versions:
+        - jammy
+        - noble
+        - resolute
+  galaxy_tags:
+    - kubernetes
+    - clusterapi
+
+# None: the role acts on a Kubernetes API; what must exist before it is the
+# playbook's order to decide.
+dependencies: []

@@ -1,0 +1,65 @@
+---
+- name: "lxd | snap"
+  ansible.builtin.include_tasks:
+    file: snap.yml
+    apply:
+      tags: ["lxd", "lxd-snap", "lxd_snap"]
+  when: [lxd_enabled | bool, lxd_flow_control_snap | bool]
+  tags: ["lxd", "lxd-snap", "lxd_snap"]
+
+- name: "lxd | bridge"
+  ansible.builtin.include_tasks:
+    file: bridge.yml
+    apply:
+      tags: ["lxd", "lxd-bridge", "lxd_bridge"]
+  when: [lxd_enabled | bool, lxd_flow_control_bridge | bool]
+  tags: ["lxd", "lxd-bridge", "lxd_bridge"]
+
+- name: "lxd | registry"
+  ansible.builtin.include_tasks:
+    file: registry.yml
+    apply:
+      tags: ["lxd", "lxd-registry", "lxd_registry"]
+  when: [lxd_enabled | bool, lxd_flow_control_registry | bool]
+  tags: ["lxd", "lxd-registry", "lxd_registry"]
+
+- name: "lxd | project"
+  ansible.builtin.include_tasks:
+    file: project.yml
+    apply:
+      tags: ["lxd", "lxd-project", "lxd_project"]
+  when: [lxd_enabled | bool, lxd_flow_control_project | bool]
+  tags: ["lxd", "lxd-project", "lxd_project"]
+
+- name: "lxd | storage"
+  ansible.builtin.include_tasks:
+    file: storage.yml
+    apply:
+      tags: ["lxd", "lxd-storage", "lxd_storage"]
+  when: [lxd_enabled | bool, lxd_flow_control_storage | bool]
+  tags: ["lxd", "lxd-storage", "lxd_storage"]
+
+- name: "lxd | network"
+  ansible.builtin.include_tasks:
+    file: network.yml
+    apply:
+      tags: ["lxd", "lxd-network", "lxd_network"]
+  when: [lxd_enabled | bool, lxd_flow_control_network | bool]
+  tags: ["lxd", "lxd-network", "lxd_network"]
+
+# After the network: LXD binds only to an address that exists on the host.
+- name: "lxd | listener"
+  ansible.builtin.include_tasks:
+    file: listener.yml
+    apply:
+      tags: ["lxd", "lxd-listener", "lxd_listener"]
+  when: [lxd_enabled | bool, lxd_flow_control_listener | bool]
+  tags: ["lxd", "lxd-listener", "lxd_listener"]
+
+- name: "lxd | profiles"
+  ansible.builtin.include_tasks:
+    file: profiles.yml
+    apply:
+      tags: ["lxd", "lxd-profiles", "lxd_profiles"]
+  when: [lxd_enabled | bool, lxd_flow_control_profiles | bool]
+  tags: ["lxd", "lxd-profiles", "lxd_profiles"]

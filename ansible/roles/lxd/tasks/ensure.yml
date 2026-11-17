@@ -1,0 +1,67 @@
+---
+# Converge one named LXD object over the unix socket. `_lxd_ensure`:
+#   label     the area, for task names
+#   path      the collection, e.g. /1.0/projects
+#   project   for project-scoped objects (profiles)
+#   create    the body POSTed when the object is absent
+#   body      the body sent when the object exists and differs
+#   method    PATCH: compares body.description and the body.config keys,
+#                    keys this role does not set are left alone;
+#             PUT:   replaces description, config and devices, compared whole.
+# (No key may be named like a dict method: `x.update` is the method in Jinja.)
+- name: "lxd | ensure | {{ _lxd_ensure.label }}"
+  vars:
+    _query: "{{ ('?project=' ~ _lxd_ensure.project) if _lxd_ensure.project | default('') else '' }}"
+    _object_url: "http://localhost{{ _lxd_ensure.path }}/{{ _lxd_ensure.name }}{{ _query }}"
+    _live: "{{ _lxd_ensure_live.json.metadata }}"
+    _body: "{{ _lxd_ensure['body'] }}"
+    _differs: >-
+      {{ _body.description | default(_live.description) != _live.description
+         or (_lxd_ensure.method == 'PUT'
+             and (_body.config != _live.config or _body.devices != _live.devices))
+         or (_lxd_ensure.method == 'PATCH'
+             and _body.config | default({}) | dict2items | difference(_live.config | dict2items) | length > 0) }}
+  block:
+    - name: "lxd | ensure | read {{ _lxd_ensure.name }}"
+      ansible.builtin.uri:
+        url: "{{ _object_url }}"
+        unix_socket: "{{ _lxd_socket }}"
+        status_code: [200, 404]
+      register: _lxd_ensure_live
+
+    - name: "lxd | ensure | create {{ _lxd_ensure.name }}"
+      ansible.builtin.uri:
+        url: "http://localhost{{ _lxd_ensure.path }}{{ _query }}"
+        unix_socket: "{{ _lxd_socket }}"
+        method: POST
+        body_format: json
+        body: "{{ _lxd_ensure.create }}"
+        status_code: [200, 201, 202]
+      register: _lxd_ensure_created
+      when: _lxd_ensure_live.status == 404
+      changed_when: true
+
+    - name: "lxd | ensure | update {{ _lxd_ensure.name }}"
+      ansible.builtin.uri:
+        url: "{{ _object_url }}"
+        unix_socket: "{{ _lxd_socket }}"
+        method: "{{ _lxd_ensure.method }}"
+        body_format: json
+        body: "{{ _body }}"
+        status_code: [200, 202]
+      register: _lxd_ensure_updated
+      when:
+        - _lxd_ensure_live.status == 200
+        - _differs | bool
+      changed_when: true
+
+    # Storage, network and profile writes return a background operation.
+    - name: "lxd | ensure | wait for {{ _lxd_ensure.name }}"
+      ansible.builtin.uri:
+        url: "http://localhost{{ item.json.operation }}/wait?timeout=300"
+        unix_socket: "{{ _lxd_socket }}"
+      register: _lxd_ensure_operation
+      failed_when: _lxd_ensure_operation.json.metadata.status != 'Success'
+      loop: "{{ [_lxd_ensure_created, _lxd_ensure_updated] | selectattr('json', 'defined') | selectattr('json.type', 'eq', 'async') | list }}"
+      loop_control:
+        label: "{{ item.json.operation }}"
